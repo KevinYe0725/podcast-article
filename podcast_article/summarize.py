@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from openai import OpenAI
 
-from . import config
+from . import config, settings
 from .util import html_to_text, ts_clock
 
 
@@ -79,11 +79,18 @@ _EDITOR_SYSTEM = """你是一位顶尖的内容编辑与专栏作者。你会收
 
 
 def _build_user_message(
-    title: str, podcast: str, author: str, shownotes_html: str | None, transcript_text: str
+    title: str,
+    podcast: str,
+    author: str,
+    shownotes_html: str | None,
+    transcript_text: str,
+    profile: str = "",
 ) -> str:
     notes = html_to_text(shownotes_html)
     meta = f"节目标题：{title}\n播客/频道：{podcast}\n主播/作者：{author or '未知'}"
     parts = [meta]
+    if profile:
+        parts.append(profile)
     if notes:
         parts.append(f"以下是主播自己写的节目笔记（Official Show Notes），可作为内容地图参考：\n{notes[:4000]}")
     parts.append(f"以下是完整文字稿：\n\n{transcript_text}")
@@ -135,12 +142,15 @@ def write_article(
     """输入带时间戳的转写片段，输出 Markdown 文章。progress 同 Pipeline。"""
     client = _client()
     model = llm_model or config.deepseek_model()
+    profile = settings.profile_text()  # 设置页里填的个人资料（可为空）
 
     def on_chars(n: int) -> None:
         if progress:
             progress("llm", {"chars": n})
 
-    user_msg = _build_user_message(title, podcast, author, shownotes_html, _segments_to_text(segments))
+    user_msg = _build_user_message(
+        title, podcast, author, shownotes_html, _segments_to_text(segments), profile
+    )
 
     if len(user_msg) <= max_chars:
         log(f"[llm] 单次直读模式：全文 {len(user_msg)} 字符，模型 {model}")
@@ -163,6 +173,7 @@ def write_article(
     notes = html_to_text(shownotes_html)
     final_user = (
         f"节目标题：{title}\n播客/频道：{podcast}\n主播/作者：{author or '未知'}\n\n"
+        + (f"{profile}\n\n" if profile else "")
         + (f"主播的节目笔记：\n{notes[:4000]}\n\n" if notes else "")
         + "以下是各段文字稿的结构化提炼素材（时间戳均来自原稿）：\n\n"
         + digest

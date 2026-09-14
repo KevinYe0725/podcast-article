@@ -82,7 +82,20 @@ uv run podcast-article "https://www.xiaoyuzhoufm.com/episode/xxxx"
 uv run python webapp.py    # 打开 http://127.0.0.1:8787
 ```
 
-粘贴链接 → 四阶段时间线实时推进（下载 / 转写 / 精读的百分比与剩余时间）→ 文章阅读视图，支持文章与文字稿**分栏对照**。写完点一下「✦ 写入 Notion」。
+粘贴链接 → 四阶段时间线实时推进（下载 / 转写 / 精读的百分比与剩余时间）→ 文章阅读视图，支持文章与文字稿**分栏对照**。写完选发布目标，一键投递到 Notion 或任意 MCP 工具。
+
+右上角 **⚙ 设置** 里管理个人信息、密钥与生成偏好：
+
+| 分区 | 内容 |
+|---|---|
+| 个人资料 | 称呼 + 长期关注方向，会作为「读者画像」注入成文提示词 |
+| API 密钥 | DeepSeek / Notion，**只写不读**（接口只回报是否已配置 + 打码值），可一键测试连接 |
+| 发布目标 | Notion 数据库 / 父页面 ID |
+| 生成默认值 | 默认转写语言、转写后端、ASR 模型、直读上限、是否强制转写 |
+| MCP 服务器 | 见下节 |
+| 存储 | 输出目录、已生成集数与占用、本地模型、配置文件路径 |
+
+> 密钥字段留空即保持原值，不会被误清空；填写后写入 `.env`（保留原有注释）。
 
 ### 2. 命令行
 
@@ -120,15 +133,16 @@ uv run podcast-article-mcp    # stdio 传输
 
 ## ☁️ 写入 Notion
 
-1. 在 [Notion Integrations](https://www.notion.so/profile/integrations) 创建 Internal Integration，把 Secret 填入 `.env` 的 `NOTION_TOKEN`
+1. 在 [Notion Integrations](https://www.notion.so/profile/integrations) 创建 Internal Integration，拿到 Secret
 2. 在 Notion 里打开目标页面/数据库 → 「···」→ 连接 → 添加你的 integration
-3. `.env` 配置 `NOTION_DATABASE_ID`（作为一行）或 `NOTION_PARENT_PAGE_ID`（作为子页面）
+3. 打开 Web 界面右上角 **⚙ 设置 → API 密钥** 粘贴 Token（或写入 `.env` 的 `NOTION_TOKEN`），点「测试连接」确认
+4. **设置 → 发布目标** 填 `NOTION_DATABASE_ID`（作为一行）或 `NOTION_PARENT_PAGE_ID`（作为子页面）
 
 页面正文是原生 Notion 块：标题层级、引用、列表、表格、行内样式，文末附原文链接；「播客 / 日期 / 时长 / 来源」等数据库属性自动填充。
 
 ## 🔌 在界面上配置 MCP 服务器
 
-Web 界面底部的 **「MCP 服务器」** 面板可以直接配置任意 MCP 服务器（stdio），不用改配置文件：
+设置页的 **「MCP 服务器」** 分区可以直接配置任意 stdio MCP 服务器，不用改配置文件：
 
 1. 填「名称 / 启动命令 / 参数 / 环境变量」→ **添加服务器**
 2. 点 **测试** → 实时启动该服务器并列出它的全部工具（点工具胶囊即可把它选为发布目标）
@@ -213,6 +227,10 @@ podcast_article/
 ├── summarize.py      # DeepSeek 精读与文章生成
 ├── notion.py         # markdown → Notion blocks（带重试）
 ├── mcp_server.py     # MCP 服务器（stdio）
+├── settings.py       # 设置存储（个人信息 / 默认值 / .env 读写）
+├── mcp_config.py     # MCP 服务器配置存储
+├── mcp_client.py     # MCP stdio 客户端
+├── publish.py        # 发布分发（内置 Notion / 任意 MCP 工具）
 ├── config.py         # .env 配置
 └── util.py           # 工具函数
 

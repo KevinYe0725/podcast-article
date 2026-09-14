@@ -82,7 +82,20 @@ uv run podcast-article "https://www.xiaoyuzhoufm.com/episode/xxxx"
 uv run python webapp.py    # open http://127.0.0.1:8787
 ```
 
-Paste a link → a four-stage timeline advances in real time (download / ASR / LLM percentages and ETAs) → read the article, with an optional **side-by-side transcript view**. Then hit "✦ 写入 Notion" to publish.
+Paste a link → a four-stage timeline advances in real time (download / ASR / LLM percentages and ETAs) → read the article, with an optional **side-by-side transcript view**. Then pick a publish target and send it to Notion or any MCP tool.
+
+The **⚙ Settings** button (top right) manages your profile, credentials and generation preferences:
+
+| Section | Contents |
+|---|---|
+| Profile | Name + long-term interests, injected into the writing prompt as a "reader profile" |
+| API keys | DeepSeek / Notion — **write-only** (the API only ever reports whether a key is configured, plus a masked value), with one-click connection tests |
+| Publish targets | Notion database / parent page ID |
+| Generation defaults | Default language, ASR backend, ASR model, direct-read limit, force-ASR flag |
+| MCP servers | See below |
+| Storage | Output directory, episode count and size, local models, config file paths |
+
+> Leaving a credential field blank keeps the stored value — it can never be wiped by accident. New values are written into `.env` with existing comments preserved.
 
 ### 2. CLI
 
@@ -128,7 +141,7 @@ Page bodies are native Notion blocks: headings, quotes, lists, tables, inline st
 
 ## 🔌 Configure MCP servers in the UI
 
-The **"MCP servers"** panel at the bottom of the Web UI configures any stdio MCP server — no config file editing:
+The **"MCP servers"** section of the Settings page configures any stdio MCP server — no config file editing:
 
 1. Fill in name / command / args / env vars → **Add server**
 2. Hit **Test** → the server is launched live and all its tools are listed (click a tool chip to make it the publish target)
@@ -213,6 +226,10 @@ podcast_article/
 ├── summarize.py      # DeepSeek close-reading & article generation
 ├── notion.py         # markdown → Notion blocks (with retries)
 ├── mcp_server.py     # MCP server (stdio)
+├── settings.py       # Settings store (profile / defaults / .env I/O)
+├── mcp_config.py     # MCP server config store
+├── mcp_client.py     # MCP stdio client
+├── publish.py        # Publish dispatch (built-in Notion / any MCP tool)
 ├── config.py         # .env configuration
 └── util.py           # Utilities
 

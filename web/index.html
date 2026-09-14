@@ -221,6 +221,58 @@
   .ep .s .ok { color: var(--green); font-weight: 500; }
   #empty-lib { color: #b4b4bc; font-size: 13px; }
 
+  /* ---- 设置视图 ---- */
+  .iconbtn {
+    width: 34px; height: 34px; border-radius: 50%; border: 1px solid var(--border2); background: #fff;
+    display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--dim); transition: .15s;
+  }
+  .iconbtn:hover { color: var(--text); border-color: var(--border2); background: var(--bg2); }
+  .iconbtn svg { width: 17px; height: 17px; }
+  #settings { max-width: 760px; }
+  .sethead { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 26px 0 4px; }
+  .sethead h1 { font-size: 22px; font-weight: 600; letter-spacing: -0.02em; }
+  .setintro { font-size: 13px; color: var(--dim); margin-top: 7px; line-height: 1.65; }
+  .tabs { display: flex; align-items: flex-end; gap: 22px; border-bottom: 1px solid var(--border); margin: 20px 0 4px; flex-wrap: wrap; }
+  .tab {
+    position: relative; border: 0; padding: 7px 1px 10px; background: transparent; color: var(--dim);
+    font: inherit; font-size: 13px; line-height: 20px; cursor: pointer;
+  }
+  .tab:hover { color: var(--text); }
+  .tab[data-active="true"] { color: var(--text); font-weight: 500; }
+  .tab[data-active="true"]::after {
+    content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; background: var(--text); border-radius: 2px;
+  }
+  .pane { padding-bottom: 40px; }
+  .field { display: flex; flex-direction: column; gap: 6px; padding: 14px 0; }
+  .field + .field { border-top: 1px solid var(--border); }
+  .fhead { display: flex; align-items: center; gap: 8px; }
+  .flabel { flex: 1; font-size: 13px; font-weight: 500; color: var(--text); }
+  .fstate { font-size: 11px; border-radius: 999px; padding: 1px 8px; line-height: 17px; background: var(--bg2); color: var(--dim); white-space: nowrap; }
+  .fstate.ok { background: #f2fbf8; color: var(--green); }
+  .fhint { font-size: 12px; color: var(--dim); line-height: 1.7; }
+  .field input, .field textarea, .field select {
+    width: 100%; border: 1px solid var(--border2); border-radius: 10px; padding: 9px 12px;
+    font-size: 13.5px; font-family: var(--font); background: #fff; color: var(--text);
+  }
+  .field textarea { min-height: 66px; resize: vertical; line-height: 1.6; }
+  .field input:focus, .field textarea:focus, .field select:focus { outline: none; border-color: var(--green); }
+  .linkbtn { border: 0; background: none; padding: 0; font: inherit; font-size: 12px; color: var(--green); cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+  .vres { margin-left: 8px; font-size: 12px; color: var(--dim); }
+  .vres.ok { color: var(--green); }
+  .vres.bad { color: var(--red); }
+  .inforow { display: flex; gap: 12px; padding: 13px 0; font-size: 13px; border-top: 1px solid var(--border); }
+  .inforow:first-child { border-top: none; }
+  .inforow .k { width: 132px; color: var(--dim); flex-shrink: 0; }
+  .inforow .v { font-family: var(--mono); font-size: 12px; word-break: break-all; }
+  .savebar {
+    position: sticky; bottom: 0; display: flex; align-items: center; gap: 12px;
+    padding: 12px 0; margin-top: 8px; border-top: 1px solid var(--border);
+    background: rgba(255,255,255,.92); backdrop-filter: blur(8px); opacity: 0; pointer-events: none; transition: opacity .15s;
+  }
+  .savebar.dirty { opacity: 1; pointer-events: auto; }
+  .savebar .dot { width: 7px; height: 7px; border-radius: 50%; background: #e0a020; }
+  .savebar .msg { font-size: 12.5px; color: var(--dim); }
+
   /* Toast */
   #toast {
     position: fixed; right: 22px; bottom: 22px; background: var(--black); color: #fff;
@@ -235,8 +287,18 @@
 <div class="wrap">
   <div class="topbar">
     <div class="wordmark">podcast<span>-article</span></div>
-    <div class="meta">本地转写 · DeepSeek 精读 · MCP</div>
+    <div style="display:flex;align-items:center;gap:14px">
+      <div class="meta">本地转写 · DeepSeek 精读 · MCP</div>
+      <button class="iconbtn" onclick="openSettings()" title="设置" aria-label="设置">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="3"></circle>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+        </svg>
+      </button>
+    </div>
   </div>
+
+<div id="main">
 
   <div class="hero">
     <h1>把播客，变成值得收藏的文章。</h1>
@@ -292,8 +354,125 @@
     <div id="transcript"></div>
   </div>
 
-  <details class="mcpbox" id="mcpbox">
-    <summary><span class="arw">▸</span> MCP 服务器 <span class="sub">配置任意 MCP 服务器，文章可直接发布到它</span></summary>
+  <div id="lib">
+    <h2>历史文章</h2>
+    <div class="grid" id="libgrid"></div>
+    <div id="empty-lib">还没有生成过任何文章。</div>
+  </div>
+</div><!-- /main -->
+
+<div id="settings" style="display:none">
+  <div class="sethead">
+    <div>
+      <h1>设置</h1>
+      <p class="setintro">个人信息、密钥与生成偏好。密钥只写不读——接口只回报是否已配置，明文不会回到浏览器；输入框留空表示保持原值。</p>
+    </div>
+    <button class="btn mini" onclick="closeSettings()">← 返回</button>
+  </div>
+
+  <div class="tabs">
+    <button class="tab" data-tab="profile" data-active="true" onclick="switchTab('profile')">个人资料</button>
+    <button class="tab" data-tab="keys" onclick="switchTab('keys')">API 密钥</button>
+    <button class="tab" data-tab="dest" onclick="switchTab('dest')">发布目标</button>
+    <button class="tab" data-tab="gen" onclick="switchTab('gen')">生成默认值</button>
+    <button class="tab" data-tab="mcp" onclick="switchTab('mcp')">MCP 服务器</button>
+    <button class="tab" data-tab="storage" onclick="switchTab('storage')">存储</button>
+  </div>
+
+  <section class="pane" id="pane-profile">
+    <div class="field">
+      <div class="fhead"><label class="flabel" for="s_name">称呼</label></div>
+      <input id="s_name" placeholder="Kevin" oninput="markDirty()">
+      <p class="fhint">会写进生成文章时注入的「读者画像」。</p>
+    </div>
+    <div class="field">
+      <div class="fhead"><label class="flabel" for="s_interests">长期关注的方向</label></div>
+      <textarea id="s_interests" placeholder="例如：AI 基础设施、强化学习、创业方法论" oninput="markDirty()"></textarea>
+      <p class="fhint">填了之后，文章会优先保留这些方向相关的内容，并要求「编辑点评」多给可迁移的启发。</p>
+    </div>
+    <div class="field">
+      <div class="fhead"><label class="flabel" for="s_plang">文章输出语言</label></div>
+      <select id="s_plang" onchange="markDirty()">
+        <option value="zh">简体中文</option>
+        <option value="en">English（暂未启用）</option>
+      </select>
+      <p class="fhint">当前版本的成文提示词固定输出简体中文，此项为后续多语言预留。</p>
+    </div>
+  </section>
+
+  <section class="pane" id="pane-keys" style="display:none">
+    <div class="field">
+      <div class="fhead"><label class="flabel">DeepSeek API Key</label><span class="fstate" id="st_DEEPSEEK_API_KEY"></span></div>
+      <input id="k_DEEPSEEK_API_KEY" type="password" autocomplete="off" placeholder="留空表示不修改" oninput="markDirty()">
+      <p class="fhint">用于精读成文，写入 .env 的 DEEPSEEK_API_KEY。
+        <button class="linkbtn" onclick="verifyKey('deepseek', this)">测试连接</button><span class="vres" id="v_deepseek"></span></p>
+    </div>
+    <div class="field">
+      <div class="fhead"><label class="flabel">DeepSeek 模型</label><span class="fstate" id="st_DEEPSEEK_MODEL"></span></div>
+      <input id="k_DEEPSEEK_MODEL" placeholder="deepseek-chat（默认）" oninput="markDirty()">
+      <p class="fhint">留空使用默认模型。</p>
+    </div>
+    <div class="field">
+      <div class="fhead"><label class="flabel">Notion Token</label><span class="fstate" id="st_NOTION_TOKEN"></span></div>
+      <input id="k_NOTION_TOKEN" type="password" autocomplete="off" placeholder="留空表示不修改" oninput="markDirty()">
+      <p class="fhint">Notion Internal Integration 密钥（ntn_…）。
+        <button class="linkbtn" onclick="verifyKey('notion', this)">测试连接</button><span class="vres" id="v_notion"></span></p>
+    </div>
+  </section>
+
+  <section class="pane" id="pane-dest" style="display:none">
+    <div class="field">
+      <div class="fhead"><label class="flabel">Notion 数据库 ID</label><span class="fstate" id="st_NOTION_DATABASE_ID"></span></div>
+      <input id="k_NOTION_DATABASE_ID" placeholder="每篇文章作为数据库的一行" oninput="markDirty()">
+      <p class="fhint">在 Notion 打开目标数据库，从链接里取 32 位 ID；别忘了把该数据库「连接」给你的 integration。</p>
+    </div>
+    <div class="field">
+      <div class="fhead"><label class="flabel">Notion 父页面 ID</label><span class="fstate" id="st_NOTION_PARENT_PAGE_ID"></span></div>
+      <input id="k_NOTION_PARENT_PAGE_ID" placeholder="作为某个页面的子页面" oninput="markDirty()">
+      <p class="fhint">两个都填时优先写入数据库。也可以完全不用内置集成，改在「MCP 服务器」里配置 Notion 官方 MCP。</p>
+    </div>
+  </section>
+
+  <section class="pane" id="pane-gen" style="display:none">
+    <div class="field">
+      <div class="fhead"><label class="flabel" for="g_language">默认转写语言</label></div>
+      <select id="g_language" onchange="markDirty()">
+        <option value="">自动检测</option><option value="zh">中文</option><option value="en">English</option>
+      </select>
+      <p class="fhint">首页输入框的「转写语言」会以此作为初值。</p>
+    </div>
+    <div class="field">
+      <div class="fhead"><label class="flabel" for="g_backend">转写后端</label></div>
+      <select id="g_backend" onchange="markDirty()">
+        <option value="mlx">mlx-whisper（Apple Silicon GPU，推荐）</option>
+        <option value="faster-whisper">faster-whisper（CPU/其他平台）</option>
+      </select>
+      <p class="fhint">本机检测到的模型：<span id="g_models" style="font-family:var(--mono)"></span></p>
+    </div>
+    <div class="field">
+      <div class="fhead"><label class="flabel" for="g_asr_model">ASR 模型名</label></div>
+      <input id="g_asr_model" placeholder="留空使用默认（whisper-large-v3-turbo）" oninput="markDirty()">
+      <p class="fhint">对应 --model 参数；本地缓存目录优先。</p>
+    </div>
+    <div class="field">
+      <div class="fhead"><label class="flabel" for="g_max_chars">单次直读上限（字符）</label></div>
+      <input id="g_max_chars" inputmode="numeric" placeholder="75000" oninput="markDirty()">
+      <p class="fhint">文字稿超过此长度会切换为「分段精读 → 汇总」模式。</p>
+    </div>
+    <div class="field">
+      <div class="fhead"><label class="flabel" for="g_no_subs">默认强制语音转写</label></div>
+      <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text)">
+        <input type="checkbox" id="g_no_subs" style="width:auto" onchange="markDirty()"> 忽略平台字幕，一律本地转写
+      </label>
+      <p class="fhint">平台字幕通常更快更准、且零转写成本；只有怀疑字幕质量时才需要打开。</p>
+    </div>
+  </section>
+
+  <section class="pane" id="pane-mcp" style="display:none">
+    <div class="field" style="border-top:none">
+      <div class="fhead"><label class="flabel">已配置的 MCP 服务器</label></div>
+      <p class="fhint">配置任意 stdio MCP 服务器；文章上方的发布下拉框会出现它们的所有工具。密钥支持 <code>${VAR}</code> 引用 .env，避免存两份。</p>
+    </div>
     <div class="srvlist" id="srvlist"></div>
     <div class="frm">
       <div><label>名称</label><input id="m_name" placeholder="notion" spellcheck="false"></div>
@@ -307,14 +486,20 @@
         <span id="m_msg" style="font-size:12.5px;color:var(--dim)"></span>
       </div>
     </div>
-  </details>
+  </section>
 
-  <div id="lib">
-    <h2>历史文章</h2>
-    <div class="grid" id="libgrid"></div>
-    <div id="empty-lib">还没有生成过任何文章。</div>
+  <section class="pane" id="pane-storage" style="display:none">
+    <div id="storagerows"></div>
+  </section>
+
+  <div class="savebar" id="savebar">
+    <span class="dot"></span><span class="msg">有未保存的更改</span>
+    <span style="flex:1"></span>
+    <button class="btn mini" onclick="loadSettings()">放弃更改</button>
+    <button class="btn primary mini" onclick="saveSettings()">保存</button>
   </div>
-</div>
+</div><!-- /settings -->
+</div><!-- /wrap -->
 
 <div id="toast"></div>
 
@@ -517,6 +702,124 @@ async function pushArticle() {
   btn.disabled = false; btn.textContent = "✦ 发布";
 }
 
+/* ---------------- 设置 ---------------- */
+const SECRET_KEYS = ["DEEPSEEK_API_KEY", "DEEPSEEK_MODEL", "NOTION_TOKEN", "NOTION_DATABASE_ID", "NOTION_PARENT_PAGE_ID"];
+
+async function openSettings() {
+  $("main").style.display = "none";
+  $("settings").style.display = "block";
+  window.scrollTo({ top: 0 });
+  await loadSettings();
+  loadMcp();
+}
+
+function closeSettings() {
+  $("settings").style.display = "none";
+  $("main").style.display = "block";
+  window.scrollTo({ top: 0 });
+  loadLibrary();
+}
+
+function switchTab(name) {
+  document.querySelectorAll(".tab").forEach((t) => t.setAttribute("data-active", String(t.dataset.tab === name)));
+  document.querySelectorAll(".pane").forEach((p) => { p.style.display = p.id === "pane-" + name ? "block" : "none"; });
+  if (name === "mcp") loadMcp();
+}
+
+const markDirty = () => $("savebar").classList.add("dirty");
+const clearDirty = () => $("savebar").classList.remove("dirty");
+
+async function loadSettings() {
+  const d = await (await fetch("/api/settings")).json();
+  const p = d.profile || {}, g = d.generation || {}, s = d.storage || {};
+  $("s_name").value = p.name || "";
+  $("s_interests").value = p.interests || "";
+  $("s_plang").value = p.language || "zh";
+  SECRET_KEYS.forEach((k) => { const el = $("k_" + k); if (el) el.value = ""; });
+  for (const [k, v] of Object.entries(d.secrets || {})) {
+    const tag = $("st_" + k);
+    if (!tag) continue;
+    tag.textContent = v.configured ? "已配置 " + v.masked : "未配置";
+    tag.className = "fstate" + (v.configured ? " ok" : "");
+  }
+  $("g_language").value = g.language || "";
+  $("g_backend").value = g.backend || "mlx";
+  $("g_asr_model").value = g.asr_model || "";
+  $("g_max_chars").value = g.max_chars || 75000;
+  $("g_no_subs").checked = !!g.no_subs;
+  $("g_models").textContent = (s.models || []).join("、") || "（未检测到本地模型）";
+  $("storagerows").innerHTML = [
+    ["输出目录", s.output_dir], ["已生成", `${s.episodes} 集 · ${s.size_mb} MB`],
+    ["本地模型", (s.models || []).join("、") || "—"],
+    ["设置文件", s.settings_path], ["环境变量", s.env_path],
+  ].map(([k, v]) => `<div class="inforow"><span class="k">${esc(k)}</span><span class="v">${esc(String(v))}</span></div>`).join("");
+  applyDefaultsToComposer(g);
+  clearDirty();
+}
+
+function applyDefaultsToComposer(g) {
+  if (!g) return;
+  $("lang").value = g.language || "auto";
+  $("model").value = g.asr_model || "";
+  $("no_subs").checked = !!g.no_subs;
+}
+
+async function saveSettings() {
+  const payload = {
+    profile: {
+      name: $("s_name").value.trim(),
+      interests: $("s_interests").value.trim(),
+      language: $("s_plang").value,
+    },
+    generation: {
+      language: $("g_language").value,
+      backend: $("g_backend").value,
+      asr_model: $("g_asr_model").value.trim(),
+      max_chars: parseInt($("g_max_chars").value, 10) || 75000,
+      no_subs: $("g_no_subs").checked,
+    },
+    secrets: {},
+  };
+  // 密钥留空 = 不改动，因此只提交真正输入的字段
+  SECRET_KEYS.forEach((k) => { const el = $("k_" + k); if (el && el.value.trim()) payload.secrets[k] = el.value.trim(); });
+  const resp = await fetch("/api/settings", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
+  });
+  const d = await resp.json();
+  if (!resp.ok) { toast("⚠ " + esc(d.error || "保存失败")); return; }
+  await loadSettings();
+  toast(d.env_changed && d.env_changed.length
+    ? `✦ 已保存，并写回 .env：${esc(d.env_changed.join("、"))}`
+    : "✦ 已保存");
+}
+
+async function verifyKey(what, btn) {
+  const out = $("v_" + what), keyName = what === "deepseek" ? "DEEPSEEK_API_KEY" : "NOTION_TOKEN";
+  const typed = ($("k_" + keyName).value || "").trim();
+  btn.disabled = true;
+  out.className = "vres"; out.textContent = "检测中…";
+  try {
+    // 先落盘再检测：否则测试的是旧密钥，会误导
+    if (typed) {
+      await fetch("/api/settings", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ secrets: { [keyName]: typed } }),
+      });
+      await loadSettings();
+      btn.disabled = true;
+    }
+    const resp = await fetch("/api/settings/verify", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ what }),
+    });
+    const d = await resp.json();
+    out.className = "vres " + (d.ok ? "ok" : "bad");
+    out.textContent = (d.ok ? "✓ " : "✕ ") + (d.detail || d.error || "");
+  } catch (e) {
+    out.className = "vres bad"; out.textContent = "✕ " + String(e);
+  }
+  btn.disabled = false;
+}
+
 /* ---------------- MCP ---------------- */
 let mcpServers = [], mcpTools = {}, mcpExamples = [], notionDbId = "";
 
@@ -691,6 +994,7 @@ document.addEventListener("keydown", (e) => {
 });
 loadLibrary();
 loadMcp();
+loadSettings();
 </script>
 </body>
 </html>

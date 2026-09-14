@@ -7,3 +7,4 @@ output/
 
 # MCP 服务器配置（可能含密钥）
 mcp_servers.json
+settings.json

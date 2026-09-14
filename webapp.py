@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shlex
 import threading
 import time
@@ -16,6 +17,7 @@ from flask import Flask, Response, jsonify, request, send_from_directory
 
 from podcast_article import mcp_client, mcp_config, notion
 from podcast_article import publish as publish_mod
+from podcast_article import settings as settings_mod
 from podcast_article.config import PROJECT_ROOT
 from podcast_article.pipeline import Pipeline
 
@@ -53,16 +55,20 @@ def _new_job(url: str, opts: dict) -> str:
 
     def worker() -> None:
         try:
+            # 请求没有显式指定时，落到设置页里的「生成默认值」
+            defaults = settings_mod.load()["generation"]
+            lang = opts.get("lang") or defaults.get("language") or "auto"
             pipe = Pipeline(
                 url=url,
                 output_dir=OUTPUT_ROOT,
-                language=opts.get("lang", "auto"),
-                backend=opts.get("backend", "auto"),
-                asr_model=opts.get("model") or None,
-                no_subs=bool(opts.get("no_subs")),
+                language=lang,
+                backend=opts.get("backend") or defaults.get("backend") or "auto",
+                asr_model=(opts.get("model") or defaults.get("asr_model") or None),
+                no_subs=bool(opts.get("no_subs", defaults.get("no_subs"))),
                 force_transcript=bool(opts.get("force_transcript")),
                 force_article=bool(opts.get("force_article")),
                 pick=int(opts.get("pick", 1)),
+                max_chars=int(opts.get("max_chars") or defaults.get("max_chars") or 75_000),
                 log=log,
                 progress=progress,
             )
@@ -231,6 +237,72 @@ def _publish_with(extra: dict | None = None):
 def api_publish():
     """发布文章。body: {"dir", "target": "builtin"|"mcp:<server>:<tool>", "template": {...}}"""
     return _publish_with()
+
+
+@app.get("/api/settings")
+def api_settings_get():
+    """设置页数据：个人资料、生成默认值、密钥状态（打码）、存储信息。"""
+    return jsonify({
+        "profile": settings_mod.load()["profile"],
+        "generation": settings_mod.load()["generation"],
+        "secrets": settings_mod.secret_status(),
+        "storage": settings_mod.storage_info(),
+    })
+
+
+@app.post("/api/settings")
+def api_settings_post():
+    """保存设置。body: {profile, generation, secrets}
+
+    secrets 里空字符串表示保持原值（密钥不会被误清空），非空则写入 .env。
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    saved = settings_mod.save(profile=data.get("profile"), generation=data.get("generation"))
+    changed = settings_mod.update_env(data.get("secrets") or {})
+    if changed:
+        # 让当前进程立即用上新值
+        for key in changed:
+            os.environ[key] = settings_mod.read_env().get(key, os.environ.get(key, ""))
+    return jsonify({
+        "profile": saved["profile"],
+        "generation": saved["generation"],
+        "secrets": settings_mod.secret_status(),
+        "env_changed": changed,
+    })
+
+
+@app.post("/api/settings/verify")
+def api_settings_verify():
+    """实测当前配置是否可用。body: {"what": "deepseek"|"notion"}"""
+    what = (request.get_json(force=True, silent=True) or {}).get("what", "")
+    if what == "deepseek":
+        from openai import OpenAI
+
+        from podcast_article import config
+
+        try:
+            client = OpenAI(
+                api_key=config.deepseek_api_key(), base_url=config.DEEPSEEK_BASE_URL
+            )
+            models = [m.id for m in client.models.list().data]
+        except Exception as exc:
+            return jsonify({"ok": False, "detail": f"{type(exc).__name__}: {exc}"[:300]})
+        return jsonify({"ok": True, "detail": "可用模型：" + "、".join(models[:8])})
+
+    if what == "notion":
+        try:
+            resp = notion._session().get(
+                f"{notion.API}/users/me", headers=notion._headers(), timeout=20
+            )
+        except Exception as exc:
+            return jsonify({"ok": False, "detail": f"{type(exc).__name__}: {exc}"[:300]})
+        if resp.status_code != 200:
+            return jsonify({"ok": False, "detail": f"HTTP {resp.status_code}：{resp.text[:200]}"})
+        body = resp.json()
+        ws = (body.get("bot") or {}).get("workspace_name", "")
+        return jsonify({"ok": True, "detail": f"已连接 {ws}（integration：{body.get('name')}）"})
+
+    return jsonify({"error": f"未知的检查项：{what}"}), 400
 
 
 @app.get("/api/mcp/servers")
