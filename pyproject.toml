@@ -1,0 +1,31 @@
+[project]
+name = "podcast-article"
+version = "0.1.0"
+description = "把播客/视频链接变成一篇有价值的深度文章：抓取 → 转写 → DeepSeek 精读提炼"
+requires-python = ">=3.10"
+dependencies = [
+    "yt-dlp>=2024.10.0",
+    "feedparser>=6.0.11",
+    "requests>=2.32.0",
+    "rich>=13.7.0",
+    "openai>=1.40.0",
+    "mlx-whisper>=0.4.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "mlx-whisper>=0.4.3",
+    "flask>=3.1.3",
+    "markdown>=3.10.3",
+    "mcp<2",
+]
+
+[project.optional-dependencies]
+faster = ["faster-whisper>=1.0.0"]
+
+[project.scripts]
+podcast-article = "podcast_article.cli:main"
+podcast-article-mcp = "podcast_article.mcp_server:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+package = true
