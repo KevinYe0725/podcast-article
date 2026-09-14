@@ -29,3 +29,8 @@ build-backend = "hatchling.build"
 
 [tool.uv]
 package = true
+
+[dependency-groups]
+dev = [
+    "pillow>=12.3.0",
+]
