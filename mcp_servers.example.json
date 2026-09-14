@@ -1,0 +1,19 @@
+{
+  "_说明": "复制为 mcp_servers.json（该文件已 gitignore，可存密钥）后即可被 Web 界面的「MCP 服务器」面板读取；也可以在界面里添加，效果相同。env 的值支持 ${VAR} 引用 .env。",
+  "servers": [
+    {
+      "name": "notion",
+      "command": "notion-mcp-server",
+      "args": [],
+      "env": { "NOTION_TOKEN": "${NOTION_TOKEN}" },
+      "note": "Notion 官方 MCP Server：npm i -g @notionhq/notion-mcp-server"
+    },
+    {
+      "name": "podcast-article",
+      "command": "uv",
+      "args": ["--directory", "/path/to/podcast-article", "run", "podcast-article-mcp"],
+      "env": {},
+      "note": "本项目自带的 MCP Server"
+    }
+  ]
+}

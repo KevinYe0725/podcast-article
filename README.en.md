@@ -126,6 +126,41 @@ Four tools: `analyze_podcast` (full pipeline), `list_episodes`, `get_article`, `
 
 Page bodies are native Notion blocks: headings, quotes, lists, tables, inline styles, plus a source link at the end; database properties like "podcast / date / duration / source" are auto-filled.
 
+## 🔌 Configure MCP servers in the UI
+
+The **"MCP servers"** panel at the bottom of the Web UI configures any stdio MCP server — no config file editing:
+
+1. Fill in name / command / args / env vars → **Add server**
+2. Hit **Test** → the server is launched live and all its tools are listed (click a tool chip to make it the publish target)
+3. The **publish dropdown** above the article then offers "Built-in Notion integration" plus every tool of every server
+4. For MCP targets, use an **argument template** to map article fields onto that tool's input
+
+Env values support `${VAR}` references to `.env`, so secrets are stored once. Config lives in `mcp_servers.json` (gitignored, may contain secrets); format: `mcp_servers.example.json`.
+
+**Example: the official Notion MCP server**
+
+```bash
+npm i -g @notionhq/notion-mcp-server
+```
+
+In the UI: name `notion`, command `notion-mcp-server`, env `NOTION_TOKEN=${NOTION_TOKEN}`. Test should list 24 tools. Publish template (adjust property names to your database):
+
+```json
+{
+  "parent": { "database_id": "your-database-id" },
+  "properties": {
+    "标题": { "title": [{ "text": { "content": "{{title}}" } }] },
+    "播客": { "rich_text": [{ "text": { "content": "{{podcast}}" } }] },
+    "来源": { "url": "{{url}}" }
+  },
+  "children": "{{blocks}}"
+}
+```
+
+Placeholders: `{{title}}` `{{podcast}}` `{{date}}` `{{duration}}` `{{url}}` `{{content}}` (full markdown) `{{blocks}}` (Notion block array, injected as JSON — feeds straight into `API-post-page`'s `children`).
+
+> The built-in Notion integration and the MCP route coexist: the former is a single REST call, the latter reuses the MCP ecosystem you already have configured elsewhere.
+
 ## 💰 Cost
 
 | Stage | How | Cost |

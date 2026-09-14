@@ -147,6 +147,41 @@
   .btn:disabled { opacity: .5; cursor: not-allowed; }
   .btn:focus-visible, #go:focus-visible, #url:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
   .btn .k { color: var(--dim); font-size: 11px; }
+  .btn.mini { padding: 5px 12px; font-size: 12.5px; }
+
+  /* ---- MCP 面板 ---- */
+  .mcpbox { margin: 54px 0 10px; border: 1px solid var(--border); border-radius: 14px; padding: 16px 20px 20px; background: var(--bg2); }
+  .mcpbox > summary { cursor: pointer; font-weight: 600; font-size: 15px; list-style: none; display: flex; align-items: center; gap: 9px; }
+  .mcpbox > summary::-webkit-details-marker { display: none; }
+  .mcpbox > summary .arw { color: var(--dim); transition: transform .15s; display: inline-block; font-size: 12px; }
+  .mcpbox[open] > summary .arw { transform: rotate(90deg); }
+  .mcpbox > summary .sub { font-weight: 400; font-size: 12.5px; color: var(--dim); }
+  .srv { display: flex; align-items: flex-start; gap: 14px; padding: 13px 0; border-top: 1px solid var(--border); }
+  .mcpbox > details > .srv:first-child, .srvlist .srv:first-child { border-top: none; }
+  .srv .info { flex: 1; min-width: 0; }
+  .srv .nm { font-weight: 600; font-size: 14px; font-family: var(--mono); display: flex; align-items: center; gap: 8px; }
+  .srv .cmd { font-size: 11.5px; color: var(--dim); font-family: var(--mono); margin-top: 3px; word-break: break-all; }
+  .srv .acts { display: flex; gap: 6px; flex-shrink: 0; }
+  .tag { font-size: 10.5px; border-radius: 999px; padding: 1px 8px; border: 1px solid var(--border2); color: var(--dim); font-weight: 500; }
+  .tag.ok { color: var(--green); border-color: #b8e6d5; background: #f2fbf8; }
+  .tag.bad { color: var(--red); border-color: #f7cfd1; background: #fdf4f4; }
+  .tools { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
+  .tool { font-size: 11.5px; font-family: var(--mono); border: 1px solid var(--border2); border-radius: 999px; padding: 3px 10px; cursor: pointer; color: var(--text); background: #fff; transition: .12s; }
+  .tool:hover { border-color: var(--green); color: var(--green); background: #f2fbf8; }
+  .frm { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); }
+  .frm .full { grid-column: 1 / -1; }
+  .frm input, .frm textarea, #tpl { width: 100%; border: 1px solid var(--border2); border-radius: 10px; padding: 9px 12px; font-size: 13px; font-family: var(--font); background: #fff; color: var(--text); }
+  .frm textarea { font-family: var(--mono); font-size: 12.5px; min-height: 58px; resize: vertical; }
+  .frm label { display: block; font-size: 11.5px; color: var(--dim); margin-bottom: 4px; }
+
+  /* ---- 发布控件 ---- */
+  .pubrow { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  select.sel { border: 1px solid var(--border2); border-radius: 999px; padding: 9px 14px; font-size: 13.5px; font-family: var(--font); background: #fff; color: var(--text); max-width: 340px; }
+  #tplbox { margin-bottom: 24px; }
+  #tplbox summary { cursor: pointer; font-size: 12.5px; color: var(--dim); }
+  #tpl { min-height: 168px; margin-top: 9px; font-family: var(--mono); font-size: 12.5px; resize: vertical; }
+  .tplhint { font-size: 11.5px; color: var(--dim); margin-top: 7px; line-height: 1.7; }
+  .tplhint code { font-family: var(--mono); background: var(--bg2); padding: 1px 5px; border-radius: 5px; }
   #article { font-size: 15px; line-height: 1.85; }
   @media (min-width: 1080px) { #result:not(.withTranscript) #article { max-width: 800px; } }
   #article h1 { font-size: 30px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.3; margin: 8px 0 18px; }
@@ -237,13 +272,42 @@
   <div id="result">
     <div class="rmeta" id="rmeta"></div>
     <div class="btnrow">
-      <button class="btn primary" id="nbtn" onclick="pushNotion()">✦ 写入 Notion</button>
+      <div class="pubrow">
+        <select class="sel" id="dest" onchange="onDestChange()"></select>
+        <button class="btn primary" id="nbtn" onclick="pushArticle()">✦ 发布</button>
+      </div>
       <button class="btn" id="tbtn" onclick="toggleTranscript()">查看文字稿</button>
       <button class="btn" onclick="regenArticle()">重新生成文章</button>
     </div>
+    <details id="tplbox" style="display:none">
+      <summary>参数模板（把文章字段映射到该 MCP 工具的入参）</summary>
+      <textarea id="tpl" spellcheck="false"></textarea>
+      <div class="tplhint">
+        占位符：<code>{{title}}</code> <code>{{podcast}}</code> <code>{{date}}</code>
+        <code>{{duration}}</code> <code>{{url}}</code> <code>{{content}}</code>（markdown 全文）
+        <code>{{blocks}}</code>（Notion 块数组，会作为 JSON 注入）
+      </div>
+    </details>
     <article id="article"></article>
     <div id="transcript"></div>
   </div>
+
+  <details class="mcpbox" id="mcpbox">
+    <summary><span class="arw">▸</span> MCP 服务器 <span class="sub">配置任意 MCP 服务器，文章可直接发布到它</span></summary>
+    <div class="srvlist" id="srvlist"></div>
+    <div class="frm">
+      <div><label>名称</label><input id="m_name" placeholder="notion" spellcheck="false"></div>
+      <div><label>启动命令</label><input id="m_cmd" placeholder="notion-mcp-server 或 npx / uv" spellcheck="false"></div>
+      <div class="full"><label>参数（空格分隔）</label><input id="m_args" placeholder="-y @notionhq/notion-mcp-server" spellcheck="false"></div>
+      <div class="full"><label>环境变量（每行 KEY=VALUE，支持 ${VAR} 引用 .env）</label><textarea id="m_env" placeholder="NOTION_TOKEN=${NOTION_TOKEN}" spellcheck="false"></textarea></div>
+      <div class="full" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <button class="btn primary mini" onclick="addServer()">添加服务器</button>
+        <button class="btn mini" onclick="fillExample(0)">填入官方 Notion MCP</button>
+        <button class="btn mini" onclick="fillExample(1)">填入本项目 MCP</button>
+        <span id="m_msg" style="font-size:12.5px;color:var(--dim)"></span>
+      </div>
+    </div>
+  </details>
 
   <div id="lib">
     <h2>历史文章</h2>
@@ -435,20 +499,145 @@ function regenArticle() {
   startRun({ url: curUrl, force_article: true });
 }
 
-async function pushNotion() {
+async function pushArticle() {
   if (!curWorkdir) return;
-  const btn = $("nbtn");
-  btn.disabled = true; btn.textContent = "写入中…";
+  const btn = $("nbtn"), target = $("dest").value;
+  btn.disabled = true; btn.textContent = "发布中…";
   try {
-    const resp = await fetch("/api/notion", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ dir: curWorkdir }),
+    const body = { dir: curWorkdir, target };
+    if (target.startsWith("mcp:")) body.template = $("tpl").value;
+    const resp = await fetch("/api/publish", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
     });
     const data = await resp.json();
-    if (resp.ok) toast(`✦ 已写入 Notion · <a href="${esc(data.url)}" target="_blank">打开页面</a>`);
-    else toast("⚠ " + esc(data.error || "写入失败"));
+    if (!resp.ok) toast("⚠ " + esc(data.error || "发布失败"));
+    else if (data.url) toast(`✦ 已发布（${esc(data.via)}）· <a href="${esc(data.url)}" target="_blank">打开页面</a>`);
+    else toast(`✦ 已发布（${esc(data.via)}）· ${esc((data.text || "").slice(0, 120))}`);
   } catch (e) { toast("⚠ " + esc(String(e))); }
-  btn.disabled = false; btn.textContent = "✦ 写入 Notion";
+  btn.disabled = false; btn.textContent = "✦ 发布";
+}
+
+/* ---------------- MCP ---------------- */
+let mcpServers = [], mcpTools = {}, mcpExamples = [], notionDbId = "";
+
+const NOTION_TPL = (dbId) => ({
+  parent: { database_id: dbId || "<你的数据库 ID>" },
+  properties: {
+    "标题": { title: [{ text: { content: "{{title}}" } }] },
+    "播客": { rich_text: [{ text: { content: "{{podcast}}" } }] },
+    "来源": { url: "{{url}}" },
+  },
+  children: "{{blocks}}",
+});
+
+async function loadMcp() {
+  try {
+    const resp = await fetch("/api/mcp/servers");
+    const d = await resp.json();
+    mcpServers = d.servers || []; mcpExamples = d.examples || [];
+    notionDbId = (d.defaults || {}).notion_database_id || "";
+    renderServers();
+    mcpServers.slice(0, 5).forEach((s) => testServer(s.name, null, true));
+  } catch (e) { /* 服务未就绪时静默 */ }
+}
+
+function renderServers() {
+  const el = $("srvlist");
+  if (!mcpServers.length) {
+    el.innerHTML = `<div style="font-size:13px;color:var(--dim);padding:14px 0 2px">还没有配置 MCP 服务器。用下面的表单添加，或点「填入官方 Notion MCP」。</div>`;
+    refreshDest(); return;
+  }
+  el.innerHTML = mcpServers.map((s) => `
+    <div class="srv">
+      <div class="info">
+        <div class="nm">${esc(s.name)}${s.has_secret ? ' <span class="tag">含密钥</span>' : ""}<span class="tag" id="tag-${esc(s.name)}">未测试</span></div>
+        <div class="cmd">${esc([s.command, ...(s.args || [])].join(" "))}${Object.keys(s.env || {}).length ? " ｜ env: " + esc(Object.keys(s.env).join(", ")) : ""}</div>
+        <div class="tools" id="tools-${esc(s.name)}"></div>
+      </div>
+      <div class="acts">
+        <button class="btn mini" onclick="testServer('${esc(s.name)}', this)">测试</button>
+        <button class="btn mini" onclick="delServer('${esc(s.name)}')">删除</button>
+      </div>
+    </div>`).join("");
+  refreshDest();
+}
+
+async function testServer(name, btn, silent) {
+  const tag = $("tag-" + name), box = $("tools-" + name);
+  if (btn) { btn.disabled = true; btn.textContent = "连接中…"; }
+  if (tag && !silent) tag.textContent = "连接中…";
+  try {
+    const resp = await fetch("/api/mcp/test", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }),
+    });
+    const d = await resp.json();
+    if (!resp.ok) throw new Error(d.error || "连接失败");
+    mcpTools[name] = d.tools || [];
+    if (tag) { tag.className = "tag ok"; tag.textContent = `${d.server || "已连接"} · ${mcpTools[name].length} 个工具`; }
+    if (box) box.innerHTML = mcpTools[name].slice(0, 40).map((t) =>
+      `<span class="tool" title="${esc(t.description || "")}" onclick="pickTool('${esc(name)}','${esc(t.name)}')">${esc(t.name)}</span>`).join("");
+    refreshDest();
+  } catch (e) {
+    delete mcpTools[name];
+    if (tag && !silent) { tag.className = "tag bad"; tag.textContent = "连接失败"; }
+    if (box && !silent) box.innerHTML = `<span style="font-size:12px;color:var(--red)">${esc(String(e.message || e))}</span>`;
+  }
+  if (btn) { btn.disabled = false; btn.textContent = "测试"; }
+}
+
+function refreshDest() {
+  const sel = $("dest"), cur = sel.value;
+  const opts = ['<option value="builtin">内置 Notion 集成（REST）</option>'];
+  for (const [name, tools] of Object.entries(mcpTools))
+    for (const t of tools) opts.push(`<option value="mcp:${esc(name)}:${esc(t.name)}">MCP · ${esc(name)} · ${esc(t.name)}</option>`);
+  sel.innerHTML = opts.join("");
+  if (cur && [...sel.options].some((o) => o.value === cur)) sel.value = cur;
+  onDestChange();
+}
+
+function onDestChange() {
+  const isMcp = $("dest").value.startsWith("mcp:");
+  $("tplbox").style.display = isMcp ? "block" : "none";
+  if (isMcp && !$("tpl").value.trim()) $("tpl").value = JSON.stringify(NOTION_TPL(notionDbId), null, 2);
+}
+
+function pickTool(name, tool) {
+  refreshDest();
+  const v = `mcp:${name}:${tool}`;
+  if ([...$("dest").options].some((o) => o.value === v)) $("dest").value = v;
+  onDestChange();
+  $("dest").scrollIntoView({ behavior: "smooth", block: "center" });
+  toast(`发布目标：MCP · ${esc(name)} · ${esc(tool)}`);
+}
+
+async function addServer() {
+  const msg = $("m_msg");
+  msg.textContent = "保存中…";
+  const resp = await fetch("/api/mcp/servers", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: $("m_name").value, command: $("m_cmd").value, args: $("m_args").value, env: $("m_env").value }),
+  });
+  const d = await resp.json();
+  if (!resp.ok) { msg.textContent = "⚠ " + (d.error || "添加失败"); return; }
+  msg.textContent = "已添加 " + d.server.name;
+  ["m_name", "m_cmd", "m_args", "m_env"].forEach((id) => { $(id).value = ""; });
+  loadMcp();
+}
+
+async function delServer(name) {
+  if (!confirm(`删除 MCP 服务器「${name}」？`)) return;
+  await fetch("/api/mcp/servers/" + encodeURIComponent(name), { method: "DELETE" });
+  delete mcpTools[name];
+  loadMcp();
+}
+
+function fillExample(i) {
+  const ex = mcpExamples[i];
+  if (!ex) return;
+  $("m_name").value = ex.name; $("m_cmd").value = ex.command;
+  $("m_args").value = (ex.args || []).join(" ");
+  $("m_env").value = Object.entries(ex.env || {}).map(([k, v]) => `${k}=${v}`).join("\n");
+  $("m_msg").textContent = ex.note || "";
 }
 
 async function loadLibrary() {
@@ -501,6 +690,7 @@ document.addEventListener("keydown", (e) => {
   if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && !$("go").disabled) { e.preventDefault(); startRun(); }
 });
 loadLibrary();
+loadMcp();
 </script>
 </body>
 </html>

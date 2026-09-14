@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 import threading
 import time
 import uuid
@@ -13,7 +14,8 @@ from pathlib import Path
 import markdown
 from flask import Flask, Response, jsonify, request, send_from_directory
 
-from podcast_article import notion
+from podcast_article import mcp_client, mcp_config, notion
+from podcast_article import publish as publish_mod
 from podcast_article.config import PROJECT_ROOT
 from podcast_article.pipeline import Pipeline
 
@@ -177,33 +179,163 @@ def api_stream(job_id: str):
 
 @app.post("/api/notion")
 def api_notion():
-    """把某一集的文章写入 Notion。body: {"dir": "<输出目录名>"}"""
-    data = request.get_json(force=True, silent=True) or {}
-    dir_name = (data.get("dir") or "").strip()
-    base = (OUTPUT_ROOT / dir_name).resolve()
+    """把某一集的文章写入内置 Notion 集成。body: {"dir": "<输出目录名>"}"""
+    return _publish_with({"target": "builtin"})
+
+
+def _episode_ctx(dir_name: str):
+    """读取一集的文章与元信息，组装成发布上下文。返回 (ctx, error_response)。"""
+    base = (OUTPUT_ROOT / (dir_name or "")).resolve()
     if not dir_name or not base.is_dir() or OUTPUT_ROOT.resolve() not in base.parents:
-        return jsonify({"error": "目录不存在"}), 404
+        return None, (jsonify({"error": "目录不存在"}), 404)
     article = base / "article.md"
-    meta_file = base / "meta.json"
     if not article.is_file():
-        return jsonify({"error": "该单集还没有生成文章"}), 400
+        return None, (jsonify({"error": "该单集还没有生成文章"}), 400)
     try:
-        meta = json.loads(meta_file.read_text(encoding="utf-8"))
+        meta = json.loads((base / "meta.json").read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         meta = {}
-    title = f"{meta.get('podcast', '')}｜{meta.get('title', '')}".strip("｜") or dir_name
+    content = article.read_text(encoding="utf-8")
+    ctx = {
+        "title": f"{meta.get('podcast', '')}｜{meta.get('title', '')}".strip("｜") or dir_name,
+        "podcast": meta.get("podcast") or "",
+        "date": meta.get("pub_date") or "",
+        "duration": meta.get("duration"),
+        "url": meta.get("url") or "",
+        "content": content,
+        "blocks": notion.markdown_to_blocks(content),
+    }
+    return ctx, None
+
+
+def _publish_with(extra: dict | None = None):
+    """把文章发布到指定目标：内置 Notion，或 mcp:<服务器>:<工具>。"""
+    data = {**(request.get_json(force=True, silent=True) or {}), **(extra or {})}
+    ctx, err = _episode_ctx((data.get("dir") or "").strip())
+    if err:
+        return err
+    target = (data.get("target") or "builtin").strip()
+    template = data.get("template")
+    if isinstance(template, str):
+        template = json.loads(template) if template.strip() else None
     try:
-        url = notion.push_article(
-            title=title,
-            markdown_text=article.read_text(encoding="utf-8"),
-            source_url=meta.get("url"),
-            podcast=meta.get("podcast"),
-            pub_date=meta.get("pub_date"),
-            duration=meta.get("duration"),
-        )
+        result = publish_mod.publish(ctx, target=target, template=template)
+    except json.JSONDecodeError as exc:
+        return jsonify({"error": f"参数模板不是合法 JSON：{exc}"}), 400
     except Exception as exc:
         return jsonify({"error": str(exc)}), 400
-    return jsonify({"url": url})
+    return jsonify(result)
+
+
+@app.post("/api/publish")
+def api_publish():
+    """发布文章。body: {"dir", "target": "builtin"|"mcp:<server>:<tool>", "template": {...}}"""
+    return _publish_with()
+
+
+@app.get("/api/mcp/servers")
+def api_mcp_servers():
+    """已配置的 MCP 服务器（密钥打码）+ 可一键添加的示例 + 前端默认值。"""
+    from podcast_article import config
+
+    return jsonify({
+        "servers": [mcp_config.mask_entry(s) for s in mcp_config.load_servers()],
+        "examples": mcp_config.EXAMPLES,
+        "defaults": {
+            "notion_database_id": config.notion_database_id(),
+            "notion_parent_page_id": config.notion_parent_page_id(),
+        },
+    })
+
+
+@app.post("/api/mcp/servers")
+def api_mcp_save():
+    """新增或更新一台 MCP 服务器。env 支持 {"K": "V"} 或 "K=V\\nK2=V2"，args 支持列表或空格分隔字符串。"""
+    data = request.get_json(force=True, silent=True) or {}
+    args = data.get("args") or []
+    if isinstance(args, str):
+        args = shlex.split(args)
+    env = data.get("env") or {}
+    if isinstance(env, str):
+        env = {}
+        for line in data.get("env", "").splitlines():
+            if "=" in line:
+                k, v = line.split("=", 1)
+                env[k.strip()] = v.strip()
+    elif isinstance(env, dict):
+        # 前端回显的密钥是打码值（含 …），别用它覆盖真实密钥
+        env = {k: v for k, v in env.items() if "…" not in str(v)}
+    try:
+        entry = mcp_config.upsert_server({
+            "name": data.get("name"), "command": data.get("command"),
+            "args": args, "env": env, "note": data.get("note", ""),
+        })
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"server": mcp_config.mask_entry(entry)})
+
+
+@app.delete("/api/mcp/servers/<name>")
+def api_mcp_delete(name: str):
+    if not mcp_config.delete_server(name):
+        return jsonify({"error": f"未找到服务器：{name}"}), 404
+    return jsonify({"ok": True})
+
+
+def _resolve_entry(data: dict) -> dict | None:
+    """优先用已保存的服务器；否则用请求里直接给的 command/args/env（用于「先测再存」）。"""
+    name = (data.get("name") or "").strip()
+    if name and not data.get("command"):
+        entry = mcp_config.get_server(name)
+        if not entry:
+            raise ValueError(f"未找到服务器：{name}")
+        return entry
+    if data.get("command"):
+        args = data.get("args") or []
+        if isinstance(args, str):
+            args = shlex.split(args)
+        env = data.get("env") or {}
+        if isinstance(env, str):
+            env = dict(
+                (line.split("=", 1)[0].strip(), line.split("=", 1)[1].strip())
+                for line in env.splitlines() if "=" in line
+            )
+        return {"name": name or "(未保存)", "command": data["command"], "args": args, "env": env}
+    raise ValueError("请提供服务器名称或启动命令")
+
+
+@app.post("/api/mcp/test")
+def api_mcp_test():
+    """启动服务器并列出工具。body: {"name": "..."} 或 {"command","args","env"}"""
+    data = request.get_json(force=True, silent=True) or {}
+    try:
+        entry = _resolve_entry(data)
+        result = mcp_client.list_tools(
+            command=entry["command"], args=entry.get("args"),
+            env=mcp_config.resolved_env(entry),
+        )
+    except (ValueError, mcp_client.MCPClientError) as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify(result)
+
+
+@app.post("/api/mcp/call")
+def api_mcp_call():
+    """试调用某个工具。body: {"name", "tool", "arguments"}"""
+    data = request.get_json(force=True, silent=True) or {}
+    try:
+        entry = _resolve_entry(data)
+        tool = (data.get("tool") or "").strip()
+        if not tool:
+            raise ValueError("缺少工具名")
+        result = mcp_client.call_tool(
+            command=entry["command"], args=entry.get("args"),
+            env=mcp_config.resolved_env(entry), tool=tool,
+            arguments=data.get("arguments") or {},
+        )
+    except (ValueError, mcp_client.MCPClientError) as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify(result)
 
 
 @app.get("/api/library")

@@ -126,6 +126,41 @@ uv run podcast-article-mcp    # stdio 传输
 
 页面正文是原生 Notion 块：标题层级、引用、列表、表格、行内样式，文末附原文链接；「播客 / 日期 / 时长 / 来源」等数据库属性自动填充。
 
+## 🔌 在界面上配置 MCP 服务器
+
+Web 界面底部的 **「MCP 服务器」** 面板可以直接配置任意 MCP 服务器（stdio），不用改配置文件：
+
+1. 填「名称 / 启动命令 / 参数 / 环境变量」→ **添加服务器**
+2. 点 **测试** → 实时启动该服务器并列出它的全部工具（点工具胶囊即可把它选为发布目标）
+3. 文章下方的**发布下拉框**里就会出现「内置 Notion 集成」+ 各服务器的工具
+4. 选中 MCP 工具后，用**参数模板**把文章字段映射到该工具的入参
+
+环境变量的值支持 `${VAR}` 引用 `.env`，所以密钥不用存两份。配置落在 `mcp_servers.json`（已 gitignore，可含密钥），格式见 `mcp_servers.example.json`。
+
+**示例：接入 Notion 官方 MCP Server**
+
+```bash
+npm i -g @notionhq/notion-mcp-server    # 国内可加 --registry=https://registry.npmmirror.com
+```
+
+界面上填：名称 `notion`、命令 `notion-mcp-server`、环境变量 `NOTION_TOKEN=${NOTION_TOKEN}`，点测试应出现 24 个工具。发布模板（属性名按你的数据库调整）：
+
+```json
+{
+  "parent": { "database_id": "你的数据库 ID" },
+  "properties": {
+    "标题": { "title": [{ "text": { "content": "{{title}}" } }] },
+    "播客": { "rich_text": [{ "text": { "content": "{{podcast}}" } }] },
+    "来源": { "url": "{{url}}" }
+  },
+  "children": "{{blocks}}"
+}
+```
+
+可用占位符：`{{title}}` `{{podcast}}` `{{date}}` `{{duration}}` `{{url}}` `{{content}}`（markdown 全文）`{{blocks}}`（Notion 块数组，作为 JSON 注入，直接喂给 `API-post-page` 的 `children`）。
+
+> 内置 Notion 集成与 MCP 方式可以共存：前者一次调用完成（REST），后者可复用你已经在其他客户端里配好的 MCP 生态。
+
 ## 💰 成本
 
 | 环节 | 方式 | 费用 |
