@@ -11,7 +11,7 @@ from collections import Counter
 
 from openai import OpenAI
 
-from . import config, postprocess, settings
+from . import config, outline, postprocess, settings
 from .util import html_to_text, ts_clock
 
 
@@ -319,6 +319,23 @@ def _segments_to_text(segments: list[dict]) -> str:
     return "\n".join(f"[{ts_clock(s['start'])}] {s['text']}" for s in segments)
 
 
+def _digest_segments(client, model: str, segments: list[dict], max_chars: int,
+                     log=print, progress=None) -> str:
+    """长文字稿：分段精读成素材摘要（供分节写作或单次汇总使用）。"""
+    chunks = _chunk_segments(segments, chunk_chars=max(4_000, max_chars // 3))
+    log(f"[llm] 文字稿较长，分段精读：{len(chunks)} 段")
+    briefs: list[str] = []
+    for i, chunk in enumerate(chunks, 1):
+        log(f"[llm] 精读第 {i}/{len(chunks)} 段…")
+        if progress:
+            progress("llm", {"chunk": i, "total": len(chunks)})
+        briefs.append(
+            _chat(client, model, _CHUNK_SYSTEM, _segments_to_text(chunk), log=log,
+                  max_tokens=4096)
+        )
+    return "\n\n".join(f"## 第 {i} 段素材\n{b}" for i, b in enumerate(briefs, 1))
+
+
 def _finalize(article: str, mode_key: str, log=print) -> str:
     """确定性收尾：拆超长段落、修孤立时间戳、删套话、规范标点、按档位裁到篇幅内。"""
     text, report = postprocess.finalize(article, mode_key)
@@ -342,13 +359,16 @@ def write_article(
     max_chars: int = 75_000,
     llm_model: str | None = None,
     mode: str | None = None,
-    polish: bool = True,
+    polish: bool = False,
+    outlined: bool = True,
     log=print,
     progress=None,
 ) -> str:
     """输入带时间戳的转写片段，输出 Markdown 文章。progress 同 Pipeline。
 
-    mode: concise（精华 1200-1800 字）/ standard（标准 2500-4000 字）/ deep（深度 5000-8000 字）
+    mode:     篇幅档位（concise / standard / deep），决定节数与各节预算
+    outlined: 是否用「大纲 → 逐节写作」流程（篇幅可控、质量更稳）；失败自动退回单次生成
+    polish:   是否额外让模型自查一遍（可选，默认关；格式纪律已由确定性后处理保证）
     """
     client = _client()
     model = llm_model or config.deepseek_model()
@@ -363,8 +383,26 @@ def write_article(
     user_msg = _build_user_message(
         title, podcast, author, shownotes_html, _segments_to_text(segments), profile
     )
+    short_enough = len(user_msg) <= max_chars
 
-    if len(user_msg) <= max_chars:
+    # ---- 主路径：大纲 + 逐节写作（篇幅是算出来的，不是求出来的）
+    if outlined:
+        try:
+            if short_enough:
+                material_body = _segments_to_text(segments)
+            else:
+                material_body = _digest_segments(client, model, segments, max_chars, log, progress)
+            material = outline.build_material(
+                title, podcast, author, shownotes_html, material_body
+            )
+            log(f"[llm] 分节写作 · {mode_key} 档｜素材 {len(material_body)} 字符，"
+                f"预算约 {outline.budget_total(mode_key)} 字")
+            article = outline.write_outlined(client, model, material, mode_key, log, progress)
+            return _finalize(article, mode_key, log)
+        except Exception as exc:
+            log(f"[llm] 分节写作失败（{type(exc).__name__}: {exc}），退回单次生成")
+
+    if short_enough:
         log(f"[llm] 单次直读 · {mode_key} 档：全文 {len(user_msg)} 字符，模型 {model}")
         article = _chat(client, model, system, user_msg, log=log, on_chars=on_chars,
                         max_tokens=MODE_MAX_TOKENS.get(mode_key, 8192))
@@ -373,19 +411,7 @@ def write_article(
         return _finalize(article, mode_key, log)
 
     # 分段精读 -> 汇总
-    chunks = _chunk_segments(segments, chunk_chars=max(4_000, max_chars // 3))
-    log(f"[llm] 文字稿较长（{len(user_msg)} 字符），分段精读：{len(chunks)} 段")
-    briefs: list[str] = []
-    for i, chunk in enumerate(chunks, 1):
-        log(f"[llm] 精读第 {i}/{len(chunks)} 段…")
-        if progress:
-            progress("llm", {"chunk": i, "total": len(chunks)})
-        briefs.append(
-            _chat(client, model, _CHUNK_SYSTEM, _segments_to_text(chunk), log=log,
-                  max_tokens=4096, on_chars=on_chars)
-        )
-
-    digest = "\n\n".join(f"## 第 {i} 段素材\n{b}" for i, b in enumerate(briefs, 1))
+    digest = _digest_segments(client, model, segments, max_chars, log, progress)
     notes = html_to_text(shownotes_html)
     final_user = (
         f"节目标题：{title}\n播客/频道：{podcast}\n主播/作者：{author or '未知'}\n\n"

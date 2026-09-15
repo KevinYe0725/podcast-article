@@ -30,7 +30,8 @@ class Pipeline:
         pick: int = 1,
         max_chars: int = 75_000,
         mode: str | None = None,
-        polish: bool = True,
+        polish: bool = False,
+        outlined: bool = True,
         log=print,
         progress=None,
     ):
@@ -47,6 +48,7 @@ class Pipeline:
         self.max_chars = max_chars
         self.mode = mode  # 篇幅档位：concise / standard / deep
         self.polish = polish  # 生成后是否做编辑复检
+        self.outlined = outlined  # 是否用大纲 + 逐节写作
         self.log = log
         self.progress = progress  # progress(stage: str, data: dict)
 
@@ -164,6 +166,7 @@ class Pipeline:
             llm_model=self.llm_model,
             mode=self.mode,
             polish=self.polish,
+            outlined=self.outlined,
             log=self.log,
             progress=self.progress,
         )

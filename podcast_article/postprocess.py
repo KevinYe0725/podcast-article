@@ -159,6 +159,61 @@ def trim_to_budget(text: str, mode: str, protect_ends: bool = True) -> tuple[str
     return text, dropped
 
 
+# 这些字符结尾算「写完整了」（用拼接避免引号转义问题）
+_TERMINAL = "。！？…」』）)】*|" + chr(34) + "”"
+
+
+_QUOTE_LINE = re.compile(r"^>\s*(.+?)\s*\[(\d{2}:\d{2}:\d{2})\]\s*$")
+
+
+def dedupe_quotes(text: str) -> tuple[str, int]:
+    """同一时间戳的引用只保留信息最全的一条（分节写作容易重复引用同一句）。"""
+    lines = text.split("\n")
+    best: dict[str, tuple[int, str]] = {}   # 时间戳 -> (长度, 行内容)
+    for i, line in enumerate(lines):
+        m = _QUOTE_LINE.match(line.strip())
+        if m and len(m.group(1)) > len(best.get(m.group(2), (0, ""))[1]):
+            best[m.group(2)] = (i, m.group(1))
+    keep_idx = {i for i, _ in best.values()}
+    dropped = 0
+    out: list[str] = []
+    for i, line in enumerate(lines):
+        m = _QUOTE_LINE.match(line.strip())
+        if m and m.group(2) in best and i not in keep_idx:
+            dropped += 1
+            continue
+        out.append(line)
+    return "\n".join(out), dropped
+
+
+def trim_dangling(text: str) -> tuple[str, int]:
+    """处理模型撞上限留下的残缺段落。
+
+    - 段末没有句末标点：退回到最后一个完整句子
+    - 整段都没有句末标点且很短：判定为纯残片，整段丢弃
+    """
+    fixed = 0
+    blocks = text.split("\n\n")
+    kept: list[str] = []
+    for block in blocks:
+        s = block.strip()
+        if not s or s.startswith(("#", "|", ">", "-", "*", "```")):
+            kept.append(block)
+            continue
+        if s[-1] in _TERMINAL:
+            kept.append(block)
+            continue
+        cut = max(s.rfind("。"), s.rfind("！"), s.rfind("？"), s.rfind("；"))
+        if cut >= 0 and cut > len(s) * 0.5:
+            kept.append(s[: cut + 1])
+            fixed += 1
+        elif cut < 0 and len(s) < 300:
+            fixed += 1  # 纯残片，丢掉
+        else:
+            kept.append(block)
+    return "\n\n".join(kept), fixed
+
+
 def finalize(article: str, mode: str = "standard", trim: bool = True) -> tuple[str, dict]:
     """对成稿做全部确定性修正，返回 (文本, 处理报告)。"""
     report: dict = {}
@@ -167,6 +222,8 @@ def finalize(article: str, mode: str = "standard", trim: bool = True) -> tuple[s
     article, report["修孤立时间戳"] = fix_orphan_timestamps(article)
     article, report["删套话"] = strip_filler(article)
     article, report["标点规范化"] = normalize_punctuation(article)
+    article, report["删残缺半句"] = trim_dangling(article)
+    article, report["去重复引用"] = dedupe_quotes(article)
     if trim:
         article, dropped = trim_to_budget(article, mode)
         if dropped:

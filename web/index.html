@@ -230,6 +230,12 @@
   .ep .s { font-size: 12px; color: var(--dim); margin-top: 8px; display: flex; gap: 8px; align-items: center; }
   .ep .s .ok { color: var(--green); font-weight: 500; }
   #empty-lib { color: #b4b4bc; font-size: 13px; }
+  .ep .deck { font-size: 12.5px; color: #6e6e80; line-height: 1.6; margin-top: 7px; }
+  .ep .tk { margin: 9px 0 0; padding-left: 0; list-style: none; }
+  .ep .tk li { font-size: 12px; color: #4a4a55; line-height: 1.55; margin-top: 5px; padding-left: 14px; position: relative; }
+  .ep .tk li::before { content: "→"; position: absolute; left: 0; color: var(--green); }
+  .ep .tk li { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .ep .meta2 { font-size: 11.5px; color: #a8a8b3; margin-top: 9px; font-family: var(--mono); }
 
   /* ---- 设置视图 ---- */
   .iconbtn {
@@ -1078,14 +1084,21 @@ async function loadLibrary() {
   const resp = await fetch("/api/library");
   const { items } = await resp.json();
   $("empty-lib").style.display = items.length ? "none" : "block";
-  $("libgrid").innerHTML = items.map((it) => `
+  $("libgrid").innerHTML = items.map((it) => {
+    const pv = it.preview || {};
+    const take = (pv.takeaways || []).map((t) => `<li>${esc(t)}</li>`).join("");
+    return `
     <div class="ep" onclick="openEpisode('${encodeURIComponent(it.dir)}')">
       <div class="t">${esc(it.title)}</div>
+      ${pv.deck ? `<div class="deck">${esc(pv.deck)}</div>` : ""}
+      ${take ? `<ul class="tk">${take}</ul>` : ""}
       <div class="s">
         ${it.podcast ? `<span>${esc(it.podcast)}</span>` : ""}
         ${it.has_article ? `<span class="ok">✓ 有文章</span>` : `<span>无文章</span>`}
+        ${pv.chars ? `<span>${pv.chars} 字</span>` : ""}
       </div>
-    </div>`).join("");
+    </div>`;
+  }).join("");
 }
 
 async function openEpisode(dirEnc) {

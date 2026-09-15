@@ -40,6 +40,7 @@ GENERATION_DEFAULTS: dict = {
     "max_chars": 75_000,
     "no_subs": False,
     "length_mode": "standard",  # concise（3-4 分钟精华）/ standard / deep
+    "outline_mode": True,       # 大纲 + 逐节写作（篇幅可控）
     "auto_polish": False,       # 生成后再让模型自查一遍（可选，格式纪律已由确定性后处理保证）
 }
 

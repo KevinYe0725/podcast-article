@@ -70,7 +70,8 @@ def _new_job(url: str, opts: dict) -> str:
                 pick=int(opts.get("pick", 1)),
                 max_chars=int(opts.get("max_chars") or defaults.get("max_chars") or 75_000),
                 mode=opts.get("mode") or defaults.get("length_mode") or "standard",
-                polish=bool(opts.get("polish", defaults.get("auto_polish", True))),
+                polish=bool(opts.get("polish", defaults.get("auto_polish", False))),
+                outlined=bool(opts.get("outlined", defaults.get("outline_mode", True))),
                 log=log,
                 progress=progress,
             )
@@ -92,6 +93,39 @@ def _new_job(url: str, opts: dict) -> str:
 
     threading.Thread(target=worker, daemon=True).start()
     return job_id
+
+
+def _article_preview(path: Path, limit: int = 3) -> dict:
+    """从成稿里抽「一句话引语 + 前几条带走清单」，做历史库预览卡。
+
+    不额外调用模型：这些都是文章里已有的内容，直接解析即可。
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    deck = ""
+    for line in text.splitlines():
+        if line.startswith("> "):
+            deck = line[2:].strip()
+            break
+    takeaways: list[str] = []
+    in_take = False
+    for line in text.splitlines():
+        s = line.strip()
+        if s.startswith("## "):
+            in_take = "带走" in s
+            continue
+        if in_take and s.startswith(("- ", "* ")):
+            takeaways.append(s[2:].strip())
+    headings = [l.strip("# ").strip() for l in text.splitlines() if l.startswith("## ")]
+    return {
+        "deck": deck,
+        "takeaways": takeaways[:limit],
+        "takeaway_total": len(takeaways),
+        "sections": [h for h in headings if "带走" not in h and "点评" not in h][:6],
+        "chars": len(text),
+    }
 
 
 def _md_to_html(text: str) -> str:
@@ -437,15 +471,16 @@ def api_library():
                 meta = json.loads(meta_file.read_text(encoding="utf-8"))
             except (json.JSONDecodeError, OSError):
                 continue
-            items.append(
-                {
-                    "dir": d.name,
-                    "title": meta.get("title") or d.name,
-                    "podcast": meta.get("podcast") or "",
-                    "duration": meta.get("duration"),
-                    "has_article": (d / "article.md").exists(),
-                }
-            )
+            item = {
+                "dir": d.name,
+                "title": meta.get("title") or d.name,
+                "podcast": meta.get("podcast") or "",
+                "duration": meta.get("duration"),
+                "has_article": (d / "article.md").exists(),
+            }
+            if item["has_article"]:
+                item["preview"] = _article_preview(d / "article.md")
+            items.append(item)
     return jsonify({"items": items})
 
 

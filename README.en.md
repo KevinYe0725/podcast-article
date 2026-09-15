@@ -87,11 +87,21 @@ A mode controls **structure and depth** (section count, whether tables/quotes ar
 
 | Mode | Structure | Measured (109-min interview) |
 |---|---|---|
-| Concise | 3 sections + takeaways | ~3,600 chars / 7 min |
-| Standard | 4-5 sections + editor's notes | ~6,000 chars / 12 min |
-| Deep | plus a books/people/concepts table and quotes | 8,000+ chars |
+| Concise | 3 sections + takeaways | ~2,000 chars / 4-5 min |
+| Standard | 4 sections + editor's notes | ~3,300 chars / 7 min |
+| Deep | 5 sections + concepts table + quotes | ~6,000 chars / 12 min |
 
-> An LLM cannot be instructed to hit a word count (measured over 5 runs: output lands at 1.5-2× the target), so we **don't pretend to control it**: modes own structure and depth, formatting discipline is enforced deterministically (`postprocess.py` splits long paragraphs, fixes orphan timestamps, strips filler, normalises CJK punctuation), and length is only trimmed mechanically in extreme cases (beyond 1.6× the upper bound).
+Length is **calculated, not begged for**: generation runs an outline → per-section → closing pipeline
+(`outline.py`), where every section carries its own character budget and token ceiling — so the total is
+predictable (measured within ±10%).
+
+> Three cheaper approaches were measured and rejected (recorded here so they aren't retried):
+> ① asking the model to self-compress — it either strips concrete detail (density 7.2 → 1.0 per 1k chars) or echoes the input verbatim;
+> ② capping `max_tokens` to force brevity — this truncates the body and deletes the takeaways and editor's notes entirely;
+> ③ mechanically dropping sections — it removed the payoff section, hitting the word count while ruining the piece.
+> Conclusion: length must be controlled by **structure**, and formatting discipline belongs to
+> deterministic post-processing (`postprocess.py`: split long paragraphs, dedupe quotes, drop dangling
+> fragments, normalise CJK punctuation, strip filler).
 
 ### Quality check
 
@@ -129,6 +139,8 @@ uv run python webapp.py    # open http://127.0.0.1:8787
 ```
 
 Paste a link → a four-stage timeline advances in real time (download / ASR / LLM percentages and ETAs) → read the article, with an optional **side-by-side transcript view**. Then pick a publish target and send it to Notion or any MCP tool.
+
+Each card in the history grid carries a **one-line deck** (so you can decide whether to open it) and a **takeaway preview**.
 
 The **⚙ Settings** button (top right) manages your profile, credentials and generation preferences:
 
@@ -273,6 +285,7 @@ podcast_article/
 ├── subtitles.py      # Subtitle download & VTT/SRT parsing (rolling-dedup)
 ├── transcribe.py     # Local ASR + tqdm progress parsing
 ├── summarize.py      # DeepSeek close-reading & article generation (3 modes + prompts)
+├── outline.py        # Outline + per-section writing (length-controlled)
 ├── postprocess.py    # Deterministic formatting pass (paragraphs/punctuation/filler)
 ├── notion.py         # markdown → Notion blocks (with retries)
 ├── mcp_server.py     # MCP server (stdio)
