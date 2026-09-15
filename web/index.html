@@ -65,9 +65,19 @@
   .topbar .meta { font-size: 12px; color: var(--dim); }
 
   /* Hero */
-  .hero { margin-top: 26px; }
-  .hero h1 { font-size: clamp(34px, 5vw, 48px); font-weight: 600; letter-spacing: -0.03em; line-height: 1.12; margin-bottom: 14px; }
-  .hero p { font-size: 16px; color: var(--dim); margin-bottom: 36px; max-width: 640px; }
+  /* 紧凑的输入区：主页面第一屏直接给文章列表 */
+  .composer { margin-top: 4px; }
+  .moreopts { position: relative; }
+  .moreopts > summary {
+    list-style: none; cursor: pointer; font-size: 12.5px; color: var(--dim);
+    border: 1px solid var(--border2); border-radius: 999px; padding: 6px 13px; background: #fff;
+    display: inline-flex; align-items: center; gap: 6px; user-select: none;
+  }
+  .moreopts > summary::-webkit-details-marker { display: none; }
+  .moreopts > summary::after { content: "▾"; font-size: 10px; transition: transform .15s; }
+  .moreopts[open] > summary::after { transform: rotate(180deg); }
+  .moreopts > summary:hover { border-color: var(--border2); background: var(--bg2); color: var(--text); }
+  .morebody { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
 
   /* Composer */
   .composer { border: 1px solid var(--border2); border-radius: 20px; padding: 8px 8px 10px; transition: box-shadow .15s, border-color .15s; }
@@ -260,7 +270,7 @@
   #transcript.show { display: block; }
 
   /* 库 */
-  #lib { margin-top: 72px; }
+  #lib { margin-top: 44px; }
   #lib h2 { font-size: 13px; font-weight: 600; color: var(--dim); text-transform: uppercase; letter-spacing: .08em; margin-bottom: 16px; }
   #lib .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
   .ep {
@@ -296,7 +306,14 @@
   .folder.add { color: var(--dim); font-size: 13px; }
   .folder.add .ficon { color: #c9c9d2; }
   .sidegap { height: 1px; background: var(--border); margin: 8px 9px; }
-  .libbar { display: flex; align-items: baseline; gap: 10px; margin-bottom: 15px; min-height: 22px; }
+  .libbar { display: flex; align-items: center; gap: 10px; margin-bottom: 15px; min-height: 24px; }
+  .quicktabs { display: inline-flex; border: 1px solid var(--border2); border-radius: 999px; overflow: hidden; background: #fff; }
+  .quicktabs button {
+    border: 0; background: transparent; font: inherit; font-size: 12.5px; color: var(--dim);
+    padding: 5px 13px; cursor: pointer; transition: .13s;
+  }
+  .quicktabs button:hover { background: var(--bg2); color: var(--text); }
+  .quicktabs button.on { background: var(--text); color: #fff; }
   .libbar .bt { font-size: 14.5px; font-weight: 600; }
   .libbar .bc { font-size: 12px; color: var(--dim); }
 
@@ -477,11 +494,6 @@
 
 <div id="main">
 
-  <div class="hero col">
-    <h1>把播客，变成值得收藏的文章。</h1>
-    <p>粘贴一条链接，本地语音转写 + AI 精读，几分钟产出带时间戳的深度文章。支持小宇宙 / YouTube / Bilibili / Apple Podcasts / RSS。</p>
-  </div>
-
   <div class="composer col">
     <div class="row">
       <input id="url" type="text" placeholder="粘贴播客或视频链接…" spellcheck="false" autocomplete="off">
@@ -490,18 +502,23 @@
     <div class="opts">
       <label class="chip">篇幅
         <select id="mode">
-          <option value="concise">精华 · 3-4 分钟</option>
-          <option value="standard" selected>标准 · 6-8 分钟</option>
-          <option value="deep">深度 · 10-15 分钟</option>
+          <option value="concise">精华 · 3 节 · 5-8 分钟</option>
+          <option value="standard" selected>标准 · 4-5 节 · 8-13 分钟</option>
+          <option value="deep">深度 · 含表格金句 · 14-20 分钟</option>
         </select>
       </label>
-      <label class="chip">转写语言
-        <select id="lang"><option value="auto">自动</option><option value="zh">中文</option><option value="en">English</option></select>
-      </label>
-      <label class="chip">转写模型 <input type="text" id="model" size="6" placeholder="自动"></label>
-      <label class="chip"><input type="checkbox" id="no_subs"> 强制转写</label>
-      <label class="chip"><input type="checkbox" id="ft"> 重转写</label>
-      <label class="chip"><input type="checkbox" id="fa"> 重写文章</label>
+      <details class="moreopts">
+        <summary>更多选项</summary>
+        <div class="morebody">
+          <label class="chip">转写语言
+            <select id="lang"><option value="auto">自动</option><option value="zh">中文</option><option value="en">English</option></select>
+          </label>
+          <label class="chip">转写模型 <input type="text" id="model" size="6" placeholder="自动"></label>
+          <label class="chip"><input type="checkbox" id="no_subs"> 强制转写</label>
+          <label class="chip"><input type="checkbox" id="ft"> 重转写</label>
+          <label class="chip"><input type="checkbox" id="fa"> 重写文章</label>
+        </div>
+      </details>
     </div>
   </div>
   <div class="hint col">⌘/Ctrl + Enter 直接开始 · Esc 关闭文章 / 退出设置 · 产物会缓存，重新生成文章不必重新转写</div>
@@ -552,6 +569,11 @@
     <div class="libbar">
       <span class="bt" id="libtitle">全部文章</span>
       <span class="bc" id="libcount"></span>
+      <span style="flex:1"></span>
+      <div class="quicktabs" id="quicktabs">
+        <button data-quick="all" onclick="setCat('all')">全部</button>
+        <button data-quick="none" onclick="setCat('none')">未分类</button>
+      </div>
     </div>
     <div class="grid" id="libgrid"></div>
     <div id="empty-lib">还没有生成过任何文章。</div>
@@ -1446,6 +1468,8 @@ function renderGrid() {
   else if (!shown.length) { empty.textContent = "这个分类下还没有文章 —— 把下面的卡片按住拖到上方分类里即可。"; empty.style.display = "block"; }
   else empty.style.display = "none";
 
+  document.querySelectorAll("#quicktabs button").forEach((b) =>
+    b.classList.toggle("on", b.dataset.quick === activeCat));
   const cur = activeCat === "all" ? null : activeCat === "none" ? null : catById(activeCat);
   $("libtitle").textContent = activeCat === "all" ? "全部文章" : activeCat === "none" ? "未分类" : (cur ? cur.name : "分类");
   $("libcount").textContent = shown.length ? `共 ${shown.length} 篇` : "";
