@@ -66,11 +66,17 @@ def test_mask_keeps_variable_reference_visible():
 
 
 def test_preset_catalog_reports_state(monkeypatch):
-    monkeypatch.setenv("NOTION_TOKEN", "ntn_x")
+    # 不能依赖真实 .env（CI 上没有该文件）：把「已配置的键」直接注入
+    monkeypatch.setattr(mc, "read_env_keys", lambda: {"NOTION_TOKEN": "ntn_x"})
     ids = {p["id"] for p in mc.preset_catalog()}
     assert {"notion", "podcast-article"} <= ids
     notion = next(p for p in mc.preset_catalog() if p["id"] == "notion")
     assert notion["added"] is False and notion["ready"] is True
+
+    # 没有密钥时就绪状态应为 False
+    monkeypatch.setattr(mc, "read_env_keys", lambda: {})
+    notion2 = next(p for p in mc.preset_catalog() if p["id"] == "notion")
+    assert notion2["ready"] is False
 
 
 def test_build_from_preset_with_secret():

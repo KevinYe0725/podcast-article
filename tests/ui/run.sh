@@ -25,7 +25,15 @@ node seed.js
 ( cd "$REPO" && PA_OUTPUT_DIR="$OUT" PA_LIBRARY_FILE="$PA_LIBRARY_FILE" \
     uv run python webapp.py --port "$PORT" >/tmp/pa-ui-test-server.log 2>&1 ) &
 SERVER_PID=$!
-trap 'kill $SERVER_PID 2>/dev/null; rm -rf "$TMP"' EXIT
+
+# 彻底回收：只 kill 子 shell 会留下 uv/python 子进程，CI 上会让后续的 uv 缓存清理失败
+cleanup() {
+  kill "$SERVER_PID" 2>/dev/null
+  pkill -f "webapp.py --port $PORT" 2>/dev/null
+  wait "$SERVER_PID" 2>/dev/null
+  rm -rf "$TMP"
+}
+trap cleanup EXIT
 
 for i in $(seq 1 40); do
   curl -sf "$PA_BASE/" >/dev/null && break
