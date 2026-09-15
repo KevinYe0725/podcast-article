@@ -69,6 +69,18 @@ Not a summary, not reading notes — a piece you can **read in one sitting**. Th
 
 Hard rules: quotes with timestamps appear inline (max 6, no duplicate "quotable lines" section); at least one verifiable concrete detail every 200 characters; the banned-phrase list lives in `podcast_article/summarize.py`.
 
+### Before / after: the same opening, rewritten
+
+**Before** (conclusions first — the body loses its reason to be read):
+
+> [one-line deck stating the ending] + a 5-bullet "content overview" that tells the whole story before the article starts.
+
+**After** (a scene, with the ending saved for later):
+
+> At dawn on 18 April 1906, a magnitude 7.9 earthquake flattened most of San Francisco in 47 seconds; more than 3,000 people died. On the top floor of Stanford's science building, a thousand alcohol-filled specimen jars fell from their shelves and shattered across the floor. A tall scientist with a walrus moustache stood in the wreckage, bent down, picked up a sewing needle, threaded it, and stitched the name tags straight into the fishes' throats.
+>
+> His name was David Starr Jordan, Stanford's first president — the man who had named more than a fifth of all known fish.
+
 ### Three length modes
 
 A mode controls **structure and depth** (section count, whether tables/quotes are included); the word count follows from the content:
