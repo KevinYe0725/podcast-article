@@ -20,7 +20,33 @@
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html { -webkit-font-smoothing: antialiased; }
   body { background: var(--bg); color: var(--text); font-family: var(--font); line-height: 1.6; }
-  .wrap { max-width: 960px; margin: 0 auto; padding: 0 24px 100px; }
+  /* 整页应用外壳：左侧固定侧边栏 + 右侧全宽内容区 */
+  .app { display: flex; min-height: 100vh; align-items: stretch; }
+  .appside {
+    width: 248px; flex-shrink: 0; padding: 18px 12px 24px;
+    border-right: 1px solid var(--border); background: #fcfcfd;
+    position: sticky; top: 0; height: 100vh; overflow-y: auto;
+    display: flex; flex-direction: column; gap: 3px;
+  }
+  .appbrand { display: flex; align-items: center; gap: 9px; padding: 4px 8px 16px; font-size: 14.5px; font-weight: 600; letter-spacing: -0.01em; }
+  .appbrand span { color: var(--green); }
+  .appmain { flex: 1; min-width: 0; padding: 0 40px 110px; }
+  .col { max-width: 900px; margin: 0 auto; }
+  .sidefoot { margin-top: auto; padding-top: 14px; border-top: 1px solid var(--border); }
+  .sidefoot .folder { font-size: 13px; color: var(--dim); }
+  @media (max-width: 900px) {
+    .app { flex-direction: column; }
+    .appside {
+      width: 100%; height: auto; position: sticky; top: 0; z-index: 20;
+      border-right: 0; border-bottom: 1px solid var(--border); padding: 10px 14px;
+      flex-direction: row; align-items: center; gap: 8px; overflow-x: auto;
+    }
+    .appbrand { display: none; }
+    .appside nav { display: flex; gap: 6px; }
+    .appside .folder { width: auto; white-space: nowrap; background: #f4f4f6; }
+    .appside .sidegap, .appside .sidefoot { display: none; }
+    .appmain { padding: 0 18px 80px; }
+  }
 
   /* 细滚动条（桌面） */
   #console::-webkit-scrollbar, #transcript::-webkit-scrollbar { width: 8px; }
@@ -29,10 +55,10 @@
 
   /* 顶栏 */
   .topbar {
-    display: flex; align-items: center; justify-content: space-between; padding: 16px 0; margin-bottom: 56px;
-    border-bottom: 1px solid var(--border);
-    position: sticky; top: 0; z-index: 5;
-    background: rgba(255,255,255,.86); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+    padding: 16px 0 14px; margin-bottom: 34px; border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; z-index: 15;
+    background: rgba(255,255,255,.88); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
   }
   .wordmark { font-weight: 700; font-size: 15px; letter-spacing: -0.01em; }
   .wordmark span { color: var(--dim); font-weight: 400; }
@@ -208,6 +234,7 @@
   .tplhint { font-size: 11.5px; color: var(--dim); margin-top: 7px; line-height: 1.7; }
   .tplhint code { font-family: var(--mono); background: var(--bg2); padding: 1px 5px; border-radius: 5px; }
   #article { font-size: 15px; line-height: 1.85; }
+  #result.wide { max-width: 1180px; }
   @media (min-width: 1080px) { #result:not(.withTranscript) #article { max-width: 800px; } }
   #article h1 { font-size: 30px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.3; margin: 8px 0 18px; }
   #article h2 { font-size: 20px; font-weight: 600; letter-spacing: -0.01em; margin: 36px 0 12px; }
@@ -246,9 +273,7 @@
   .ep .s .ok { color: var(--green); font-weight: 500; }
   #empty-lib { color: #b4b4bc; font-size: 13px; }
 
-  /* ---- 文章库：侧边栏文件夹（OpenAI 项目列表风格）---- */
-  .liblayout { display: flex; gap: 24px; align-items: flex-start; }
-  .libside { width: 212px; flex-shrink: 0; position: sticky; top: 76px; }
+  /* ---- 侧边栏文件夹（OpenAI 项目列表风格）---- */
   .sidehead { display: flex; align-items: center; justify-content: space-between; padding: 0 8px 7px; }
   .sidehead > span { font-size: 11.5px; font-weight: 600; color: var(--dim); letter-spacing: .07em; text-transform: uppercase; }
   .sidehead .iconbtn.small { width: 24px; height: 24px; }
@@ -271,17 +296,10 @@
   .folder.add { color: var(--dim); font-size: 13px; }
   .folder.add .ficon { color: #c9c9d2; }
   .sidegap { height: 1px; background: var(--border); margin: 8px 9px; }
-  .libmain { flex: 1; min-width: 0; }
   .libbar { display: flex; align-items: baseline; gap: 10px; margin-bottom: 15px; min-height: 22px; }
   .libbar .bt { font-size: 14.5px; font-weight: 600; }
   .libbar .bc { font-size: 12px; color: var(--dim); }
-  @media (max-width: 760px) {
-    .liblayout { flex-direction: column; gap: 14px; }
-    .libside { width: 100%; position: static; display: flex; gap: 6px; overflow-x: auto; padding-bottom: 4px; }
-    .sidehead { display: none; }
-    .folder { width: auto; white-space: nowrap; background: var(--bg2); }
-    .sidegap { display: none; }
-  }
+
 
   /* 卡片上显示所属分类 */
   .ep .catlabel { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; }
@@ -329,7 +347,7 @@
   }
   .iconbtn:hover { color: var(--text); border-color: var(--border2); background: var(--bg2); }
   .iconbtn svg { width: 17px; height: 17px; }
-  #settings { max-width: 760px; }
+  #settings { max-width: 860px; margin: 0 auto; padding-bottom: 40px; }
   .sethead { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 26px 0 4px; }
   .sethead h1 { font-size: 22px; font-weight: 600; letter-spacing: -0.02em; }
   .setintro { font-size: 13px; color: var(--dim); margin-top: 7px; line-height: 1.65; }
@@ -420,7 +438,30 @@
 </style>
 </head>
 <body>
-<div class="wrap">
+<div class="app">
+  <aside class="appside">
+    <div class="appbrand">podcast<span>-article</span></div>
+    <div class="sidehead">
+      <span>文章库</span>
+      <button class="iconbtn small" title="新建分类" aria-label="新建分类" onclick="createCat()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <path d="M12 5v14M5 12h14"></path>
+        </svg>
+      </button>
+    </div>
+    <nav id="catnav"></nav>
+    <div class="sidefoot">
+      <button class="folder" onclick="openSettings()">
+        <svg class="ficon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="3"></circle>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+        </svg>
+        <span class="fname">设置</span>
+      </button>
+    </div>
+  </aside>
+
+  <div class="appmain">
   <div class="topbar">
     <div class="wordmark">podcast<span>-article</span></div>
     <div style="display:flex;align-items:center;gap:14px">
@@ -436,12 +477,12 @@
 
 <div id="main">
 
-  <div class="hero">
+  <div class="hero col">
     <h1>把播客，变成值得收藏的文章。</h1>
     <p>粘贴一条链接，本地语音转写 + AI 精读，几分钟产出带时间戳的深度文章。支持小宇宙 / YouTube / Bilibili / Apple Podcasts / RSS。</p>
   </div>
 
-  <div class="composer">
+  <div class="composer col">
     <div class="row">
       <input id="url" type="text" placeholder="粘贴播客或视频链接…" spellcheck="false" autocomplete="off">
       <button id="go" onclick="startRun()">生成文章</button>
@@ -463,9 +504,9 @@
       <label class="chip"><input type="checkbox" id="fa"> 重写文章</label>
     </div>
   </div>
-  <div class="hint">⌘/Ctrl + Enter 直接开始 · Esc 关闭文章 / 退出设置 · 产物会缓存，重新生成文章不必重新转写</div>
+  <div class="hint col">⌘/Ctrl + Enter 直接开始 · Esc 关闭文章 / 退出设置 · 产物会缓存，重新生成文章不必重新转写</div>
 
-  <div id="runview">
+  <div id="runview" class="col">
     <div id="runsum" class="runsum" onclick="toggleRunview()"></div>
     <div id="runbody">
     <div class="stage" id="st0"><div class="ico">1</div><div class="body"><div class="line1"><span class="name">抓取元信息</span><span class="detail"></span></div><div class="bar"><i></i></div></div></div>
@@ -477,7 +518,7 @@
     </div><!-- /runbody -->
   </div>
 
-  <div id="result">
+  <div id="result" class="col">
     <div class="rhead">
       <div class="rmeta" id="rmeta"></div>
       <button class="iconbtn small" onclick="closeResult()" title="关闭（Esc）" aria-label="关闭">
@@ -508,27 +549,12 @@
   </div>
 
   <div id="lib">
-    <div class="liblayout">
-      <aside class="libside">
-        <div class="sidehead">
-          <span>文章库</span>
-          <button class="iconbtn small" title="新建分类" aria-label="新建分类" onclick="createCat()">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-              <path d="M12 5v14M5 12h14"></path>
-            </svg>
-          </button>
-        </div>
-        <nav id="catnav"></nav>
-      </aside>
-      <div class="libmain">
-        <div class="libbar">
-          <span class="bt" id="libtitle">全部文章</span>
-          <span class="bc" id="libcount"></span>
-        </div>
-        <div class="grid" id="libgrid"></div>
-        <div id="empty-lib">还没有生成过任何文章。</div>
-      </div>
+    <div class="libbar">
+      <span class="bt" id="libtitle">全部文章</span>
+      <span class="bc" id="libcount"></span>
     </div>
+    <div class="grid" id="libgrid"></div>
+    <div id="empty-lib">还没有生成过任何文章。</div>
   </div>
 </div><!-- /main -->
 
@@ -710,7 +736,8 @@
     <button class="btn primary mini" onclick="saveSettings()">保存</button>
   </div>
 </div><!-- /settings -->
-</div><!-- /wrap -->
+  </div><!-- /appmain -->
+</div><!-- /app -->
 
 <div id="modal" class="modal">
   <div class="modalcard">
@@ -920,7 +947,7 @@ function finishJob(d) {
       (m.duration ? `<span>${humanDur(m.duration)}</span>` : "");
     $("article").innerHTML = d.article_html || "";
     $("transcript").textContent = ""; $("transcript").dataset.loaded = "";
-    $("transcript").classList.remove("show"); $("result").classList.remove("withTranscript");
+    $("transcript").classList.remove("show"); $("result").classList.remove("withTranscript", "wide");
     $("tbtn").textContent = "查看文字稿";
     $("nbtn").disabled = false;
     $("result").dataset.fromLib = "";
@@ -939,7 +966,7 @@ function finishJob(d) {
 async function toggleTranscript() {
   const el = $("transcript");
   if (el.classList.contains("show")) {
-    el.classList.remove("show"); $("result").classList.remove("withTranscript");
+    el.classList.remove("show"); $("result").classList.remove("withTranscript", "wide");
     $("tbtn").textContent = "查看文字稿"; return;
   }
   if (!el.dataset.loaded && curWorkdir) {
@@ -947,7 +974,7 @@ async function toggleTranscript() {
     el.textContent = await resp.text();
     el.dataset.loaded = "1";
   }
-  el.classList.add("show"); $("result").classList.add("withTranscript");
+  el.classList.add("show"); $("result").classList.add("withTranscript", "wide");
   $("tbtn").textContent = "收起文字稿";
 }
 
@@ -1348,7 +1375,7 @@ function delServer(name) {
 function closeResult() {
   const el = $("result");
   const fromLib = el.dataset.fromLib === "1";
-  el.classList.remove("show", "withTranscript");
+  el.classList.remove("show", "withTranscript", "wide");
   el.dataset.fromLib = "";
   $("tplbox").style.display = "none";
   $("article").innerHTML = "";
@@ -1666,7 +1693,7 @@ async function openEpisode(dirEnc) {
       (meta.duration ? `<span>${humanDur(meta.duration)}</span>` : "");
     $("article").innerHTML = html;
     $("transcript").textContent = ""; $("transcript").dataset.loaded = "";
-    $("transcript").classList.remove("show"); $("result").classList.remove("withTranscript");
+    $("transcript").classList.remove("show"); $("result").classList.remove("withTranscript", "wide");
     $("tbtn").textContent = "查看文字稿";
     $("nbtn").disabled = false;
   }
