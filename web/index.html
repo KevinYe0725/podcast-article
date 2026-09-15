@@ -358,6 +358,28 @@
   .savebar .dot { width: 7px; height: 7px; border-radius: 50%; background: #e0a020; }
   .savebar .msg { font-size: 12.5px; color: var(--dim); }
 
+  /* ---- 模态框（替代原生 prompt/confirm）---- */
+  .modal {
+    position: fixed; inset: 0; z-index: 80; display: none; align-items: center; justify-content: center;
+    padding: 22px; background: rgba(13, 13, 13, .34); backdrop-filter: blur(2px);
+  }
+  .modal.show { display: flex; }
+  .modalcard {
+    width: 100%; max-width: 404px; background: #fff; border-radius: 16px; padding: 22px 24px 20px;
+    box-shadow: 0 18px 48px rgba(0, 0, 0, .22); animation: modalin .14s ease-out;
+  }
+  @keyframes modalin { from { transform: scale(.975) translateY(5px); opacity: .55; } to { transform: none; opacity: 1; } }
+  .modalcard h3 { font-size: 16px; font-weight: 600; letter-spacing: -0.01em; line-height: 1.45; }
+  .modalcard p { font-size: 13px; color: var(--dim); margin-top: 8px; line-height: 1.68; }
+  .modalcard input {
+    width: 100%; border: 1px solid var(--border2); border-radius: 10px; padding: 10px 13px;
+    font-size: 14px; font-family: var(--font); background: #fff; color: var(--text); margin-top: 15px;
+  }
+  .modalcard input:focus { outline: none; border-color: var(--green); }
+  .modalbtns { display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px; }
+  .btn.danger { background: var(--red); color: #fff; }
+  .btn.danger:hover { background: #d93a3f; }
+
   /* Toast */
   #toast {
     position: fixed; right: 22px; bottom: 22px; background: var(--black); color: #fff;
@@ -645,6 +667,18 @@
   </div>
 </div><!-- /settings -->
 </div><!-- /wrap -->
+
+<div id="modal" class="modal">
+  <div class="modalcard">
+    <h3 id="modaltitle"></h3>
+    <p id="modaldesc"></p>
+    <input id="modalinput" spellcheck="false" autocomplete="off">
+    <div class="modalbtns">
+      <button class="btn" id="modalcancel">取消</button>
+      <button class="btn primary" id="modalok">确定</button>
+    </div>
+  </div>
+</div>
 
 <div id="toast"></div>
 
@@ -1020,6 +1054,41 @@ async function verifyKey(what, btn) {
   btn.disabled = false;
 }
 
+/* ---------------- 模态框（同风格弹窗）---------------- */
+let modalHandler = null;
+
+function showModal({ title, desc = "", value = "", placeholder = "", okText = "确定",
+                     danger = false, withInput = true, onOk = null }) {
+  $("modaltitle").textContent = title;
+  $("modaldesc").textContent = desc;
+  $("modaldesc").style.display = desc ? "block" : "none";
+  const inp = $("modalinput");
+  inp.style.display = withInput ? "block" : "none";
+  inp.value = value;
+  inp.placeholder = placeholder;
+  const ok = $("modalok");
+  ok.textContent = okText;
+  ok.classList.toggle("danger", !!danger);
+  ok.classList.toggle("primary", !danger);
+  modalHandler = onOk;
+  $("modal").classList.add("show");
+  if (withInput) setTimeout(() => { inp.focus(); inp.select(); }, 30);
+}
+
+function closeModal() {
+  $("modal").classList.remove("show");
+  modalHandler = null;
+}
+
+function modalOk() {
+  const needsInput = $("modalinput").style.display !== "none";
+  const val = $("modalinput").value.trim();
+  if (needsInput && !val) { $("modalinput").focus(); return; }   // 空值不提交
+  const handler = modalHandler;
+  closeModal();
+  if (handler) handler(val);
+}
+
 /* ---------------- MCP ---------------- */
 let mcpServers = [], mcpTools = {}, mcpPresets = [], notionDbId = "", pendingPreset = null;
 
@@ -1214,11 +1283,19 @@ async function addCustomServer() {
   toast(`✦ 已添加：${esc(d.server.name)}`);
 }
 
-async function delServer(name) {
-  if (!confirm(`删除 MCP 服务器「${name}」？`)) return;
-  await fetch("/api/mcp/servers/" + encodeURIComponent(name), { method: "DELETE" });
-  delete mcpTools[name];
-  loadMcp();
+function delServer(name) {
+  showModal({
+    title: `删除 MCP 服务器「${name}」？`,
+    desc: "只是从本机配置里移除，不影响该服务器本身。",
+    withInput: false,
+    danger: true,
+    okText: "删除",
+    onOk: async () => {
+      await fetch("/api/mcp/servers/" + encodeURIComponent(name), { method: "DELETE" });
+      delete mcpTools[name];
+      loadMcp();
+    },
+  });
 }
 
 function closeResult() {
@@ -1302,39 +1379,60 @@ function renderGrid() {
   }).join("");
 }
 
-async function createCat() {
-  const name = (prompt("新建分类名称（例如：AI 技术 / 商业访谈 / 读书") || "").trim();
-  if (!name) return;
-  const resp = await fetch("/api/categories", {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }),
+function createCat() {
+  showModal({
+    title: "新建分类",
+    desc: "建好后，按住卡片拖到分类上即可归类。",
+    placeholder: "例如：AI 技术 / 商业访谈 / 读书",
+    okText: "创建",
+    onOk: async (name) => {
+      const resp = await fetch("/api/categories", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }),
+      });
+      const d = await resp.json();
+      if (!resp.ok) { toast("⚠ " + esc(d.error || "创建失败")); return; }
+      await loadLibrary();
+      toast(`✦ 已创建分类「${esc(d.category.name)}」`);
+    },
   });
-  const d = await resp.json();
-  if (!resp.ok) { toast("⚠ " + esc(d.error || "创建失败")); return; }
-  await loadLibrary();
-  toast(`✦ 已创建分类「${esc(d.category.name)}」`);
 }
 
-async function renameCat(ev, cid) {
+function renameCat(ev, cid) {
   ev.stopPropagation();
   const cur = catById(cid);
-  const name = (prompt("重命名分类", cur ? cur.name : "") || "").trim();
-  if (!name) return;
-  const resp = await fetch("/api/categories/" + encodeURIComponent(cid), {
-    method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }),
+  showModal({
+    title: "重命名分类",
+    value: cur ? cur.name : "",
+    okText: "保存",
+    onOk: async (name) => {
+      const resp = await fetch("/api/categories/" + encodeURIComponent(cid), {
+        method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }),
+      });
+      const d = await resp.json();
+      if (!resp.ok) { toast("⚠ " + esc(d.error || "重命名失败")); return; }
+      await loadLibrary();
+      toast("✦ 已重命名");
+    },
   });
-  const d = await resp.json();
-  if (!resp.ok) { toast("⚠ " + esc(d.error || "重命名失败")); return; }
-  await loadLibrary();
 }
 
-async function deleteCat(ev, cid) {
+function deleteCat(ev, cid) {
   ev.stopPropagation();
   const cur = catById(cid);
-  if (!confirm(`删除分类「${cur ? cur.name : cid}」？\n文章不会被删除，只会退回「未分类」。`)) return;
-  const resp = await fetch("/api/categories/" + encodeURIComponent(cid), { method: "DELETE" });
-  if (!resp.ok) { const d = await resp.json(); toast("⚠ " + esc(d.error || "删除失败")); return; }
-  if (activeCat === cid) activeCat = "all";
-  await loadLibrary();
+  showModal({
+    title: `删除分类「${cur ? cur.name : cid}」？`,
+    desc: "分类里的文章不会被删除，只会退回「未分类」。",
+    withInput: false,
+    danger: true,
+    okText: "删除",
+    onOk: async () => {
+      const resp = await fetch("/api/categories/" + encodeURIComponent(cid), { method: "DELETE" });
+      if (!resp.ok) { const d = await resp.json(); toast("⚠ " + esc(d.error || "删除失败")); return; }
+      if (activeCat === cid) activeCat = "all";
+      await loadLibrary();
+      toast("✦ 已删除分类");
+    },
+  });
 }
 
 async function assignArticle(dir, cid) {
@@ -1480,10 +1578,19 @@ document.addEventListener("keydown", (e) => {
 });
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
+  if ($("modal").classList.contains("show")) { closeModal(); return; }
   if ($("settings").style.display === "block") { closeSettings(); return; }
   if ($("result").classList.contains("withTranscript")) { toggleTranscript(); return; }
   if ($("result").classList.contains("show")) closeResult();
 });
+// 模态框交互（只绑定一次）
+$("modalok").addEventListener("click", modalOk);
+$("modalcancel").addEventListener("click", closeModal);
+$("modal").addEventListener("click", (e) => { if (e.target.id === "modal") closeModal(); });
+$("modalinput").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { e.preventDefault(); modalOk(); }
+});
+
 // 事件委托：卡片按住即开始拖拽（只绑定一次）
 $("libgrid").addEventListener("pointerdown", (e) => {
   const card = e.target.closest(".ep");
