@@ -141,22 +141,25 @@ Page bodies are native Notion blocks: headings, quotes, lists, tables, inline st
 
 ## 🔌 Configure MCP servers in the UI
 
-The **"MCP servers"** section of the Settings page configures any stdio MCP server — no config file editing:
+Settings → **"MCP servers"**. **Common servers are one click**, no forms to fill in:
 
-1. Fill in name / command / args / env vars → **Add server**
-2. Hit **Test** → the server is launched live and all its tools are listed (click a tool chip to make it the publish target)
-3. The **publish dropdown** above the article then offers "Built-in Notion integration" plus every tool of every server
-4. For MCP targets, use an **argument template** to map article fields onto that tool's input
+| Button | What it does |
+|---|---|
+| **Notion official MCP** | One click. If no Notion token exists yet it asks for that single field; otherwise it reuses the one in `.env` instead of storing a second copy |
+| **This project's MCP** | One click — exposes this project's capabilities to other AI clients |
+| **Custom…** | Any stdio server: just one launch command (e.g. `npx -y @modelcontextprotocol/server-filesystem /tmp`), env vars optional |
 
-Env values support `${VAR}` references to `.env`, so secrets are stored once. Config lives in `mcp_servers.json` (gitignored, may contain secrets); format: `mcp_servers.example.json`.
+After adding, the connection is **checked automatically** and the tool count is shown (no manual test button); the tool list stays collapsed until you expand it, and clicking any tool makes it the publish target. Config lives in `mcp_servers.json` (gitignored, may contain secrets) — you can also edit it directly; format: `mcp_servers.example.json`.
 
-**Example: the official Notion MCP server**
+The **publish dropdown** above the article groups tools by server and floats page-creation / writing tools to the top with a ★:
 
-```bash
-npm i -g @notionhq/notion-mcp-server
+```
+Built-in Notion integration (REST)
+MCP · notion (24 tools)   ★ API-post-page / ★ API-patch-block-children / …
+MCP · podcast-article (4 tools)
 ```
 
-In the UI: name `notion`, command `notion-mcp-server`, env `NOTION_TOKEN=${NOTION_TOKEN}`. Test should list 24 tools. Publish template (adjust property names to your database):
+Selecting an MCP tool reveals an **argument template** that maps article fields onto that tool's input:
 
 ```json
 {
@@ -170,7 +173,7 @@ In the UI: name `notion`, command `notion-mcp-server`, env `NOTION_TOKEN=${NOTIO
 }
 ```
 
-Placeholders: `{{title}}` `{{podcast}}` `{{date}}` `{{duration}}` `{{url}}` `{{content}}` (full markdown) `{{blocks}}` (Notion block array, injected as JSON — feeds straight into `API-post-page`'s `children`).
+Placeholders: `{{title}}` `{{podcast}}` `{{date}}` `{{duration}}` `{{url}}` `{{content}}` (full markdown) `{{blocks}}` (Notion block array, injected as JSON — feeds straight into `API-post-page`'s `children`). (Install the Notion MCP first: `npm i -g @notionhq/notion-mcp-server`.)
 
 > The built-in Notion integration and the MCP route coexist: the former is a single REST call, the latter reuses the MCP ecosystem you already have configured elsewhere.
 

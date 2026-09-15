@@ -16,6 +16,18 @@ class MCPClientError(RuntimeError):
     pass
 
 
+def _describe(exc: BaseException) -> str:
+    """拆开 asyncio TaskGroup 抛出的 ExceptionGroup，取出真正的原因。
+
+    否则用户只会看到「ExceptionGroup: unhandled errors in a TaskGroup」这种无用信息。
+    """
+    if isinstance(exc, BaseExceptionGroup):  # Python 3.11+
+        parts = [p for p in (_describe(e) for e in exc.exceptions) if p]
+        return "；".join(dict.fromkeys(parts)) or type(exc).__name__
+    msg = str(exc).strip()
+    return f"{type(exc).__name__}: {msg}" if msg else type(exc).__name__
+
+
 async def _with_session(
     action: Callable[[ClientSession, Any], Awaitable[Any]],
     command: str,
@@ -49,7 +61,7 @@ async def _with_session(
     except Exception as exc:
         detail = err_tail()
         raise MCPClientError(
-            f"{type(exc).__name__}: {exc}" + (f" ｜ 服务器输出: {detail}" if detail else "")
+            _describe(exc) + (f" ｜ 服务器输出: {detail}" if detail else "")
         ) from exc
     finally:
         errfile.close()

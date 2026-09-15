@@ -307,12 +307,12 @@ def api_settings_verify():
 
 @app.get("/api/mcp/servers")
 def api_mcp_servers():
-    """已配置的 MCP 服务器（密钥打码）+ 可一键添加的示例 + 前端默认值。"""
+    """已配置的 MCP 服务器（密钥打码）+ 一键添加的预设 + 前端默认值。"""
     from podcast_article import config
 
     return jsonify({
         "servers": [mcp_config.mask_entry(s) for s in mcp_config.load_servers()],
-        "examples": mcp_config.EXAMPLES,
+        "presets": mcp_config.preset_catalog(),
         "defaults": {
             "notion_database_id": config.notion_database_id(),
             "notion_parent_page_id": config.notion_parent_page_id(),
@@ -320,9 +320,20 @@ def api_mcp_servers():
     })
 
 
+@app.post("/api/mcp/servers/preset")
+def api_mcp_preset():
+    """按预设一键添加。body: {"preset": "notion", "secret": "ntn_…"（可选）}"""
+    data = request.get_json(force=True, silent=True) or {}
+    try:
+        entry = mcp_config.build_from_preset(data.get("preset", ""), data.get("secret"))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"server": mcp_config.mask_entry(entry)})
+
+
 @app.post("/api/mcp/servers")
 def api_mcp_save():
-    """新增或更新一台 MCP 服务器。env 支持 {"K": "V"} 或 "K=V\\nK2=V2"，args 支持列表或空格分隔字符串。"""
+    """新增或更新一台 MCP 服务器。命令可整行传 command_line，env 支持 dict 或 "K=V\\nK2=V2"。"""
     data = request.get_json(force=True, silent=True) or {}
     args = data.get("args") or []
     if isinstance(args, str):
@@ -339,8 +350,9 @@ def api_mcp_save():
         env = {k: v for k, v in env.items() if "…" not in str(v)}
     try:
         entry = mcp_config.upsert_server({
-            "name": data.get("name"), "command": data.get("command"),
-            "args": args, "env": env, "note": data.get("note", ""),
+            "name": data.get("name"), "command_line": data.get("command_line"),
+            "command": data.get("command"), "args": args, "env": env,
+            "note": data.get("note", ""),
         })
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400

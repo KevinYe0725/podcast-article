@@ -142,22 +142,25 @@ uv run podcast-article-mcp    # stdio 传输
 
 ## 🔌 在界面上配置 MCP 服务器
 
-设置页的 **「MCP 服务器」** 分区可以直接配置任意 stdio MCP 服务器，不用改配置文件：
+设置页 →「MCP 服务器」。**常见服务器点一下就配好**，不用填表：
 
-1. 填「名称 / 启动命令 / 参数 / 环境变量」→ **添加服务器**
-2. 点 **测试** → 实时启动该服务器并列出它的全部工具（点工具胶囊即可把它选为发布目标）
-3. 文章下方的**发布下拉框**里就会出现「内置 Notion 集成」+ 各服务器的工具
-4. 选中 MCP 工具后，用**参数模板**把文章字段映射到该工具的入参
+| 按钮 | 行为 |
+|---|---|
+| **Notion 官方 MCP** | 一键添加。还没有 Notion Token 时只会问你这一个字段；`.env` 里已有就直接复用，不存第二份 |
+| **本项目 MCP** | 一键添加，把本项目的分析能力开放给其他 AI 客户端 |
+| **自定义…** | 任意 stdio 服务器，只需要一条启动命令（如 `npx -y @modelcontextprotocol/server-filesystem /tmp`），环境变量可选 |
 
-环境变量的值支持 `${VAR}` 引用 `.env`，所以密钥不用存两份。配置落在 `mcp_servers.json`（已 gitignore，可含密钥），格式见 `mcp_servers.example.json`。
+添加后界面会**自动检测连接**并显示工具数量（无需手动点测试）；工具列表默认折叠，展开后点任意工具即可把它设为发布目标。配置落在 `mcp_servers.json`（已 gitignore，可含密钥），也可直接编辑，格式见 `mcp_servers.example.json`。
 
-**示例：接入 Notion 官方 MCP Server**
+文章上方的**发布下拉框**按服务器分组，并把建页 / 写内容类工具排在前面标 ★：
 
-```bash
-npm i -g @notionhq/notion-mcp-server    # 国内可加 --registry=https://registry.npmmirror.com
+```
+内置 Notion 集成（REST）
+MCP · notion（24 个工具）   ★ API-post-page / ★ API-patch-block-children / …
+MCP · podcast-article（4 个工具）
 ```
 
-界面上填：名称 `notion`、命令 `notion-mcp-server`、环境变量 `NOTION_TOKEN=${NOTION_TOKEN}`，点测试应出现 24 个工具。发布模板（属性名按你的数据库调整）：
+选中 MCP 工具后会展开**参数模板**，把文章字段映射到该工具入参：
 
 ```json
 {
@@ -171,7 +174,7 @@ npm i -g @notionhq/notion-mcp-server    # 国内可加 --registry=https://regist
 }
 ```
 
-可用占位符：`{{title}}` `{{podcast}}` `{{date}}` `{{duration}}` `{{url}}` `{{content}}`（markdown 全文）`{{blocks}}`（Notion 块数组，作为 JSON 注入，直接喂给 `API-post-page` 的 `children`）。
+可用占位符：`{{title}}` `{{podcast}}` `{{date}}` `{{duration}}` `{{url}}` `{{content}}`（markdown 全文）`{{blocks}}`（Notion 块数组，作为 JSON 注入，直接喂给 `API-post-page` 的 `children`）。（Notion MCP 需要先 `npm i -g @notionhq/notion-mcp-server`，国内可加 `--registry=https://registry.npmmirror.com`。）
 
 > 内置 Notion 集成与 MCP 方式可以共存：前者一次调用完成（REST），后者可复用你已经在其他客户端里配好的 MCP 生态。
 
