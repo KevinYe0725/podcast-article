@@ -303,6 +303,21 @@ curl -L -o $D/multilingual.tiktoken "https://huggingface.co/mlx-community/whispe
 xyzcdn 的 CDN 速度不稳定（实测 1-7 分钟不等），失败重跑即可，已下载的部分不会重复下载。
 </details>
 
+## ✅ 测试
+
+```bash
+uv run pytest tests/ -q        # 后端：后处理修正器、分类存储、发布模板、MCP 配置、设置、Web 接口
+bash tests/ui/run.sh           # 界面：jsdom 驱动真实页面 + 真实服务，跑完自动关服务
+```
+
+UI 测试覆盖的交互（都是真实事件，不是模拟断言）：拖拽归类、删除记录（两种粒度）、
+同风格模态框、文章关闭与 Esc 分层、**时间戳点开回听本地音频**。
+
+两者都跑在**临时目录与临时分类文件**上（`PA_OUTPUT_DIR` / `PA_LIBRARY_FILE`），
+不会碰你真实的 `output/`、`library.json`。CI 见 `.github/workflows/ci.yml`（push 时自动跑这两套）。
+
+> 注：`tests/ui/runview.test.js` 需要真实下载与转写（依赖网络），不进 CI，需要时手动跑。
+
 ## 📁 项目结构
 
 ```
@@ -315,6 +330,7 @@ podcast_article/
 ├── summarize.py      # DeepSeek 精读与文章生成（三档篇幅 + 提示词）
 ├── outline.py        # 大纲 + 逐节写作（篇幅可控的分节生成）
 ├── postprocess.py    # 确定性排版收尾（段落/标点/套话/时间戳/重复引用）
+├── library.py        # 文章分类与归属存储
 ├── notion.py         # markdown → Notion blocks（带重试）
 ├── mcp_server.py     # MCP 服务器（stdio）
 ├── settings.py       # 设置存储（个人信息 / 默认值 / .env 读写）
@@ -324,7 +340,7 @@ podcast_article/
 ├── config.py         # .env 配置
 └── util.py           # 工具函数
 
-webapp.py             # Web 服务（Flask + SSE，端口 8787）
+webapp.py             # Web 服务（Flask + SSE + 音频 Range 流，端口 8787）
 web/index.html        # 前端单页（零构建，Inter 自托管）
 
 scripts/

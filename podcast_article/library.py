@@ -13,13 +13,14 @@
 from __future__ import annotations
 
 import json
-import re
+import os
 import uuid
 from pathlib import Path
 
 from .config import PROJECT_ROOT
 
-STORE_PATH = PROJECT_ROOT / "library.json"
+# 可用 PA_LIBRARY_FILE 覆盖（测试跑在临时文件上，不碰真实分类数据）
+STORE_PATH = Path(os.environ.get("PA_LIBRARY_FILE") or (PROJECT_ROOT / "library.json"))
 
 # 新建分类时轮换的配色（与界面主题一致）
 PALETTE = [

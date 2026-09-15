@@ -310,6 +310,24 @@ Automatic retries (5×, exponential backoff) are built in. Persistent failures a
 Their CDN speed varies (1–7 min observed). Just re-run — nothing downloads twice.
 </details>
 
+## ✅ Tests
+
+```bash
+uv run pytest tests/ -q        # backend: post-processing fixers, category store, publish templates, MCP config, settings, HTTP API
+bash tests/ui/run.sh           # UI: jsdom drives the real page against a real server, then shuts it down
+```
+
+UI tests cover real interactions (dispatched events, not mocked assertions): drag-to-categorise,
+deleting records (both scopes), the styled modal, closing articles with layered Esc, and
+**clicking a timestamp to replay the local audio**.
+
+Both suites run against **temporary directories and a temporary library file**
+(`PA_OUTPUT_DIR` / `PA_LIBRARY_FILE`) — your real `output/` and `library.json` are never touched.
+CI lives in `.github/workflows/ci.yml` and runs both on every push.
+
+> Note: `tests/ui/runview.test.js` needs a real download and transcription (network-dependent), so it
+> stays out of CI and is run manually when needed.
+
 ## 📁 Project structure
 
 ```
@@ -322,6 +340,7 @@ podcast_article/
 ├── summarize.py      # DeepSeek close-reading & article generation (3 modes + prompts)
 ├── outline.py        # Outline + per-section writing (length-controlled)
 ├── postprocess.py    # Deterministic formatting pass (paragraphs/punctuation/filler)
+├── library.py        # Article categories and assignments
 ├── notion.py         # markdown → Notion blocks (with retries)
 ├── mcp_server.py     # MCP server (stdio)
 ├── settings.py       # Settings store (profile / defaults / .env I/O)

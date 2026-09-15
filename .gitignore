@@ -9,3 +9,4 @@ output/
 mcp_servers.json
 settings.json
 library.json
+node_modules/

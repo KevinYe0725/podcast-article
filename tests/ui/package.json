@@ -1,0 +1,12 @@
+{
+  "name": "podcast-article-ui-tests",
+  "private": true,
+  "description": "用 jsdom 驱动真实页面与真实服务，验证前端交互（拖拽归类、删除、模态框、时间戳回听等）",
+  "scripts": {
+    "test": "bash run.sh"
+  },
+  "dependencies": {
+    "eventsource": "^3.0.7",
+    "jsdom": "^26.0.0"
+  }
+}

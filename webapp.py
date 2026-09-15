@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import re
 import shutil
 import threading
 import time
@@ -14,7 +15,7 @@ import uuid
 from pathlib import Path
 
 import markdown
-from flask import Flask, Response, jsonify, request, send_from_directory
+from flask import Flask, Response, jsonify, request, send_file, send_from_directory
 
 from podcast_article import library as library_mod
 from podcast_article import mcp_client, mcp_config, notion
@@ -23,7 +24,8 @@ from podcast_article import settings as settings_mod
 from podcast_article.config import PROJECT_ROOT
 from podcast_article.pipeline import Pipeline
 
-OUTPUT_ROOT = PROJECT_ROOT / "output"
+# 输出根目录，可用 PA_OUTPUT_DIR 覆盖（测试用独立目录，避免碰真实数据）
+OUTPUT_ROOT = Path(os.environ.get("PA_OUTPUT_DIR") or (PROJECT_ROOT / "output"))
 WEB_DIR = PROJECT_ROOT / "web"
 
 app = Flask(__name__, static_folder=str(WEB_DIR), static_url_path="/static")
@@ -131,10 +133,34 @@ def _article_preview(path: Path, limit: int = 3) -> dict:
     }
 
 
+_TS_RE = re.compile(r"\[(\d{1,2}):(\d{2}):(\d{2})\]")
+_AUDIO_NAMES = ("audio.m4a", "audio.mp3", "audio.webm", "audio.wav", "audio.m4a")
+
+
+def _audio_path(base: Path) -> Path | None:
+    for name in _AUDIO_NAMES:
+        p = base / name
+        if p.is_file():
+            return p
+    return None
+
+
+def _linkify_timestamps(html: str) -> str:
+    """把正文里的 [时:分:秒] 变成可点元素，点了跳到音频对应位置。"""
+
+    def repl(m: re.Match) -> str:
+        sec = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + int(m.group(3))
+        return (f'<a class="ts" data-sec="{sec}" title="跳到音频此处" '
+                f'href="#">{m.group(0)}</a>')
+
+    return _TS_RE.sub(repl, html)
+
+
 def _md_to_html(text: str) -> str:
-    return markdown.markdown(
+    html = markdown.markdown(
         text, extensions=["tables", "fenced_code", "sane_lists", "nl2br"]
     )
+    return _linkify_timestamps(html)
 
 
 def _running_job_id() -> str | None:
@@ -498,6 +524,7 @@ def api_library():
             except OSError:
                 item["size"] = 0
             item["category"] = assignments.get(d.name)
+            item["has_audio"] = _audio_path(d) is not None
             if item["has_article"]:
                 item["preview"] = _article_preview(d / "article.md")
             items.append(item)
@@ -581,6 +608,18 @@ def api_episode_delete(job_dir: str):
     return jsonify({"ok": True, "scope": scope, "freed": freed, "dir": job_dir})
 
 
+@app.get("/api/audio/<job_dir>")
+def api_audio(job_dir: str):
+    """本地音频流。conditional=True 让 werkzeug 处理 Range 请求，200MB 的文件也能拖动进度条。"""
+    base = (OUTPUT_ROOT / job_dir).resolve()
+    if not job_dir or not base.is_dir() or OUTPUT_ROOT.resolve() not in base.parents:
+        return jsonify({"error": "目录不存在"}), 404
+    path = _audio_path(base)
+    if not path:
+        return jsonify({"error": "这一集没有本地音频"}), 404
+    return send_file(path, conditional=True, mimetype="audio/mp4")
+
+
 @app.get("/api/file/<job_dir>/<name>")
 def api_file(job_dir: str, name: str):
     """安全地取输出目录里的文件（白名单）。"""
@@ -606,6 +645,13 @@ def index():
 
 
 if __name__ == "__main__":
-    OUTPUT_ROOT.mkdir(exist_ok=True)
-    print("► podcast-article web: http://127.0.0.1:8787")
-    app.run(host="127.0.0.1", port=8787, threaded=True)
+    import argparse
+
+    parser = argparse.ArgumentParser(description="podcast-article Web 界面")
+    parser.add_argument("--port", type=int, default=int(os.environ.get("PA_PORT", 8787)))
+    parser.add_argument("--host", default="127.0.0.1",
+                        help="默认只监听本机；如需局域网访问改为 0.0.0.0（注意无鉴权）")
+    args = parser.parse_args()
+    print(f"输出目录：{OUTPUT_ROOT}")
+    print(f"打开 http://{args.host}:{args.port}")
+    app.run(host=args.host, port=args.port, threaded=True, debug=False)

@@ -409,6 +409,42 @@
   .savebar .dot { width: 7px; height: 7px; border-radius: 50%; background: #e0a020; }
   .savebar .msg { font-size: 12.5px; color: var(--dim); }
 
+  /* ---- 时间戳与底部播放条 ---- */
+  #article .ts, #transcript .ts {
+    color: var(--green); text-decoration: none; border-bottom: 1px dashed rgba(16,163,127,.45);
+    font-variant-numeric: tabular-nums; white-space: nowrap; padding: 0 1px; border-radius: 3px;
+  }
+  #article .ts:hover, #transcript .ts:hover { background: #eafaf4; border-bottom-style: solid; }
+  #article .ts.active, #transcript .ts.active { background: var(--green); color: #fff; border-bottom-color: transparent; }
+
+  .player {
+    position: fixed; left: 50%; bottom: 20px; transform: translate(-50%, 140%);
+    width: min(660px, calc(100vw - 32px)); z-index: 75;
+    display: flex; align-items: center; gap: 12px; padding: 11px 14px;
+    background: #fff; border: 1px solid var(--border2); border-radius: 15px;
+    box-shadow: 0 14px 40px rgba(0,0,0,.18); transition: transform .22s cubic-bezier(.2,.8,.3,1);
+  }
+  .player.show { transform: translate(-50%, 0); }
+  .pbtn {
+    width: 38px; height: 38px; flex-shrink: 0; border-radius: 50%; border: 0; cursor: pointer;
+    background: var(--text); color: #fff; display: flex; align-items: center; justify-content: center; padding: 0;
+  }
+  .pbtn:hover { background: #2a2a30; }
+  .pbtn svg { width: 17px; height: 17px; }
+  .pinfo { flex: 1; min-width: 0; }
+  .ptitle { font-size: 12.5px; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 5px; }
+  .prow { display: flex; align-items: center; gap: 9px; }
+  .ptime { font-size: 11.5px; color: var(--dim); font-variant-numeric: tabular-nums; flex-shrink: 0; }
+  .pbar { flex: 1; height: 4px; background: var(--border); border-radius: 99px; cursor: pointer; }
+  .pbar i { display: block; height: 100%; width: 0; background: var(--green); border-radius: 99px; }
+  .pmini {
+    flex-shrink: 0; border: 1px solid var(--border2); background: #fff; color: var(--dim);
+    border-radius: 999px; font-size: 11px; padding: 4px 9px; cursor: pointer; font-family: var(--font);
+  }
+  .pmini:hover { color: var(--text); border-color: var(--border2); background: var(--bg2); }
+  .pclose { flex-shrink: 0; border: 0; background: none; color: #b9b9c2; font-size: 15px; cursor: pointer; padding: 4px 2px; }
+  .pclose:hover { color: var(--text); }
+
   /* ---- 模态框（替代原生 prompt/confirm）---- */
   .modal {
     position: fixed; inset: 0; z-index: 80; display: none; align-items: center; justify-content: center;
@@ -761,6 +797,25 @@
   </div><!-- /appmain -->
 </div><!-- /app -->
 
+<div id="player" class="player">
+  <button class="pbtn" id="pbtn" onclick="togglePlay()" aria-label="播放/暂停">
+    <svg id="picon-play" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13l11-6.5z"></path></svg>
+    <svg id="picon-pause" viewBox="0 0 24 24" fill="currentColor" style="display:none"><path d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z"></path></svg>
+  </button>
+  <div class="pinfo">
+    <div class="ptitle" id="ptitle"></div>
+    <div class="prow">
+      <span class="ptime" id="pnow">0:00</span>
+      <div class="pbar" id="pbar"><i id="pfill"></i></div>
+      <span class="ptime" id="ptotal">0:00</span>
+    </div>
+  </div>
+  <button class="pmini" onclick="seekBy(-15)" title="后退 15 秒">−15s</button>
+  <button class="pmini" onclick="seekBy(15)" title="前进 15 秒">+15s</button>
+  <button class="pclose" onclick="closePlayer()" title="关闭" aria-label="关闭播放器">✕</button>
+  <audio id="paudio" preload="metadata"></audio>
+</div>
+
 <div id="modal" class="modal">
   <div class="modalcard">
     <h3 id="modaltitle"></h3>
@@ -993,7 +1048,7 @@ async function toggleTranscript() {
   }
   if (!el.dataset.loaded && curWorkdir) {
     const resp = await fetch(`/api/file/${encodeURIComponent(curWorkdir)}/transcript.txt`);
-    el.textContent = await resp.text();
+    el.innerHTML = renderTranscript(await resp.text());
     el.dataset.loaded = "1";
   }
   el.classList.add("show"); $("result").classList.add("withTranscript", "wide");
@@ -1146,6 +1201,73 @@ async function verifyKey(what, btn) {
     out.className = "vres bad"; out.textContent = "✕ " + String(e);
   }
   btn.disabled = false;
+}
+
+/* ---------------- 时间戳回听（本地音频）---------------- */
+let audioDir = null;
+const pa = () => $("paudio");
+
+const fmtClock = (sec) => {
+  const s = Math.max(0, Math.floor(sec || 0));
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), ss = s % 60;
+  return (h ? h + ":" + String(m).padStart(2, "0") : String(m)) + ":" + String(ss).padStart(2, "0");
+};
+
+function episodeTitle(dir) {
+  const it = libItems.find((i) => i.dir === dir);
+  if (it && it.title) return it.title;
+  const meta = $("rmeta") ? $("rmeta").textContent.replace(/\s+/g, " ").trim() : "";
+  return meta || dir;
+}
+
+function setPlayIcon(playing) {
+  $("picon-play").style.display = playing ? "none" : "block";
+  $("picon-pause").style.display = playing ? "block" : "none";
+}
+
+/** 从某一秒开始播放当前这集的本地音频 */
+function playAt(sec, el) {
+  if (!curWorkdir) return;
+  const a = pa();
+  if (audioDir !== curWorkdir) {
+    audioDir = curWorkdir;
+    a.src = "/api/audio/" + encodeURIComponent(curWorkdir);
+    $("ptitle").textContent = episodeTitle(curWorkdir);
+    $("pfill").style.width = "0%";
+    $("pnow").textContent = fmtClock(sec);
+    $("ptotal").textContent = "0:00";
+  }
+  const jump = () => { a.currentTime = Math.max(0, sec); a.play().catch(() => {}); };
+  if (a.readyState >= 1) jump();
+  else a.addEventListener("loadedmetadata", jump, { once: true });
+  document.querySelectorAll(".ts.active").forEach((n) => n.classList.remove("active"));
+  if (el) el.classList.add("active");
+  $("player").classList.add("show");
+}
+
+function togglePlay() {
+  const a = pa();
+  if (!a.src) { toast("⚠ 先点文章里的时间戳，才会载入音频"); return; }
+  a.paused ? a.play().catch(() => {}) : a.pause();
+}
+
+function seekBy(delta) {
+  const a = pa();
+  if (!a.duration) return;
+  a.currentTime = Math.min(a.duration, Math.max(0, a.currentTime + delta));
+}
+
+function closePlayer() {
+  const a = pa();
+  a.pause();
+  $("player").classList.remove("show");
+  document.querySelectorAll(".ts.active").forEach((n) => n.classList.remove("active"));
+}
+
+/** 文字稿里的时间戳也做成可点 */
+function renderTranscript(text) {
+  return esc(text).replace(/\[(\d{1,2}):(\d{2}):(\d{2})\]/g,
+    (_m, h, mi, s) => `<a class="ts" data-sec="${+h * 3600 + +mi * 60 + +s}" title="跳到音频此处">[${h}:${mi}:${s}]</a>`);
 }
 
 /* ---------------- 模态框（同风格弹窗）---------------- */
@@ -1405,6 +1527,9 @@ function closeResult() {
   $("transcript").textContent = ""; $("transcript").dataset.loaded = "";
   $("tbtn").textContent = "查看文字稿";
   curWorkdir = null; curUrl = null;
+  audioDir = null;
+  pa().pause();
+  pa().removeAttribute("src");
   if (fromLib) $("lib").scrollIntoView({ behavior: "smooth", block: "start" });
   else $("url").focus();
 }
@@ -1706,7 +1831,7 @@ async function openEpisode(dirEnc) {
     $("rmeta").innerHTML = `<span class="pod">${esc(meta.podcast || "")}</span><span>${esc(meta.title || "")}</span>`;
     $("article").innerHTML = `<p style="color:var(--dim)">该单集还没有生成文章。</p>`;
     const tResp = await fetch(`/api/file/${dirEnc}/transcript.txt`);
-    $("transcript").textContent = await tResp.text(); $("transcript").dataset.loaded = "1";
+    $("transcript").innerHTML = renderTranscript(await tResp.text()); $("transcript").dataset.loaded = "1";
     $("transcript").classList.add("show"); $("result").classList.add("withTranscript");
     $("tbtn").textContent = "收起文字稿";
     $("nbtn").disabled = true;
@@ -1738,6 +1863,32 @@ document.addEventListener("keydown", (e) => {
   if ($("result").classList.contains("withTranscript")) { toggleTranscript(); return; }
   if ($("result").classList.contains("show")) closeResult();
 });
+// 时间戳回听（只绑定一次）
+document.addEventListener("click", (e) => {
+  const ts = e.target.closest(".ts");
+  if (!ts) return;
+  e.preventDefault();
+  playAt(parseInt(ts.dataset.sec, 10), ts);
+});
+$("pbar").addEventListener("click", (e) => {
+  const a = pa();
+  if (!a.duration) return;
+  const r = e.currentTarget.getBoundingClientRect();
+  a.currentTime = ((e.clientX - r.left) / r.width) * a.duration;
+});
+pa().addEventListener("timeupdate", () => {
+  const a = pa();
+  $("pnow").textContent = fmtClock(a.currentTime);
+  if (a.duration) $("pfill").style.width = (a.currentTime / a.duration) * 100 + "%";
+});
+pa().addEventListener("loadedmetadata", () => { $("ptotal").textContent = fmtClock(pa().duration); });
+pa().addEventListener("play", () => setPlayIcon(true));
+pa().addEventListener("pause", () => setPlayIcon(false));
+pa().addEventListener("error", () => {
+  if (pa().src) toast("⚠ 这一集没有本地音频（可能已被删除）");
+  closePlayer();
+});
+
 // 模态框交互（只绑定一次）
 $("modalok").addEventListener("click", modalOk);
 $("modalcancel").addEventListener("click", closeModal);
