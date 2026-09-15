@@ -169,7 +169,7 @@ uv run podcast-article "https://www.xiaoyuzhoufm.com/episode/xxxx"
 uv run python webapp.py    # open http://127.0.0.1:8787
 ```
 
-Paste a link → a four-stage timeline advances in real time (download / ASR / LLM percentages and ETAs) → read the article, with an optional **side-by-side transcript view**. Then pick a publish target and send it to Notion or any MCP tool.
+Paste a link → a four-stage timeline advances in real time (download / ASR / LLM percentages and ETAs) and then **collapses into a one-line summary** (elapsed time / download size / segments / characters) that you can re-expand → read the article, with an optional **side-by-side transcript view**. Then pick a publish target and send it to Notion or any MCP tool.
 
 Each card in the history grid carries a **one-line deck** (so you can decide whether to open it) and a **takeaway preview**.
 

@@ -157,6 +157,16 @@ def api_run():
     return jsonify({"job_id": job_id})
 
 
+@app.get("/api/jobs/current")
+def api_jobs_current():
+    """当前正在运行的任务（供界面提示与自动化测试等待）。"""
+    with _JOBS_LOCK:
+        for job in _JOBS.values():
+            if job["status"] == "running":
+                return jsonify({"job_id": job["id"], "url": job["url"], "status": "running"})
+    return jsonify({"job_id": None, "status": "idle"})
+
+
 @app.get("/api/job/<job_id>")
 def api_job(job_id: str):
     job = _JOBS.get(job_id)
