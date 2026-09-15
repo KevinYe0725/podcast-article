@@ -1,5 +1,4 @@
-const { JSDOM } = require("jsdom");
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const { boot, report, sleep } = require("./harness");
 const BASE = process.env.PA_BASE || "http://127.0.0.1:8787";
 const fs = require("fs");
 const DIR = "__侧边栏测试单集";   // 用自己的目录，别动 seed.js 造的共享单集
@@ -19,20 +18,13 @@ const PATH = require("path").join(process.env.PA_OUTPUT_DIR || "/tmp/pa-out", DI
   const cats = (await (await fetch(BASE + "/api/categories")).json()).categories;
   const aiCat = cats.find((c) => c.name === "AI 技术");
 
-  const html = await (await fetch(BASE + "/")).text();
   const out = {}, fails = [];
-  const dom = new JSDOM(html, {
-    url: BASE, runScripts: "dangerously", pretendToBeVisual: true,
+  const { window, doc, $ } = await boot({
     beforeParse(w) {
-      w.fetch = (u, o) => fetch(u.startsWith("http") ? u : BASE + u, o);
-      w.scrollTo = () => {}; w.Element.prototype.scrollIntoView = function () {};
       w.__under = null;
       w.document.elementFromPoint = () => w.__under;
     },
   });
-  const { window } = dom, doc = window.document;
-  const $ = (id) => doc.getElementById(id);
-  await sleep(6000);
 
   out.侧边栏行 = [...doc.querySelectorAll("#catnav .folder")].map((f) => f.textContent.replace(/\s+/g, " ").trim());
   out.有文件夹图标 = doc.querySelectorAll("#catnav .folder .ficon").length >= 4;
@@ -93,7 +85,5 @@ const PATH = require("path").join(process.env.PA_OUTPUT_DIR || "/tmp/pa-out", DI
   }
   await sleep(300);
 
-  console.log(JSON.stringify(out, null, 1));
-  console.log(fails.length ? "✕ 失败: " + fails.join(" / ") : "✓ 侧边栏文件夹全部通过");
-  process.exit(fails.length ? 1 : 0);
+  report("侧边栏文件夹全部通过", out, fails);
 })();

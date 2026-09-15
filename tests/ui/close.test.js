@@ -1,29 +1,16 @@
-const { JSDOM } = require("jsdom");
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const BASE = process.env.PA_BASE || "http://127.0.0.1:8787";
-(async () => {
-  const html = await (await fetch(BASE + "/")).text();
-  const scrolled = [];
-  const dom = new JSDOM(html, {
-    url: BASE, runScripts: "dangerously", pretendToBeVisual: true,
-    beforeParse(w) {
-      w.fetch = (u, o) => fetch(u.startsWith("http") ? u : BASE + u, o);
-      w.scrollTo = () => {};
-      w.Element.prototype.scrollIntoView = function () { scrolled.push(this.id || "(anon)"); };
-    },
-  });
-  const { window } = dom, doc = window.document;
-  const $ = (id) => doc.getElementById(id);
-  const esc = () => doc.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-  const out = {}; const fails = [];
+const { boot, report } = require("./harness");
 
-  await sleep(6000);
+(async () => {
+  const { window, doc, $, scrolled, esc } = await boot();
+  const out = {}, fails = [];
+
   const card = doc.querySelector("#libgrid .ep");
   if (!card) { console.log("没有历史卡片，无法测试"); process.exit(1); }
+  const dirArg = card.getAttribute("onclick").match(/'([^']+)'/)[1];
 
   // 打开一篇文章
-  await window.openEpisode(card.getAttribute("onclick").match(/'([^']+)'/)[1]);
-  await sleep(1200);
+  await window.openEpisode(dirArg);
+  await new Promise((r) => setTimeout(r, 1200));
   out.打开后_显示 = $("result").classList.contains("show");
   out.打开后_来源标记 = $("result").dataset.fromLib;
   out.关闭按钮存在 = !!doc.querySelector(".rhead .iconbtn.small");
@@ -34,7 +21,7 @@ const BASE = process.env.PA_BASE || "http://127.0.0.1:8787";
   // 点关闭
   scrolled.length = 0;
   window.closeResult();
-  await sleep(300);
+  await new Promise((r) => setTimeout(r, 300));
   out.关闭后_隐藏 = !$("result").classList.contains("show");
   out.关闭后_正文已清空 = $("article").innerHTML === "";
   out.关闭后_滚动到 = scrolled.join(",") || "(无)";
@@ -43,27 +30,25 @@ const BASE = process.env.PA_BASE || "http://127.0.0.1:8787";
   if (!scrolled.includes("lib")) fails.push("关闭后没有回到历史库");
 
   // Esc 关闭
-  await window.openEpisode(card.getAttribute("onclick").match(/'([^']+)'/)[1]);
-  await sleep(1000);
-  esc(); await sleep(200);
+  await window.openEpisode(dirArg);
+  await new Promise((r) => setTimeout(r, 1000));
+  esc(); await new Promise((r) => setTimeout(r, 200));
   out.Esc关闭 = !$("result").classList.contains("show");
   if (!out.Esc关闭) fails.push("Esc 无法关闭文章");
 
   // Esc 分层：文字稿打开时先收文字稿，文章仍显示
-  await window.openEpisode(card.getAttribute("onclick").match(/'([^']+)'/)[1]);
-  await sleep(1000);
+  await window.openEpisode(dirArg);
+  await new Promise((r) => setTimeout(r, 1000));
   await window.toggleTranscript();
-  await sleep(300);
+  await new Promise((r) => setTimeout(r, 300));
   out.文字稿已开 = $("result").classList.contains("withTranscript");
-  esc(); await sleep(200);
+  esc(); await new Promise((r) => setTimeout(r, 200));
   out.Esc一次_文字稿收 = !$("result").classList.contains("withTranscript");
   out.Esc一次_文章还在 = $("result").classList.contains("show");
-  esc(); await sleep(200);
+  esc(); await new Promise((r) => setTimeout(r, 200));
   out.Esc两次_文章关 = !$("result").classList.contains("show");
   if (!out.Esc一次_文字稿收 || !out.Esc一次_文章还在) fails.push("Esc 分层行为不对");
   if (!out.Esc两次_文章关) fails.push("第二次 Esc 没有关掉文章");
 
-  console.log(JSON.stringify(out, null, 1));
-  console.log(fails.length ? "✕ 失败: " + fails.join(" / ") : "✓ 关闭交互全部通过");
-  process.exit(fails.length ? 1 : 0);
+  report("关闭交互全部通过", out, fails);
 })();

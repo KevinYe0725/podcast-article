@@ -1,5 +1,4 @@
-const { JSDOM } = require("jsdom");
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const { boot, report } = require("./harness");
 const BASE = process.env.PA_BASE || "http://127.0.0.1:8787";
 const fs = require("fs");
 const PATH = require("path").join(process.env.PA_OUTPUT_DIR || "/tmp/pa-out", "__前端删除测试");
@@ -13,18 +12,9 @@ const PATH = require("path").join(process.env.PA_OUTPUT_DIR || "/tmp/pa-out", "_
   fs.writeFileSync(PATH + "/audio.m4a", Buffer.alloc(220 * 1024));
   fs.writeFileSync(PATH + "/transcript.txt", "文字稿");
 
-  const html = await (await fetch(BASE + "/")).text();
   const out = {}, fails = [];
-  const dom = new JSDOM(html, {
-    url: BASE, runScripts: "dangerously", pretendToBeVisual: true,
-    beforeParse(w) {
-      w.fetch = (u, o) => fetch(u.startsWith("http") ? u : BASE + u, o);
-      w.scrollTo = () => {}; w.Element.prototype.scrollIntoView = function () {};
-    },
-  });
-  const { window } = dom, doc = window.document;
-  const $ = (id) => doc.getElementById(id);
-  await sleep(6000);
+  const { window, doc, $ } = await boot();
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   const card = [...doc.querySelectorAll("#libgrid .ep")].find((c) => c.dataset.dir === "__前端删除测试");
   out.测试卡片存在 = !!card;
@@ -68,7 +58,5 @@ const PATH = require("path").join(process.env.PA_OUTPUT_DIR || "/tmp/pa-out", "_
   if (!out.列表已刷新) fails.push("列表未刷新");
 
   fs.rmSync(PATH, { recursive: true, force: true });
-  console.log(JSON.stringify(out, null, 1));
-  console.log(fails.length ? "✕ 失败: " + fails.join(" / ") : "✓ 历史文章删除功能全部通过");
-  process.exit(fails.length ? 1 : 0);
+  report("历史文章删除功能全部通过", out, fails);
 })();

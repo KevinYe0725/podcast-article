@@ -1,23 +1,8 @@
-const { JSDOM } = require("jsdom");
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const { boot, report, sleep } = require("./harness");
 const BASE = process.env.PA_BASE || "http://127.0.0.1:8787";
 (async () => {
-  const html = await (await fetch(BASE + "/")).text();
   const out = {}, fails = [];
-  const dom = new JSDOM(html, {
-    url: BASE, runScripts: "dangerously", pretendToBeVisual: true,
-    beforeParse(w) {
-      w.fetch = (u, o) => fetch(u.startsWith("http") ? u : BASE + u, o);
-      w.scrollTo = () => {}; w.Element.prototype.scrollIntoView = function () {};
-      // jsdom 不实现音频播放：打桩
-      w.HTMLMediaElement.prototype.play = function () { this._playing = true; this.dispatchEvent(new w.Event("play")); return Promise.resolve(); };
-      w.HTMLMediaElement.prototype.pause = function () { this._playing = false; this.dispatchEvent(new w.Event("pause")); };
-      w.HTMLMediaElement.prototype.load = function () {};
-    },
-  });
-  const { window } = dom, doc = window.document;
-  const $ = (id) => doc.getElementById(id);
-  await sleep(6000);
+  const { window, doc, $ } = await boot();
 
   // 打开一篇有音频的文章
   const card = [...doc.querySelectorAll("#libgrid .ep")].find((c) => c.dataset.dir.includes("鱼不存在"))
@@ -90,7 +75,5 @@ const BASE = process.env.PA_BASE || "http://127.0.0.1:8787";
   out.关闭后_高亮清除 = doc.querySelectorAll(".ts.active").length === 0;
   if (!out.关闭后_播放条隐藏 || !out.关闭后_高亮清除) fails.push("关闭播放器后状态未复位");
 
-  console.log(JSON.stringify(out, null, 1));
-  console.log(fails.length ? "✕ 失败: " + fails.join(" / ") : "✓ 时间戳回听全部通过");
-  process.exit(fails.length ? 1 : 0);
+  report("时间戳回听全部通过", out, fails);
 })();

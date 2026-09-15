@@ -1,23 +1,15 @@
-const { JSDOM } = require("jsdom");
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const { boot, report, sleep } = require("./harness");
 const BASE = process.env.PA_BASE || "http://127.0.0.1:8787";
 (async () => {
-  const html = await (await fetch(BASE + "/")).text();
   const out = {}, fails = [];
   let prompted = 0, confirmed = 0;
-  const dom = new JSDOM(html, {
-    url: BASE, runScripts: "dangerously", pretendToBeVisual: true,
+  const { window, doc, $ } = await boot({
     beforeParse(w) {
-      w.fetch = (u, o) => fetch(u.startsWith("http") ? u : BASE + u, o);
-      w.scrollTo = () => {}; w.Element.prototype.scrollIntoView = function () {};
       w.prompt = () => { prompted++; return ""; };      // 若还在用原生弹窗就会被计数
       w.confirm = () => { confirmed++; return true; };
     },
   });
-  const { window } = dom, doc = window.document;
-  const $ = (id) => doc.getElementById(id);
   const key = (k) => $("modalinput").dispatchEvent(new window.KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true }));
-  await sleep(6000);
 
   // 1) 打开新建弹窗
   [...doc.querySelectorAll("#catnav .folder")].find((c) => c.textContent.includes("新建分类")).click();
@@ -85,7 +77,5 @@ const BASE = process.env.PA_BASE || "http://127.0.0.1:8787";
   out.原生弹窗调用次数 = prompted + confirmed;
   if (prompted + confirmed > 0) fails.push("仍在调用原生弹窗");
 
-  console.log(JSON.stringify(out, null, 1));
-  console.log(fails.length ? "✕ 失败: " + fails.join(" / ") : "✓ 同风格模态框全部通过");
-  process.exit(fails.length ? 1 : 0);
+  report("同风格模态框全部通过", out, fails);
 })();
