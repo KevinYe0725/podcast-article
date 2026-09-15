@@ -125,7 +125,7 @@
       display: grid; grid-template-columns: minmax(0, 1fr) 380px; column-gap: 44px;
       grid-template-areas: "meta side" "btns side" "art side"; align-items: start; align-content: start;
     }
-    #result.withTranscript .rmeta { grid-area: meta; }
+    #result.withTranscript .rhead { grid-area: meta; }
     #result.withTranscript .btnrow { grid-area: btns; }
     #result.withTranscript #article { grid-area: art; }
     #result.withTranscript #transcript {
@@ -133,6 +133,10 @@
       max-height: calc(100vh - 120px); margin-top: 0;
     }
   }
+  .rhead { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; margin-bottom: 18px; }
+  .rhead .rmeta { margin-bottom: 0; flex: 1; min-width: 0; }
+  .iconbtn.small { width: 30px; height: 30px; flex-shrink: 0; }
+  .iconbtn.small svg { width: 14px; height: 14px; }
   .rmeta { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 18px; font-size: 13px; color: var(--dim); }
   .rmeta .pod { font-weight: 600; color: var(--text); }
   .btnrow { display: flex; gap: 10px; margin-bottom: 26px; flex-wrap: wrap; }
@@ -343,7 +347,7 @@
       <label class="chip"><input type="checkbox" id="fa"> 重写文章</label>
     </div>
   </div>
-  <div class="hint">⌘/Ctrl + Enter 直接开始 · 产物会缓存，重新生成文章不必重新转写</div>
+  <div class="hint">⌘/Ctrl + Enter 直接开始 · Esc 关闭文章 / 退出设置 · 产物会缓存，重新生成文章不必重新转写</div>
 
   <div id="runview">
     <div class="stage" id="st0"><div class="ico">1</div><div class="body"><div class="line1"><span class="name">抓取元信息</span><span class="detail"></span></div><div class="bar"><i></i></div></div></div>
@@ -355,7 +359,14 @@
   </div>
 
   <div id="result">
-    <div class="rmeta" id="rmeta"></div>
+    <div class="rhead">
+      <div class="rmeta" id="rmeta"></div>
+      <button class="iconbtn small" onclick="closeResult()" title="关闭（Esc）" aria-label="关闭">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <path d="M18 6 6 18M6 6l12 12"></path>
+        </svg>
+      </button>
+    </div>
     <div class="btnrow">
       <div class="pubrow">
         <select class="sel" id="dest" onchange="onDestChange()"></select>
@@ -717,6 +728,7 @@ function finishJob(d) {
     $("transcript").classList.remove("show"); $("result").classList.remove("withTranscript");
     $("tbtn").textContent = "查看文字稿";
     $("nbtn").disabled = false;
+    $("result").dataset.fromLib = "";
     $("result").classList.add("show");
     $("result").scrollIntoView({ behavior: "smooth", block: "start" });
     loadLibrary();
@@ -1091,6 +1103,21 @@ async function delServer(name) {
   loadMcp();
 }
 
+function closeResult() {
+  const el = $("result");
+  const fromLib = el.dataset.fromLib === "1";
+  el.classList.remove("show", "withTranscript");
+  el.dataset.fromLib = "";
+  $("tplbox").style.display = "none";
+  $("article").innerHTML = "";
+  $("transcript").classList.remove("show");
+  $("transcript").textContent = ""; $("transcript").dataset.loaded = "";
+  $("tbtn").textContent = "查看文字稿";
+  curWorkdir = null; curUrl = null;
+  if (fromLib) $("lib").scrollIntoView({ behavior: "smooth", block: "start" });
+  else $("url").focus();
+}
+
 async function loadLibrary() {
   const resp = await fetch("/api/library");
   const { items } = await resp.json();
@@ -1117,6 +1144,7 @@ async function openEpisode(dirEnc) {
   const metaResp = await fetch(`/api/file/${dirEnc}/meta.json`);
   const meta = await metaResp.json();
   curWorkdir = dir; curUrl = meta.url || null;
+  $("result").dataset.fromLib = "1";   // 关闭时回到历史库而不是回到输入框
   const artResp = await fetch(`/api/file/${dirEnc}/article.md`);
   if (!artResp.ok) {
     $("rmeta").innerHTML = `<span class="pod">${esc(meta.podcast || "")}</span><span>${esc(meta.title || "")}</span>`;
@@ -1146,6 +1174,12 @@ $("url").addEventListener("keydown", (e) => {
 });
 document.addEventListener("keydown", (e) => {
   if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && !$("go").disabled) { e.preventDefault(); startRun(); }
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  if ($("settings").style.display === "block") { closeSettings(); return; }
+  if ($("result").classList.contains("withTranscript")) { toggleTranscript(); return; }
+  if ($("result").classList.contains("show")) closeResult();
 });
 loadLibrary();
 loadMcp();
