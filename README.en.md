@@ -55,6 +55,40 @@ The article skeleton is fixed and tuned on dozens of real episodes: **custom tit
 
 Overly long transcripts automatically switch to a chunk-then-synthesize mode — timestamps preserved and verifiable throughout.
 
+## 📖 What the article looks like
+
+Not a summary, not reading notes — a piece you can **read in one sitting**. The skeleton is built around reading motivation:
+
+| Part | Purpose |
+|---|---|
+| Title + one-line deck | The title promises concrete information and a hook; the deck states the core tension but **never spoils the ending** |
+| Opening 2-3 paragraphs | Enter through a concrete scene, detail or number ("At dawn on 18 April 1906, a magnitude 7.9 earthquake flattened most of San Francisco in 47 seconds…"), never a list of conclusions |
+| Body, 3-6 sections | Headings promise concrete information ("The 2,500 fish he named turned out not to exist") instead of vague ones ("Light and dark", "Another world"); 300-900 words per section, paragraphs under 200 characters |
+| What you take away | 3-5 checkable judgements, things to try, or reusable frameworks — never "learned about X" |
+| Editor's notes | 3 items: where the argument is weak or overgeneralised, and how the reader should weigh it |
+
+Hard rules: quotes with timestamps appear inline (max 6, no duplicate "quotable lines" section); at least one verifiable concrete detail every 200 characters; the banned-phrase list lives in `podcast_article/summarize.py`.
+
+### Three length modes
+
+A mode controls **structure and depth** (section count, whether tables/quotes are included); the word count follows from the content:
+
+| Mode | Structure | Measured (109-min interview) |
+|---|---|---|
+| Concise | 3 sections + takeaways | ~3,600 chars / 7 min |
+| Standard | 4-5 sections + editor's notes | ~6,000 chars / 12 min |
+| Deep | plus a books/people/concepts table and quotes | 8,000+ chars |
+
+> An LLM cannot be instructed to hit a word count (measured over 5 runs: output lands at 1.5-2× the target), so we **don't pretend to control it**: modes own structure and depth, formatting discipline is enforced deterministically (`postprocess.py` splits long paragraphs, fixes orphan timestamps, strips filler, normalises CJK punctuation), and length is only trimmed mechanically in extreme cases (beyond 1.6× the upper bound).
+
+### Quality check
+
+```bash
+uv run python scripts/report_quality.py output/*/article.md
+```
+
+Reports filler density, longest paragraph, bullet ratio, specificity density, orphan timestamps and mixed-language leaks — used to verify that prompt changes actually make articles more readable.
+
 ## 🚀 Quick start
 
 ```bash
@@ -91,7 +125,7 @@ The **⚙ Settings** button (top right) manages your profile, credentials and ge
 | Profile | Name + long-term interests, injected into the writing prompt as a "reader profile" |
 | API keys | DeepSeek / Notion — **write-only** (the API only ever reports whether a key is configured, plus a masked value), with one-click connection tests |
 | Publish targets | Notion database / parent page ID |
-| Generation defaults | Default language, ASR backend, ASR model, direct-read limit, force-ASR flag |
+| Generation defaults | Default length mode, default language, ASR backend, ASR model, direct-read limit, force-ASR flag, auto-review |
 | MCP servers | See below |
 | Storage | Output directory, episode count and size, local models, config file paths |
 
@@ -226,7 +260,8 @@ podcast_article/
 ├── sources/          # Link resolution: Xiaoyuzhou / RSS / Apple / yt-dlp
 ├── subtitles.py      # Subtitle download & VTT/SRT parsing (rolling-dedup)
 ├── transcribe.py     # Local ASR + tqdm progress parsing
-├── summarize.py      # DeepSeek close-reading & article generation
+├── summarize.py      # DeepSeek close-reading & article generation (3 modes + prompts)
+├── postprocess.py    # Deterministic formatting pass (paragraphs/punctuation/filler)
 ├── notion.py         # markdown → Notion blocks (with retries)
 ├── mcp_server.py     # MCP server (stdio)
 ├── settings.py       # Settings store (profile / defaults / .env I/O)

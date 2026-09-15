@@ -39,6 +39,8 @@ GENERATION_DEFAULTS: dict = {
     "llm_model": "",
     "max_chars": 75_000,
     "no_subs": False,
+    "length_mode": "standard",  # concise（3-4 分钟精华）/ standard / deep
+    "auto_polish": False,       # 生成后再让模型自查一遍（可选，格式纪律已由确定性后处理保证）
 }
 
 DEFAULTS: dict = {"profile": PROFILE_DEFAULTS, "generation": GENERATION_DEFAULTS}

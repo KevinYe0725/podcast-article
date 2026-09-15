@@ -29,6 +29,8 @@ class Pipeline:
         force_article: bool = False,
         pick: int = 1,
         max_chars: int = 75_000,
+        mode: str | None = None,
+        polish: bool = True,
         log=print,
         progress=None,
     ):
@@ -43,6 +45,8 @@ class Pipeline:
         self.force_article = force_article
         self.pick = pick
         self.max_chars = max_chars
+        self.mode = mode  # 篇幅档位：concise / standard / deep
+        self.polish = polish  # 生成后是否做编辑复检
         self.log = log
         self.progress = progress  # progress(stage: str, data: dict)
 
@@ -158,6 +162,8 @@ class Pipeline:
             shownotes_html=ep.shownotes_html,
             max_chars=self.max_chars,
             llm_model=self.llm_model,
+            mode=self.mode,
+            polish=self.polish,
             log=self.log,
             progress=self.progress,
         )

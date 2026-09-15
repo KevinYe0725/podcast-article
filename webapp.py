@@ -69,6 +69,8 @@ def _new_job(url: str, opts: dict) -> str:
                 force_article=bool(opts.get("force_article")),
                 pick=int(opts.get("pick", 1)),
                 max_chars=int(opts.get("max_chars") or defaults.get("max_chars") or 75_000),
+                mode=opts.get("mode") or defaults.get("length_mode") or "standard",
+                polish=bool(opts.get("polish", defaults.get("auto_polish", True))),
                 log=log,
                 progress=progress,
             )

@@ -321,6 +321,13 @@
       <button id="go" onclick="startRun()">生成文章</button>
     </div>
     <div class="opts">
+      <label class="chip">篇幅
+        <select id="mode">
+          <option value="concise">精华 · 3-4 分钟</option>
+          <option value="standard" selected>标准 · 6-8 分钟</option>
+          <option value="deep">深度 · 10-15 分钟</option>
+        </select>
+      </label>
       <label class="chip">转写语言
         <select id="lang"><option value="auto">自动</option><option value="zh">中文</option><option value="en">English</option></select>
       </label>
@@ -465,6 +472,22 @@
       <p class="fhint">对应 --model 参数；本地缓存目录优先。</p>
     </div>
     <div class="field">
+      <div class="fhead"><label class="flabel" for="g_mode">默认篇幅</label></div>
+      <select id="g_mode" onchange="markDirty()">
+        <option value="concise">精华版：1200-1800 字，3-4 分钟读完</option>
+        <option value="standard">标准版：2500-4000 字，6-8 分钟读完</option>
+        <option value="deep">深度版：5000-8000 字，10-15 分钟读完</option>
+      </select>
+      <p class="fhint">首页输入框的「篇幅」会以此作为初值。精华版适合先判断"这期值不值得听"。</p>
+    </div>
+    <div class="field">
+      <div class="fhead"><label class="flabel" for="g_polish">生成后自动复检</label></div>
+      <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text)">
+        <input type="checkbox" id="g_polish" style="width:auto" onchange="markDirty()"> 让模型按可读性清单复查并重写
+      </label>
+      <p class="fhint">复检会压缩到目标字数、清掉套话、修正含糊小标题与超长段落。多花约 30% token，但成稿可读性明显更好。</p>
+    </div>
+    <div class="field">
       <div class="fhead"><label class="flabel" for="g_max_chars">单次直读上限（字符）</label></div>
       <input id="g_max_chars" inputmode="numeric" placeholder="75000" oninput="markDirty()">
       <p class="fhint">文字稿超过此长度会切换为「分段精读 → 汇总」模式。</p>
@@ -549,7 +572,7 @@ async function startRun(opts = {}) {
   const resp = await fetch("/api/run", {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      url, lang: $("lang").value, model: $("model").value.trim(),
+      url, lang: $("lang").value, model: $("model").value.trim(), mode: $("mode").value,
       no_subs: $("no_subs").checked,
       force_transcript: opts.force_transcript ?? $("ft").checked,
       force_article: opts.force_article ?? $("fa").checked,
@@ -771,6 +794,8 @@ async function loadSettings() {
   $("g_backend").value = g.backend || "mlx";
   $("g_asr_model").value = g.asr_model || "";
   $("g_max_chars").value = g.max_chars || 75000;
+  $("g_mode").value = g.length_mode || "standard";
+  $("g_polish").checked = g.auto_polish !== false;
   $("g_no_subs").checked = !!g.no_subs;
   $("g_models").textContent = (s.models || []).join("、") || "（未检测到本地模型）";
   $("storagerows").innerHTML = [
@@ -787,6 +812,7 @@ function applyDefaultsToComposer(g) {
   $("lang").value = g.language || "auto";
   $("model").value = g.asr_model || "";
   $("no_subs").checked = !!g.no_subs;
+  $("mode").value = g.length_mode || "standard";
 }
 
 async function saveSettings() {
@@ -802,6 +828,8 @@ async function saveSettings() {
       asr_model: $("g_asr_model").value.trim(),
       max_chars: parseInt($("g_max_chars").value, 10) || 75000,
       no_subs: $("g_no_subs").checked,
+      length_mode: $("g_mode").value,
+      auto_polish: $("g_polish").checked,
     },
     secrets: {},
   };
