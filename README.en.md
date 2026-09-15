@@ -173,6 +173,8 @@ Paste a link → a four-stage timeline advances in real time (download / ASR / L
 
 Each card in the history grid carries a **one-line deck** (so you can decide whether to open it) and a **takeaway preview**.
 
+**Categories**: create a few with "＋ New category", then **press and drag a card onto a category** to file it (works with mouse, trackpad and touch — the card follows your pointer and the target highlights). You can also click a card's category label and pick from a menu. Categories can be renamed or deleted (deleting one never deletes articles — they return to "Uncategorised"), and clicking a category filters the grid.
+
 The **⚙ Settings** button (top right) manages your profile, credentials and generation preferences:
 
 | Section | Contents |

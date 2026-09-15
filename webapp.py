@@ -15,6 +15,7 @@ from pathlib import Path
 import markdown
 from flask import Flask, Response, jsonify, request, send_from_directory
 
+from podcast_article import library as library_mod
 from podcast_article import mcp_client, mcp_config, notion
 from podcast_article import publish as publish_mod
 from podcast_article import settings as settings_mod
@@ -471,8 +472,10 @@ def api_mcp_call():
 
 @app.get("/api/library")
 def api_library():
-    """列出 output/ 下所有已生成的单集（按时间倒序）。"""
+    """列出 output/ 下所有已生成的单集（按时间倒序）+ 分类归属。"""
     items = []
+    cat_state = library_mod.snapshot()
+    assignments = cat_state["assignments"]
     if OUTPUT_ROOT.exists():
         for d in sorted(OUTPUT_ROOT.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
             meta_file = d / "meta.json"
@@ -489,10 +492,58 @@ def api_library():
                 "duration": meta.get("duration"),
                 "has_article": (d / "article.md").exists(),
             }
+            item["category"] = assignments.get(d.name)
             if item["has_article"]:
                 item["preview"] = _article_preview(d / "article.md")
             items.append(item)
-    return jsonify({"items": items})
+    return jsonify({"items": items, "categories": cat_state["categories"],
+                    "assignments": assignments})
+
+
+@app.get("/api/categories")
+def api_categories():
+    """分类列表（含各自文章数）与文章归属。"""
+    return jsonify(library_mod.snapshot())
+
+
+@app.post("/api/categories")
+def api_category_create():
+    data = request.get_json(force=True, silent=True) or {}
+    try:
+        cat = library_mod.create(data.get("name", ""))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"category": cat})
+
+
+@app.patch("/api/categories/<cid>")
+def api_category_rename(cid: str):
+    data = request.get_json(force=True, silent=True) or {}
+    try:
+        cat = library_mod.rename(cid, data.get("name", ""))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"category": cat})
+
+
+@app.delete("/api/categories/<cid>")
+def api_category_delete(cid: str):
+    try:
+        library_mod.delete(cid)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 404
+    return jsonify({"ok": True})
+
+
+@app.post("/api/assign")
+def api_assign():
+    """把文章放进分类（category_id 为空 → 移出分类）。body: {"dir", "category_id"}"""
+    data = request.get_json(force=True, silent=True) or {}
+    try:
+        library_mod.assign(data.get("dir", ""), (data.get("category_id") or "").strip() or None)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify(library_mod.snapshot())
 
 
 @app.get("/api/file/<job_dir>/<name>")

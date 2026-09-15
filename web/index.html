@@ -245,6 +245,60 @@
   .ep .s { font-size: 12px; color: var(--dim); margin-top: 8px; display: flex; gap: 8px; align-items: center; }
   .ep .s .ok { color: var(--green); font-weight: 500; }
   #empty-lib { color: #b4b4bc; font-size: 13px; }
+
+  /* ---- 分类栏（同时是拖拽投放区）---- */
+  .libhead { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 16px; }
+  .libhead h2 { margin-bottom: 0; }
+  .catbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .cat {
+    display: inline-flex; align-items: center; gap: 7px; border: 1px solid var(--border2);
+    border-radius: 999px; padding: 5px 12px; font-size: 12.5px; background: #fff; color: var(--text);
+    cursor: pointer; transition: .13s; user-select: none; white-space: nowrap;
+  }
+  .cat:hover { border-color: var(--border2); background: var(--bg2); }
+  .cat .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .cat .n { font-size: 11px; color: var(--dim); font-variant-numeric: tabular-nums; }
+  .cat.on { border-color: var(--text); background: var(--text); color: #fff; }
+  .cat.on .n { color: rgba(255,255,255,.75); }
+  .cat.drop { border-color: var(--green); background: #eafaf4; box-shadow: 0 0 0 3px rgba(16,163,127,.14); transform: translateY(-1px); }
+  .cat.add { border-style: dashed; color: var(--dim); }
+  .cat.add:hover { color: var(--text); border-color: var(--border2); }
+  .cat .edit { opacity: 0; font-size: 11px; color: inherit; transition: .13s; }
+  .cat:hover .edit { opacity: .55; }
+  .cat .edit:hover { opacity: 1; }
+
+  /* 卡片上显示所属分类 */
+  .ep .catlabel { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; }
+  .ep .catlabel .dot { width: 7px; height: 7px; border-radius: 50%; }
+
+  .ep .catlabel { cursor: pointer; }
+  .ep .catlabel.empty { color: #b9b9c2; opacity: 0; transition: .13s; }
+  .ep:hover .catlabel.empty { opacity: 1; }
+  .ep .catlabel:hover { color: var(--green); }
+
+  /* 归类菜单（点击备用入口） */
+  .catmenu {
+    position: fixed; z-index: 70; min-width: 168px; background: #fff; border: 1px solid var(--border2);
+    border-radius: 12px; padding: 6px; box-shadow: 0 10px 28px rgba(0,0,0,.14);
+  }
+  .catmenu .mi {
+    display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 8px;
+    font-size: 13px; cursor: pointer; color: var(--text);
+  }
+  .catmenu .mi:hover { background: var(--bg2); }
+  .catmenu .mi .dot { width: 8px; height: 8px; border-radius: 50%; }
+  .catmenu .sep { height: 1px; background: var(--border); margin: 5px 4px; }
+
+  /* 拖拽 */
+  .ep.dragging { opacity: .38; }
+  .dragghost {
+    position: fixed; z-index: 60; pointer-events: none; width: 240px;
+    border: 1px solid var(--green); border-radius: 14px; background: #fff; padding: 14px 16px;
+    box-shadow: 0 12px 32px rgba(0,0,0,.18); transform: rotate(-1.2deg); opacity: .96;
+  }
+  .dragghost .t { font-size: 13px; font-weight: 600; line-height: 1.45; }
+  body.dragging { cursor: grabbing; }
+  body.dragging * { cursor: grabbing !important; }
   .ep .deck { font-size: 12.5px; color: #6e6e80; line-height: 1.6; margin-top: 7px; }
   .ep .tk { margin: 9px 0 0; padding-left: 0; list-style: none; }
   .ep .tk li { font-size: 12px; color: #4a4a55; line-height: 1.55; margin-top: 5px; padding-left: 14px; position: relative; }
@@ -403,7 +457,10 @@
   </div>
 
   <div id="lib">
-    <h2>历史文章</h2>
+    <div class="libhead">
+      <h2>历史文章</h2>
+      <div class="catbar" id="catbar"></div>
+    </div>
     <div class="grid" id="libgrid"></div>
     <div id="empty-lib">还没有生成过任何文章。</div>
   </div>
@@ -1179,19 +1236,64 @@ function closeResult() {
   else $("url").focus();
 }
 
+/* ---------------- 历史库：分类 + 拖拽投放 ---------------- */
+let libItems = [], libCats = [], libAssign = {}, activeCat = "all";
+let dragState = null;
+
+const catById = (id) => libCats.find((c) => c.id === id) || null;
+
 async function loadLibrary() {
   const resp = await fetch("/api/library");
-  const { items } = await resp.json();
-  $("empty-lib").style.display = items.length ? "none" : "block";
-  $("libgrid").innerHTML = items.map((it) => {
+  const d = await resp.json();
+  libItems = d.items || [];
+  libCats = d.categories || [];
+  libAssign = d.assignments || {};
+  renderCatbar();
+  renderGrid();
+}
+
+function renderCatbar() {
+  const unassigned = libItems.filter((it) => !libAssign[it.dir]).length;
+  const chips = [
+    `<button class="cat ${activeCat === "all" ? "on" : ""}" onclick="setCat('all')">全部 <span class="n">${libItems.length}</span></button>`,
+    `<button class="cat ${activeCat === "none" ? "on" : ""}" data-drop="none" onclick="setCat('none')">未分类 <span class="n">${unassigned}</span></button>`,
+  ];
+  libCats.forEach((c) => {
+    chips.push(`<button class="cat ${activeCat === c.id ? "on" : ""}" data-drop="${c.id}" onclick="setCat('${c.id}')">
+      <span class="dot" style="background:${esc(c.color)}"></span>${esc(c.name)} <span class="n">${c.count || 0}</span>
+      <span class="edit" title="重命名" onclick="renameCat(event,'${c.id}')">✎</span>
+      <span class="edit" title="删除分类" onclick="deleteCat(event,'${c.id}')">✕</span>
+    </button>`);
+  });
+  chips.push(`<button class="cat add" onclick="createCat()">＋ 新建分类</button>`);
+  $("catbar").innerHTML = chips.join("");
+}
+
+function setCat(v) { activeCat = v; renderCatbar(); renderGrid(); }
+
+function renderGrid() {
+  const shown = libItems.filter((it) =>
+    activeCat === "all" ? true
+      : activeCat === "none" ? !libAssign[it.dir]
+      : libAssign[it.dir] === activeCat);
+  const empty = $("empty-lib");
+  if (!libItems.length) { empty.textContent = "还没有生成过任何文章。"; empty.style.display = "block"; }
+  else if (!shown.length) { empty.textContent = "这个分类下还没有文章 —— 把下面的卡片按住拖到上方分类里即可。"; empty.style.display = "block"; }
+  else empty.style.display = "none";
+
+  $("libgrid").innerHTML = shown.map((it) => {
     const pv = it.preview || {};
+    const c = catById(libAssign[it.dir]);
     const take = (pv.takeaways || []).map((t) => `<li>${esc(t)}</li>`).join("");
     return `
-    <div class="ep" onclick="openEpisode('${encodeURIComponent(it.dir)}')">
+    <div class="ep" data-dir="${esc(it.dir)}" onclick="openEpisode('${encodeURIComponent(it.dir)}')">
       <div class="t">${esc(it.title)}</div>
       ${pv.deck ? `<div class="deck">${esc(pv.deck)}</div>` : ""}
       ${take ? `<ul class="tk">${take}</ul>` : ""}
       <div class="s">
+        ${c
+          ? `<span class="catlabel" title="点击更换分类" onclick="event.stopPropagation();openCatMenu(event,'${esc(it.dir)}')"><span class="dot" style="background:${esc(c.color)}"></span>${esc(c.name)}</span>`
+          : `<span class="catlabel empty" title="点击归类" onclick="event.stopPropagation();openCatMenu(event,'${esc(it.dir)}')">＋ 分类</span>`}
         ${it.podcast ? `<span>${esc(it.podcast)}</span>` : ""}
         ${it.has_article ? `<span class="ok">✓ 有文章</span>` : `<span>无文章</span>`}
         ${pv.chars ? `<span>${pv.chars} 字</span>` : ""}
@@ -1200,7 +1302,147 @@ async function loadLibrary() {
   }).join("");
 }
 
+async function createCat() {
+  const name = (prompt("新建分类名称（例如：AI 技术 / 商业访谈 / 读书") || "").trim();
+  if (!name) return;
+  const resp = await fetch("/api/categories", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }),
+  });
+  const d = await resp.json();
+  if (!resp.ok) { toast("⚠ " + esc(d.error || "创建失败")); return; }
+  await loadLibrary();
+  toast(`✦ 已创建分类「${esc(d.category.name)}」`);
+}
+
+async function renameCat(ev, cid) {
+  ev.stopPropagation();
+  const cur = catById(cid);
+  const name = (prompt("重命名分类", cur ? cur.name : "") || "").trim();
+  if (!name) return;
+  const resp = await fetch("/api/categories/" + encodeURIComponent(cid), {
+    method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }),
+  });
+  const d = await resp.json();
+  if (!resp.ok) { toast("⚠ " + esc(d.error || "重命名失败")); return; }
+  await loadLibrary();
+}
+
+async function deleteCat(ev, cid) {
+  ev.stopPropagation();
+  const cur = catById(cid);
+  if (!confirm(`删除分类「${cur ? cur.name : cid}」？\n文章不会被删除，只会退回「未分类」。`)) return;
+  const resp = await fetch("/api/categories/" + encodeURIComponent(cid), { method: "DELETE" });
+  if (!resp.ok) { const d = await resp.json(); toast("⚠ " + esc(d.error || "删除失败")); return; }
+  if (activeCat === cid) activeCat = "all";
+  await loadLibrary();
+}
+
+async function assignArticle(dir, cid) {
+  const resp = await fetch("/api/assign", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ dir, category_id: cid }),
+  });
+  const d = await resp.json();
+  if (!resp.ok) { toast("⚠ " + esc(d.error || "移动失败")); return; }
+  libCats = d.categories || []; libAssign = d.assignments || {};
+  renderCatbar(); renderGrid();
+  const c = catById(cid);
+  toast(c ? `✦ 已移入「${esc(c.name)}」` : "✦ 已移出分类");
+}
+
+/* ---- 点击归类菜单（拖拽之外的备用入口）---- */
+function closeCatMenu() {
+  const m = document.querySelector(".catmenu");
+  if (m) m.remove();
+  document.removeEventListener("pointerdown", outsideCatMenu, true);
+}
+
+function outsideCatMenu(e) {
+  if (!e.target.closest(".catmenu")) closeCatMenu();
+}
+
+function openCatMenu(ev, dir) {
+  closeCatMenu();
+  const menu = document.createElement("div");
+  menu.className = "catmenu";
+  const items = libCats.map((c) =>
+    `<div class="mi" data-cid="${esc(c.id)}"><span class="dot" style="background:${esc(c.color)}"></span>${esc(c.name)}</div>`
+  ).join("");
+  menu.innerHTML = items + (libCats.length ? '<div class="sep"></div>' : "")
+    + `<div class="mi" data-cid=""><span class="dot" style="background:#d9d9e0"></span>移出分类</div>`
+    + `<div class="mi" data-new="1"><span class="dot" style="background:#e6e6ec"></span>＋ 新建分类…</div>`;
+  document.body.appendChild(menu);
+  const r = menu.getBoundingClientRect();
+  menu.style.left = Math.min(ev.clientX, window.innerWidth - r.width - 12) + "px";
+  menu.style.top = Math.min(ev.clientY + 8, window.innerHeight - r.height - 12) + "px";
+  menu.addEventListener("click", async (e) => {
+    const mi = e.target.closest(".mi");
+    if (!mi) return;
+    e.stopPropagation();
+    if (mi.dataset.new) { closeCatMenu(); await createCat(); return; }
+    const cid = mi.dataset.cid;
+    closeCatMenu();
+    assignArticle(dir, cid);
+  });
+  setTimeout(() => document.addEventListener("pointerdown", outsideCatMenu, true), 0);
+}
+
+/* ---- 按住拖拽：pointer 事件统一处理鼠标与触屏 ---- */
+function dropChipAt(x, y) {
+  const el = document.elementFromPoint(x, y);
+  return el ? el.closest(".cat[data-drop]") : null;
+}
+
+function beginDrag(ev, dir, card) {
+  if (ev.button !== undefined && ev.button !== 0) return;      // 只响应左键 / 触摸
+  if (ev.target.closest(".edit")) return;                       // 点编辑图标不算拖拽
+  const sx = ev.clientX, sy = ev.clientY;
+  let started = false;
+
+  const move = (e) => {
+    if (!started) {
+      if (Math.hypot(e.clientX - sx, e.clientY - sy) < 6) return;
+      const item = libItems.find((i) => i.dir === dir) || {};
+      const ghost = document.createElement("div");
+      ghost.className = "dragghost";
+      ghost.innerHTML = `<div class="t">${esc(item.title || dir)}</div>`;
+      document.body.appendChild(ghost);
+      dragState = { ghost, dir };
+      card.classList.add("dragging");
+      document.body.classList.add("dragging");
+      started = true;
+    }
+    dragState.ghost.style.left = e.clientX + 14 + "px";
+    dragState.ghost.style.top = e.clientY - 22 + "px";
+    document.querySelectorAll(".cat.drop").forEach((c) => c.classList.remove("drop"));
+    const chip = dropChipAt(e.clientX, e.clientY);
+    if (chip) chip.classList.add("drop");
+  };
+
+  const up = (e) => {
+    document.removeEventListener("pointermove", move);
+    document.removeEventListener("pointerup", up);
+    document.removeEventListener("pointercancel", up);
+    if (!started) return;
+    const chip = dropChipAt(e.clientX, e.clientY);
+    dragState.ghost.remove();
+    document.querySelectorAll(".ep.dragging").forEach((c) => c.classList.remove("dragging"));
+    document.querySelectorAll(".cat.drop").forEach((c) => c.classList.remove("drop"));
+    document.body.classList.remove("dragging");
+    dragState = null;
+    // 拖过之后抑制这次 click，避免顺手把文章打开
+    window.__dragged = true;
+    setTimeout(() => { window.__dragged = false; }, 80);
+    if (chip) assignArticle(dir, chip.dataset.drop === "none" ? "" : chip.dataset.drop);
+  };
+
+  document.addEventListener("pointermove", move);
+  document.addEventListener("pointerup", up);
+  document.addEventListener("pointercancel", up);
+}
+
 async function openEpisode(dirEnc) {
+  if (window.__dragged) return;   // 刚才是拖拽，不要顺手打开文章
   const dir = decodeURIComponent(dirEnc);
   const metaResp = await fetch(`/api/file/${dirEnc}/meta.json`);
   const meta = await metaResp.json();
@@ -1242,6 +1484,12 @@ document.addEventListener("keydown", (e) => {
   if ($("result").classList.contains("withTranscript")) { toggleTranscript(); return; }
   if ($("result").classList.contains("show")) closeResult();
 });
+// 事件委托：卡片按住即开始拖拽（只绑定一次）
+$("libgrid").addEventListener("pointerdown", (e) => {
+  const card = e.target.closest(".ep");
+  if (card) beginDrag(e, card.dataset.dir, card);
+});
+
 loadLibrary();
 loadMcp();
 loadSettings();
