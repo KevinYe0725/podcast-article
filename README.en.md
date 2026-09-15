@@ -87,13 +87,14 @@ A mode controls **structure and depth** (section count, whether tables/quotes ar
 
 | Mode | Structure | Measured (109-min interview) |
 |---|---|---|
-| Concise | 3 sections + takeaways | ~2,000 chars / 4-5 min |
-| Standard | 4 sections + editor's notes | ~3,300 chars / 7 min |
+| Concise | 3 sections + takeaways | 1,800-2,800 chars / 4-6 min |
+| Standard | 4 sections + editor's notes | 2,900-3,700 chars / 7-9 min |
 | Deep | 5 sections + concepts table + quotes | ~6,000 chars / 12 min |
 
 Length is **calculated, not begged for**: generation runs an outline → per-section → closing pipeline
 (`outline.py`), where every section carries its own character budget and token ceiling — so the total is
-predictable (measured within ±10%).
+predictable — across runs it lands within ±25% of the expected value
+(previously single-pass output was 1.5-2× and highly variable).
 
 > Three cheaper approaches were measured and rejected (recorded here so they aren't retried):
 > ① asking the model to self-compress — it either strips concrete detail (density 7.2 → 1.0 per 1k chars) or echoes the input verbatim;

@@ -52,7 +52,7 @@ def stated(chars: int) -> int:
     所以报价取目标的一半，让自然产出落到目标附近；上限再放宽到报价的 2.4 倍，
     保证它能在不被截断的情况下自然收尾。
     """
-    return max(60, int(chars * 0.5))
+    return max(60, int(chars * 0.55))
 
 
 def budget_total(mode: str | None) -> int:
@@ -226,7 +226,7 @@ def write_outlined(
                 "你刚才写的内容在末尾被截断了。只输出接下来的内容，让它自然地收尾，"
                 "总长不超过 120 字；不要重复已经写过的内容，不要另起新话题。",
                 f"{material}\n\n----\n\n以下是已写内容（在末尾被截断）：\n\n{text[-1500:]}",
-                log, None, 200,
+                log, None, 320,
             )
             if tail.strip():
                 text = f"{text.rstrip()} {tail.strip()}"
@@ -285,7 +285,8 @@ def write_outlined(
         .replace("{notes_part}", _notes_block(plan["notes"]))
         .replace("{extras_part}", _extras_block(plan["extras"])),
         f"文章标题：{title}\n全文各节：{'；'.join(heads)}\n请写结尾栏目。",
-        int((plan["takeaways"] * 45 + plan["notes"] * 130 + (700 if plan["extras"] else 0)) * 0.8),
+        # 结尾不做折扣：点评类内容模型会反复补充，预算给足才不会被截断
+        int(plan["takeaways"] * 60 + plan["notes"] * 170 + (900 if plan["extras"] else 0)),
         "结尾栏目",
     )
 
