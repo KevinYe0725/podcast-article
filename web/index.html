@@ -377,6 +377,19 @@
   }
   .modalcard input:focus { outline: none; border-color: var(--green); }
   .modalbtns { display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px; }
+  .opt { display: flex; gap: 10px; padding: 11px 12px; border: 1px solid var(--border2); border-radius: 11px; cursor: pointer; margin-top: 10px; transition: .13s; }
+  .opt:hover { border-color: var(--border2); background: var(--bg2); }
+  .opt input { width: auto; margin: 2px 0 0; accent-color: var(--green); }
+  .opt .ot { font-size: 13px; font-weight: 500; }
+  .opt .od { font-size: 12px; color: var(--dim); margin-top: 3px; line-height: 1.6; }
+  .ep { position: relative; }
+  .ep .kill {
+    position: absolute; top: 10px; right: 10px; width: 24px; height: 24px; border-radius: 50%;
+    border: 1px solid var(--border); background: #fff; color: #b9b9c2; font-size: 13px; line-height: 1;
+    display: flex; align-items: center; justify-content: center; cursor: pointer; opacity: 0; transition: .13s; padding: 0;
+  }
+  .ep:hover .kill { opacity: 1; }
+  .ep .kill:hover { border-color: #f7cfd1; background: #fdf4f4; color: var(--red); }
   .btn.danger { background: var(--red); color: #fff; }
   .btn.danger:hover { background: #d93a3f; }
 
@@ -672,6 +685,7 @@
   <div class="modalcard">
     <h3 id="modaltitle"></h3>
     <p id="modaldesc"></p>
+    <div id="modalbody"></div>
     <input id="modalinput" spellcheck="false" autocomplete="off">
     <div class="modalbtns">
       <button class="btn" id="modalcancel">取消</button>
@@ -1058,10 +1072,12 @@ async function verifyKey(what, btn) {
 let modalHandler = null;
 
 function showModal({ title, desc = "", value = "", placeholder = "", okText = "确定",
-                     danger = false, withInput = true, onOk = null }) {
+                     danger = false, withInput = true, bodyHtml = "", onOk = null }) {
   $("modaltitle").textContent = title;
   $("modaldesc").textContent = desc;
   $("modaldesc").style.display = desc ? "block" : "none";
+  $("modalbody").innerHTML = bodyHtml;
+  $("modalbody").style.display = bodyHtml ? "block" : "none";
   const inp = $("modalinput");
   inp.style.display = withInput ? "block" : "none";
   inp.value = value;
@@ -1364,6 +1380,7 @@ function renderGrid() {
     const take = (pv.takeaways || []).map((t) => `<li>${esc(t)}</li>`).join("");
     return `
     <div class="ep" data-dir="${esc(it.dir)}" onclick="openEpisode('${encodeURIComponent(it.dir)}')">
+      <button class="kill" title="删除这条记录" onclick="event.stopPropagation();askDelete('${esc(it.dir)}')">✕</button>
       <div class="t">${esc(it.title)}</div>
       ${pv.deck ? `<div class="deck">${esc(pv.deck)}</div>` : ""}
       ${take ? `<ul class="tk">${take}</ul>` : ""}
@@ -1446,6 +1463,44 @@ async function assignArticle(dir, cid) {
   renderCatbar(); renderGrid();
   const c = catById(cid);
   toast(c ? `✦ 已移入「${esc(c.name)}」` : "✦ 已移出分类");
+}
+
+/* ---- 删除历史记录（两种粒度）---- */
+const fmtSize = (b) => (b >= 1048576 ? (b / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(b / 1024)) + " KB");
+
+function askDelete(dir) {
+  const item = libItems.find((i) => i.dir === dir) || {};
+  const size = item.size || 0;
+  const hasArticle = item.has_article !== false;
+  showModal({
+    title: "删除这条记录？",
+    desc: esc(item.title || dir),
+    withInput: false,
+    danger: true,
+    okText: "删除",
+    bodyHtml: `
+      <label class="opt"><input type="radio" name="delscope" value="all" checked>
+        <span><span class="ot">删除整条记录</span>
+        <span class="od">文章、音频、文字稿一起删除，释放 ${fmtSize(size)}</span></span></label>
+      <label class="opt"><input type="radio" name="delscope" value="article" ${hasArticle ? "" : "disabled"}>
+        <span><span class="ot">只删文章</span>
+        <span class="od">保留音频与文字稿，之后可重新生成；不释放磁盘空间</span></span></label>`,
+    onOk: async () => {
+      const picked = document.querySelector('input[name="delscope"]:checked');
+      const scope = picked ? picked.value : "all";
+      const resp = await fetch("/api/episode/" + encodeURIComponent(dir), {
+        method: "DELETE", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scope }),
+      });
+      const d = await resp.json();
+      if (!resp.ok) { toast("⚠ " + esc(d.error || "删除失败")); return; }
+      if (curWorkdir === dir) closeResult();           // 正在看的被删了，收起阅读区
+      await loadLibrary();
+      toast(scope === "article"
+        ? "✦ 已删除文章（音频与文字稿保留，可重新生成）"
+        : `✦ 已删除整条记录，释放 ${fmtSize(d.freed || 0)}`);
+    },
+  });
 }
 
 /* ---- 点击归类菜单（拖拽之外的备用入口）---- */

@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import shutil
 import threading
 import time
 import uuid
@@ -492,6 +493,10 @@ def api_library():
                 "duration": meta.get("duration"),
                 "has_article": (d / "article.md").exists(),
             }
+            try:
+                item["size"] = sum(f.stat().st_size for f in d.rglob("*") if f.is_file())
+            except OSError:
+                item["size"] = 0
             item["category"] = assignments.get(d.name)
             if item["has_article"]:
                 item["preview"] = _article_preview(d / "article.md")
@@ -544,6 +549,36 @@ def api_assign():
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     return jsonify(library_mod.snapshot())
+
+
+@app.delete("/api/episode/<job_dir>")
+def api_episode_delete(job_dir: str):
+    """删除一条历史记录。
+
+    body: {"scope": "all"}     → 删整个输出目录（文章 + 音频 + 文字稿）
+          {"scope": "article"} → 只删 article.md，保留音频与文字稿以便重新生成
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    scope = data.get("scope", "all")
+    base = (OUTPUT_ROOT / job_dir).resolve()
+    if not job_dir or not base.is_dir() or OUTPUT_ROOT.resolve() not in base.parents:
+        return jsonify({"error": "目录不存在"}), 404
+
+    freed = 0
+    try:
+        if scope == "article":
+            target = base / "article.md"
+            if not target.is_file():
+                return jsonify({"error": "这条记录没有文章"}), 400
+            freed = target.stat().st_size
+            target.unlink()
+        else:
+            freed = sum(f.stat().st_size for f in base.rglob("*") if f.is_file())
+            shutil.rmtree(base)
+            library_mod.forget(job_dir)
+    except OSError as exc:
+        return jsonify({"error": f"删除失败：{exc}"}), 500
+    return jsonify({"ok": True, "scope": scope, "freed": freed, "dir": job_dir})
 
 
 @app.get("/api/file/<job_dir>/<name>")
