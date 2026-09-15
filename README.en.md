@@ -175,7 +175,7 @@ Each card in the history grid carries a **one-line deck** (so you can decide whe
 
 **Delete**: the ✕ on a card removes a record, with two levels — "delete the whole record" (article + audio + transcript, and it tells you how much space is freed; an episode is often 50-200 MB) or "delete the article only" (keeps audio and transcript so it can be regenerated).
 
-**Categories**: create a few with "＋ New category", then **press and drag a card onto a category** to file it (works with mouse, trackpad and touch — the card follows your pointer and the target highlights). You can also click a card's category label and pick from a menu. Categories can be renamed or deleted (deleting one never deletes articles — they return to "Uncategorised"), and clicking a category filters the grid.
+**Categories**: the library has a folder-style sidebar (All / Uncategorised / your own categories, each with a count). Create one with "＋", then **press and drag a card onto a sidebar folder** to file it (works with mouse, trackpad and touch — the card follows your pointer and the target highlights). You can also click a card's category label and pick from a menu. Categories can be renamed or deleted (deleting one never deletes articles — they return to "Uncategorised"), and clicking a category filters the grid.
 
 The **⚙ Settings** button (top right) manages your profile, credentials and generation preferences:
 

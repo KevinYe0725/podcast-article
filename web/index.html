@@ -246,26 +246,42 @@
   .ep .s .ok { color: var(--green); font-weight: 500; }
   #empty-lib { color: #b4b4bc; font-size: 13px; }
 
-  /* ---- 分类栏（同时是拖拽投放区）---- */
-  .libhead { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 16px; }
-  .libhead h2 { margin-bottom: 0; }
-  .catbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-  .cat {
-    display: inline-flex; align-items: center; gap: 7px; border: 1px solid var(--border2);
-    border-radius: 999px; padding: 5px 12px; font-size: 12.5px; background: #fff; color: var(--text);
-    cursor: pointer; transition: .13s; user-select: none; white-space: nowrap;
+  /* ---- 文章库：侧边栏文件夹（OpenAI 项目列表风格）---- */
+  .liblayout { display: flex; gap: 24px; align-items: flex-start; }
+  .libside { width: 212px; flex-shrink: 0; position: sticky; top: 76px; }
+  .sidehead { display: flex; align-items: center; justify-content: space-between; padding: 0 8px 7px; }
+  .sidehead > span { font-size: 11.5px; font-weight: 600; color: var(--dim); letter-spacing: .07em; text-transform: uppercase; }
+  .sidehead .iconbtn.small { width: 24px; height: 24px; }
+  .folder {
+    display: flex; align-items: center; gap: 9px; width: 100%; padding: 7px 9px;
+    border: 0; background: transparent; border-radius: 9px; cursor: pointer; font: inherit;
+    font-size: 13.5px; color: var(--text); text-align: left; transition: background .12s;
   }
-  .cat:hover { border-color: var(--border2); background: var(--bg2); }
-  .cat .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
-  .cat .n { font-size: 11px; color: var(--dim); font-variant-numeric: tabular-nums; }
-  .cat.on { border-color: var(--text); background: var(--text); color: #fff; }
-  .cat.on .n { color: rgba(255,255,255,.75); }
-  .cat.drop { border-color: var(--green); background: #eafaf4; box-shadow: 0 0 0 3px rgba(16,163,127,.14); transform: translateY(-1px); }
-  .cat.add { border-style: dashed; color: var(--dim); }
-  .cat.add:hover { color: var(--text); border-color: var(--border2); }
-  .cat .edit { opacity: 0; font-size: 11px; color: inherit; transition: .13s; }
-  .cat:hover .edit { opacity: .55; }
-  .cat .edit:hover { opacity: 1; }
+  .folder:hover { background: #f1f1f3; }
+  .folder.on { background: #ececef; font-weight: 500; }
+  .folder .ficon { width: 16px; height: 16px; flex-shrink: 0; color: #a3a3ae; }
+  .folder.on .ficon { color: #6e6e80; }
+  .folder .fname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .folder .fcount { font-size: 11.5px; color: var(--dim); font-variant-numeric: tabular-nums; }
+  .folder .fedit { display: flex; gap: 7px; font-size: 11px; color: #b4b4bc; opacity: 0; transition: .12s; }
+  .folder:hover .fedit { opacity: 1; }
+  .folder .fedit span:hover { color: var(--text); }
+  .folder.drop { background: #eafaf4; box-shadow: inset 0 0 0 1px var(--green); }
+  .folder.drop .ficon { color: var(--green); }
+  .folder.add { color: var(--dim); font-size: 13px; }
+  .folder.add .ficon { color: #c9c9d2; }
+  .sidegap { height: 1px; background: var(--border); margin: 8px 9px; }
+  .libmain { flex: 1; min-width: 0; }
+  .libbar { display: flex; align-items: baseline; gap: 10px; margin-bottom: 15px; min-height: 22px; }
+  .libbar .bt { font-size: 14.5px; font-weight: 600; }
+  .libbar .bc { font-size: 12px; color: var(--dim); }
+  @media (max-width: 760px) {
+    .liblayout { flex-direction: column; gap: 14px; }
+    .libside { width: 100%; position: static; display: flex; gap: 6px; overflow-x: auto; padding-bottom: 4px; }
+    .sidehead { display: none; }
+    .folder { width: auto; white-space: nowrap; background: var(--bg2); }
+    .sidegap { display: none; }
+  }
 
   /* 卡片上显示所属分类 */
   .ep .catlabel { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; }
@@ -492,12 +508,27 @@
   </div>
 
   <div id="lib">
-    <div class="libhead">
-      <h2>历史文章</h2>
-      <div class="catbar" id="catbar"></div>
+    <div class="liblayout">
+      <aside class="libside">
+        <div class="sidehead">
+          <span>文章库</span>
+          <button class="iconbtn small" title="新建分类" aria-label="新建分类" onclick="createCat()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <path d="M12 5v14M5 12h14"></path>
+            </svg>
+          </button>
+        </div>
+        <nav id="catnav"></nav>
+      </aside>
+      <div class="libmain">
+        <div class="libbar">
+          <span class="bt" id="libtitle">全部文章</span>
+          <span class="bc" id="libcount"></span>
+        </div>
+        <div class="grid" id="libgrid"></div>
+        <div id="empty-lib">还没有生成过任何文章。</div>
+      </div>
     </div>
-    <div class="grid" id="libgrid"></div>
-    <div id="empty-lib">还没有生成过任何文章。</div>
   </div>
 </div><!-- /main -->
 
@@ -1345,21 +1376,35 @@ async function loadLibrary() {
   renderGrid();
 }
 
+const FOLDER_ICON = `<svg class="ficon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4l2 2.2h7A1.5 1.5 0 0 1 19 9.7v8.6a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 3 18.3z"></path></svg>`;
+
 function renderCatbar() {
   const unassigned = libItems.filter((it) => !libAssign[it.dir]).length;
-  const chips = [
-    `<button class="cat ${activeCat === "all" ? "on" : ""}" onclick="setCat('all')">全部 <span class="n">${libItems.length}</span></button>`,
-    `<button class="cat ${activeCat === "none" ? "on" : ""}" data-drop="none" onclick="setCat('none')">未分类 <span class="n">${unassigned}</span></button>`,
+  const rows = [
+    `<button class="folder ${activeCat === "all" ? "on" : ""}" data-drop="all" onclick="setCat('all')">
+       <svg class="ficon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h10"></path></svg>
+       <span class="fname">全部文章</span><span class="fcount">${libItems.length}</span></button>`,
+    `<button class="folder ${activeCat === "none" ? "on" : ""}" data-drop="none" onclick="setCat('none')">
+       <svg class="ficon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"></circle><path d="M12 8v4l2.5 2"></path></svg>
+       <span class="fname">未分类</span><span class="fcount">${unassigned}</span></button>`,
   ];
-  libCats.forEach((c) => {
-    chips.push(`<button class="cat ${activeCat === c.id ? "on" : ""}" data-drop="${c.id}" onclick="setCat('${c.id}')">
-      <span class="dot" style="background:${esc(c.color)}"></span>${esc(c.name)} <span class="n">${c.count || 0}</span>
-      <span class="edit" title="重命名" onclick="renameCat(event,'${c.id}')">✎</span>
-      <span class="edit" title="删除分类" onclick="deleteCat(event,'${c.id}')">✕</span>
-    </button>`);
-  });
-  chips.push(`<button class="cat add" onclick="createCat()">＋ 新建分类</button>`);
-  $("catbar").innerHTML = chips.join("");
+  if (libCats.length) {
+    rows.push('<div class="sidegap"></div>');
+    libCats.forEach((c) => {
+      rows.push(`<button class="folder ${activeCat === c.id ? "on" : ""}" data-drop="${c.id}" onclick="setCat('${c.id}')">
+        ${FOLDER_ICON}
+        <span class="fname">${esc(c.name)}</span>
+        <span class="fcount">${c.count || 0}</span>
+        <span class="fedit">
+          <span title="重命名" onclick="renameCat(event,'${c.id}')">✎</span>
+          <span title="删除分类" onclick="deleteCat(event,'${c.id}')">✕</span>
+        </span></button>`);
+    });
+  }
+  rows.push(`<button class="folder add" onclick="createCat()">
+    <svg class="ficon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 5v14M5 12h14"></path></svg>
+    <span class="fname">新建分类</span></button>`);
+  $("catnav").innerHTML = rows.join("");
 }
 
 function setCat(v) { activeCat = v; renderCatbar(); renderGrid(); }
@@ -1374,6 +1419,9 @@ function renderGrid() {
   else if (!shown.length) { empty.textContent = "这个分类下还没有文章 —— 把下面的卡片按住拖到上方分类里即可。"; empty.style.display = "block"; }
   else empty.style.display = "none";
 
+  const cur = activeCat === "all" ? null : activeCat === "none" ? null : catById(activeCat);
+  $("libtitle").textContent = activeCat === "all" ? "全部文章" : activeCat === "none" ? "未分类" : (cur ? cur.name : "分类");
+  $("libcount").textContent = shown.length ? `共 ${shown.length} 篇` : "";
   $("libgrid").innerHTML = shown.map((it) => {
     const pv = it.preview || {};
     const c = catById(libAssign[it.dir]);
@@ -1543,12 +1591,13 @@ function openCatMenu(ev, dir) {
 /* ---- 按住拖拽：pointer 事件统一处理鼠标与触屏 ---- */
 function dropChipAt(x, y) {
   const el = document.elementFromPoint(x, y);
-  return el ? el.closest(".cat[data-drop]") : null;
+  const zone = el ? el.closest("[data-drop]") : null;
+  return zone && zone.dataset.drop !== "all" ? zone : null;   // "全部文章" 不是分类，不接受投放
 }
 
 function beginDrag(ev, dir, card) {
   if (ev.button !== undefined && ev.button !== 0) return;      // 只响应左键 / 触摸
-  if (ev.target.closest(".edit")) return;                       // 点编辑图标不算拖拽
+  if (ev.target.closest(".kill, .fedit")) return;               // 点删除/编辑图标不算拖拽
   const sx = ev.clientX, sy = ev.clientY;
   let started = false;
 
@@ -1567,9 +1616,9 @@ function beginDrag(ev, dir, card) {
     }
     dragState.ghost.style.left = e.clientX + 14 + "px";
     dragState.ghost.style.top = e.clientY - 22 + "px";
-    document.querySelectorAll(".cat.drop").forEach((c) => c.classList.remove("drop"));
-    const chip = dropChipAt(e.clientX, e.clientY);
-    if (chip) chip.classList.add("drop");
+    document.querySelectorAll("[data-drop].drop").forEach((c) => c.classList.remove("drop"));
+    const zone = dropChipAt(e.clientX, e.clientY);
+    if (zone) zone.classList.add("drop");
   };
 
   const up = (e) => {
@@ -1577,16 +1626,16 @@ function beginDrag(ev, dir, card) {
     document.removeEventListener("pointerup", up);
     document.removeEventListener("pointercancel", up);
     if (!started) return;
-    const chip = dropChipAt(e.clientX, e.clientY);
+    const zone = dropChipAt(e.clientX, e.clientY);
     dragState.ghost.remove();
     document.querySelectorAll(".ep.dragging").forEach((c) => c.classList.remove("dragging"));
-    document.querySelectorAll(".cat.drop").forEach((c) => c.classList.remove("drop"));
+    document.querySelectorAll("[data-drop].drop").forEach((c) => c.classList.remove("drop"));
     document.body.classList.remove("dragging");
     dragState = null;
     // 拖过之后抑制这次 click，避免顺手把文章打开
     window.__dragged = true;
     setTimeout(() => { window.__dragged = false; }, 80);
-    if (chip) assignArticle(dir, chip.dataset.drop === "none" ? "" : chip.dataset.drop);
+    if (zone) assignArticle(dir, zone.dataset.drop === "none" ? "" : zone.dataset.drop);
   };
 
   document.addEventListener("pointermove", move);
