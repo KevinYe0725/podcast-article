@@ -2,17 +2,78 @@
 from __future__ import annotations
 
 import json
+import os
+import re
+import ssl
+import time
 from pathlib import Path
 
 import requests
 
-from . import summarize, transcribe
+from . import config, summarize, transcribe, usage
 from . import subtitles as subs
 from .sources import resolve
 from .sources.ytdlp_src import download_audio
 from .util import episode_slug, ts_clock
 
 _UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+
+# ---------------------------------------------------------------- 下载重试配置
+# 环境变量（和 config.py 一样直接读 os.environ，调用时即时生效，方便单次覆盖/测试）：
+#   PA_DOWNLOAD_RETRIES  下载总尝试次数，默认 3（= 最多重试 2 次）
+#   PA_DOWNLOAD_BACKOFF  逗号分隔的退避秒数，默认 "2,5"；次数不够时重复最后一个值
+DEFAULT_DOWNLOAD_RETRIES = 3
+DEFAULT_DOWNLOAD_BACKOFF = "2,5"
+
+# 跨国链路最先崩的是握手：连接超时给短一点，读超时（两次收到数据之间的最长等待）给宽一点
+CONNECT_TIMEOUT = 15.0
+READ_TIMEOUT = 60.0
+
+
+def _env_int(name: str, default: int, minimum: int = 1) -> int:
+    """读整数环境变量：缺省、非法或小于下限时用默认值。"""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value >= minimum else default
+
+
+def _env_backoff(name: str, default: str) -> list[float]:
+    """读逗号分隔的退避秒数（如 "2,5"）：非法项忽略，全读不出来时回退默认值。"""
+    raw = os.environ.get(name, "").strip() or default
+    waits: list[float] = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            waits.append(max(0.0, float(part)))
+        except ValueError:
+            continue
+    if waits:
+        return waits
+    return [float(p) for p in default.split(",") if p.strip()]
+
+
+def download_retries() -> int:
+    """下载总尝试次数（PA_DOWNLOAD_RETRIES，默认 3）。"""
+    return _env_int("PA_DOWNLOAD_RETRIES", DEFAULT_DOWNLOAD_RETRIES)
+
+
+def download_backoff() -> list[float]:
+    """每次重试前的等待秒数（PA_DOWNLOAD_BACKOFF，默认 2,5）。"""
+    return _env_backoff("PA_DOWNLOAD_BACKOFF", DEFAULT_DOWNLOAD_BACKOFF)
+
+
+def _backoff_seconds(retry_no: int, waits: list[float]) -> float:
+    """第 retry_no 次重试（从 1 开始）该等多久；序列不够长就重复最后一个值。"""
+    if not waits:
+        return 0.0
+    return waits[min(retry_no - 1, len(waits) - 1)]
 
 
 class Pipeline:
@@ -34,6 +95,8 @@ class Pipeline:
         outlined: bool = True,
         log=print,
         progress=None,
+        on_usage=None,
+        episode: dict | None = None,
     ):
         self.url = url
         self.output_dir = output_dir
@@ -51,11 +114,19 @@ class Pipeline:
         self.outlined = outlined  # 是否用大纲 + 逐节写作
         self.log = log
         self.progress = progress  # progress(stage: str, data: dict)
+        self.on_usage = on_usage  # on_usage(usage: dict)，每次 LLM 调用后回调（用于实时显示花费）
+        self.episode = episode    # 预先解析好的单集快照（订阅发现时固定下来，见 webapp）
 
     # ------------------------------------------------------------ 阶段 1：元信息
 
     def run(self) -> Path:
-        ep = resolve(self.url, pick=self.pick)
+        # 订阅场景下不重新解析链接，直接用入队时抓到的单集快照。
+        # 原因：feed 每次更新，「第 N 集」这种相对定位都会整体前移，排队中的任务会跑到别的单集上。
+        if self.episode:
+            ep = Episode_from_dict(dict(self.episode))
+            self.log(f"[meta] 使用订阅时抓取的单集信息：{ep.title}")
+        else:
+            ep = resolve(self.url, pick=self.pick)
         self.log(f"[meta] {ep.podcast or ep.source}｜{ep.title}")
 
         workdir = self.output_dir / episode_slug(ep.podcast, ep.title, ep.pub_date)
@@ -84,15 +155,32 @@ class Pipeline:
             self.log(f"[audio] 复用已下载音频：{existing[0].name}")
             return existing[0]
 
+        # 上次断在中途时残留的 audio.mp3.part / audio.m4a.part 不会删：先告诉用户会续传
+        partial = [p for p in sorted(workdir.glob("audio.*")) if p.suffix == ".part"]
+        if partial:
+            self.log(
+                f"[audio] 发现未完成的临时文件 {partial[0].name}"
+                f"（{partial[0].stat().st_size} 字节），将从断点继续下载…"
+            )
+
         self.log("[audio] 开始下载音频…")
-        if ep.source == "file":
-            path = Path(ep.url)  # 本地文件本身就是音频
-        elif ep.source in ("youtube", "bilibili"):
-            path = Path(download_audio(ep.url, str(workdir / "audio"), progress=self.progress))
-        elif ep.audio_url:
-            path = _download_url(ep.audio_url, workdir, progress=self.progress)
-        else:
-            raise RuntimeError("元信息里既没有音频直链也不支持 yt-dlp 下载")
+        try:
+            if ep.source == "file":
+                path = Path(ep.url)  # 本地文件本身就是音频
+            elif ep.source in ("youtube", "bilibili"):
+                path = Path(download_audio(
+                    ep.url, str(workdir / "audio"), progress=self.progress, log=self.log,
+                ))
+            elif ep.audio_url:
+                path = _download_url(
+                    ep.audio_url, workdir, progress=self.progress, log=self.log,
+                )
+            else:
+                raise RuntimeError("元信息里既没有音频直链也不支持 yt-dlp 下载")
+        except Exception as exc:
+            # .part 临时文件保留在原地，下次运行（或本次重试）就能接着下，不用从头再来
+            self.log(f"[audio] 下载失败：{exc}")
+            raise
 
         if path.suffix == ".part":
             raise RuntimeError(f"音频下载不完整：{path}")
@@ -156,20 +244,36 @@ class Pipeline:
 
         text_chars = sum(len(s["text"]) for s in segments)
         self.log(f"[write] 开始生成文章（文字稿约 {text_chars} 字）…")
-        article = summarize.write_article(
-            segments=segments,
-            title=ep.title,
-            podcast=ep.podcast,
-            author=ep.author,
-            shownotes_html=ep.shownotes_html,
-            max_chars=self.max_chars,
-            llm_model=self.llm_model,
-            mode=self.mode,
-            polish=self.polish,
-            outlined=self.outlined,
-            log=self.log,
-            progress=self.progress,
-        )
+        # 记账：重写文章时把上一次的花费一起带上（这一集真实花掉的钱是有意义的）
+        model = self.llm_model or config.deepseek_model()
+        meter = usage.start(model, workdir, on_update=self.on_usage,
+                            started=usage.load(workdir))
+        if self.on_usage:
+            self.on_usage(usage.describe(meter.usage))
+        try:
+            article = summarize.write_article(
+                segments=segments,
+                title=ep.title,
+                podcast=ep.podcast,
+                author=ep.author,
+                shownotes_html=ep.shownotes_html,
+                max_chars=self.max_chars,
+                llm_model=self.llm_model,
+                mode=self.mode,
+                polish=self.polish,
+                outlined=self.outlined,
+                log=self.log,
+                progress=self.progress,
+            )
+        finally:
+            snapshot = usage.stop()
+            if self.on_usage:
+                self.on_usage(usage.describe(snapshot))
+        if snapshot.get("calls"):
+            self.log(f"[write] 本次用量：输入 {snapshot['hit_tokens'] + snapshot['miss_tokens']:,} "
+                     f"tokens（缓存命中 {snapshot['hit_tokens']:,}）· "
+                     f"输出 {snapshot['out_tokens']:,} tokens · "
+                     f"约 {usage.cost_cny(snapshot):.3f} 元")
         if not article:
             raise RuntimeError("模型没有返回任何内容")
         a_path.write_text(article + "\n", encoding="utf-8")
@@ -179,18 +283,112 @@ class Pipeline:
 
 # ---------------------------------------------------------------- 辅助
 
-def _download_url(audio_url: str, workdir: Path, progress=None) -> Path:
-    suffix = Path(audio_url.split("?")[0]).suffix or ".mp3"
-    dest = workdir / f"audio{suffix}"
-    with requests.get(audio_url, headers={"User-Agent": _UA}, stream=True, timeout=60) as r:
+class DownloadIncompleteError(RuntimeError):
+    """本次拿到的数据不完整（长度校验不过），属于可重试的瞬时问题。"""
+
+
+def _http_status(exc: requests.HTTPError) -> int | None:
+    """从 HTTPError 里取状态码：优先读 response，其次从消息里的三位数兜底。"""
+    code = getattr(getattr(exc, "response", None), "status_code", None)
+    if isinstance(code, int):
+        return code
+    m = re.search(r"\b(\d{3})\b", str(exc))
+    return int(m.group(1)) if m else None
+
+
+def _is_retryable(exc: BaseException) -> bool:
+    """判断这次失败值不值得重试：只认网络抖动与服务端瞬时故障。
+
+    - 重试：连接错误、超时、分块传输被掐断（ChunkedEncodingError），以及 5xx 与 429；
+    - 不重试：其他 4xx（404/403 等）是确定性错误，重试只会白等白耗流量；
+    - 长度校验不过（DownloadIncompleteError）也算可重试：多半是被中途掐断。
+    """
+    if isinstance(exc, DownloadIncompleteError):
+        return True
+    if isinstance(exc, requests.HTTPError):
+        status = _http_status(exc)
+        return status is not None and (status >= 500 or status == 429)
+    if isinstance(exc, (
+        requests.ConnectionError,
+        requests.Timeout,
+        # 注意：ChunkedEncodingError 只在 requests.exceptions 下，requests 顶层没有这个别名
+        requests.exceptions.ChunkedEncodingError,
+    )):
+        return True
+    # urllib3 / 标准库偶尔会漏出没被 requests 包装的裸异常：
+    # socket.timeout 就是 TimeoutError，ssl.SSLError 则是跨国链路上最常见的 TLS 断连
+    return isinstance(exc, (ConnectionError, TimeoutError, ssl.SSLError))
+
+
+def _int_header(value: str | None) -> int | None:
+    """解析数字头；拿不到就返回 None（表示「未知」，不做校验）。"""
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _content_range(header: str | None) -> tuple[int | None, int | None]:
+    """解析 Content-Range：'bytes 100-999/1000' → (100, 1000)；'bytes */1000' → (None, 1000)。"""
+    m = re.match(r"bytes\s+(?:(\d+)-(\d+)|\*)/(\d+|\*)", str(header or "").strip(), re.I)
+    if not m:
+        return None, None
+    start = int(m.group(1)) if m.group(1) else None
+    total = int(m.group(3)) if m.group(3) and m.group(3) != "*" else None
+    return start, total
+
+
+def _download_once(audio_url: str, dest: Path, tmp: Path, progress=None, log=print) -> None:
+    """尝试下载一次：断点续传 + 长度校验，全部下完才 rename 成最终文件名。"""
+    offset = tmp.stat().st_size if tmp.exists() else 0
+    headers = {"User-Agent": _UA}
+    if offset:
+        headers["Range"] = f"bytes={offset}-"  # 断点续传：只讨剩下那一段
+
+    with requests.get(
+        audio_url, headers=headers, stream=True, timeout=(CONNECT_TIMEOUT, READ_TIMEOUT)
+    ) as r:
+        if r.status_code == 416:
+            # 本地残留比远端还大（或恰好已完整）时，服务端会拒绝这个 Range
+            _, total = _content_range(r.headers.get("Content-Range"))
+            if offset and total and offset == total:
+                log(f"[audio] 临时文件已是完整长度（{offset} 字节），直接落盘")
+                tmp.rename(dest)
+                return
+            tmp.unlink(missing_ok=True)  # 脏数据留着只会一直 416，清掉重下
+            raise DownloadIncompleteError(
+                f"服务端拒绝断点续传（HTTP 416）：本地临时文件 {offset} 字节不可用，已清空重下"
+            )
+
         r.raise_for_status()
-        total = int(r.headers.get("Content-Length") or 0)
-        tmp = dest.with_suffix(dest.suffix + ".part")
-        done = 0
+
+        if offset and r.status_code == 206:
+            start, range_total = _content_range(r.headers.get("Content-Range"))
+            if start is not None and start != offset:
+                # 服务端给的区间起点和我们请求的对不上：这段数据接到断点后面就是错的，
+                # 直接清空临时文件重来（下一次尝试 offset=0，不再带 Range）
+                tmp.unlink(missing_ok=True)
+                raise DownloadIncompleteError(
+                    f"服务端返回的续传起点是 {start}（本地已有 {offset} 字节），已清空临时文件重下"
+                )
+            mode, done = "ab", offset  # 追加在断点之后
+        else:
+            if offset:
+                # 服务端不支持 Range（返回 200 = 整个文件）：必须清空，否则新旧两段会拼成坏文件
+                log(f"[audio] 服务端不支持断点续传（HTTP {r.status_code}），已清空本地临时文件从头下载")
+            mode, done, range_total = "wb", 0, None
+
+        remain = _int_header(r.headers.get("Content-Length"))  # 本次响应还会给多少字节
+        total = range_total or (done + remain if remain is not None else 0)
+
         last_pct = -100.0
-        with open(tmp, "wb") as f:
+        got = 0
+        with open(tmp, mode) as f:
             for chunk in r.iter_content(chunk_size=1 << 20):
+                if not chunk:
+                    continue
                 f.write(chunk)
+                got += len(chunk)
                 done += len(chunk)
                 if progress and total:
                     pct = done / total * 100
@@ -201,8 +399,56 @@ def _download_url(audio_url: str, workdir: Path, progress=None) -> Path:
                             "downloaded": done,
                             "total": total,
                         })
-        tmp.rename(dest)
-    return dest
+
+    # 长度校验：Content-Length 与实际不符（被中途掐断 / 代理截断）按失败处理，交给外层重试
+    if remain is not None and got != remain:
+        raise DownloadIncompleteError(f"下载不完整：Content-Length={remain}，实际收到 {got} 字节")
+    size = tmp.stat().st_size
+    if total and size != total:
+        raise DownloadIncompleteError(f"下载不完整：期望 {total} 字节，实际只有 {size} 字节")
+
+    tmp.rename(dest)
+
+
+def _download_url(audio_url: str, workdir: Path, progress=None, log=None) -> Path:
+    """下载音频直链，带断点续传 + 失败退避重试，返回最终文件路径。
+
+    重试策略：最多 PA_DOWNLOAD_RETRIES 次尝试（默认 3），两次尝试之间按 PA_DOWNLOAD_BACKOFF
+    （默认等 2s、5s）退避；只对网络抖动类错误重试（见 _is_retryable），404 这类确定性错误
+    直接抛出。中途失败时 audio.mp3.part 会留在原地，下次运行自动从断点继续。
+    """
+    logger = log or print
+    suffix = Path(audio_url.split("?")[0]).suffix or ".mp3"
+    dest = workdir / f"audio{suffix}"
+    tmp = dest.with_suffix(dest.suffix + ".part")
+
+    attempts = download_retries()
+    waits = download_backoff()
+    last_error: Exception | None = None
+
+    for attempt in range(1, attempts + 1):
+        try:
+            _download_once(audio_url, dest, tmp, progress=progress, log=logger)
+            return dest
+        except Exception as exc:
+            if not _is_retryable(exc):
+                raise  # 确定性错误：再试也不会有别的结果，直接让调用方看到真实原因
+            last_error = exc
+            if attempt >= attempts:
+                break
+            wait = _backoff_seconds(attempt, waits)
+            reason = f"{type(exc).__name__}: {exc}"
+            logger(f"[audio] 第 {attempt} 次重试（共 {attempts} 次尝试）：{reason}；{wait:g} 秒后重试")
+            if progress:
+                # 字段名是前端/CLI 的约定，不要改：total_retries 表示总尝试次数
+                progress("download", {
+                    "retry": attempt,
+                    "total_retries": attempts,
+                    "error": reason,
+                })
+            time.sleep(wait)
+
+    raise RuntimeError(f"音频下载失败（已尝试 {attempts} 次）：{last_error}") from last_error
 
 
 def _read_json(path: Path):

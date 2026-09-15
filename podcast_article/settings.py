@@ -44,7 +44,18 @@ GENERATION_DEFAULTS: dict = {
     "auto_polish": False,       # 生成后再让模型自查一遍（可选，格式纪律已由确定性后处理保证）
 }
 
-DEFAULTS: dict = {"profile": PROFILE_DEFAULTS, "generation": GENERATION_DEFAULTS}
+SUBSCRIPTION_DEFAULTS: dict = {
+    "enabled": True,           # 后台是否按间隔检查订阅
+    "interval_minutes": 120,   # 多久检查一次（0 表示不自动检查）
+    "auto_generate": True,     # 发现新单集时自动排队生成文章
+    "auto_dest": "",           # 自动生成的文章归到哪个分类（空 = 未分类）
+}
+
+DEFAULTS: dict = {
+    "profile": PROFILE_DEFAULTS,
+    "generation": GENERATION_DEFAULTS,
+    "subscriptions": SUBSCRIPTION_DEFAULTS,
+}
 
 
 def load() -> dict:
@@ -57,11 +68,13 @@ def load() -> dict:
     merged = {
         "profile": {**PROFILE_DEFAULTS, **(data.get("profile") or {})},
         "generation": {**GENERATION_DEFAULTS, **(data.get("generation") or {})},
+        "subscriptions": {**SUBSCRIPTION_DEFAULTS, **(data.get("subscriptions") or {})},
     }
     return merged
 
 
-def save(profile: dict | None = None, generation: dict | None = None) -> dict:
+def save(profile: dict | None = None, generation: dict | None = None,
+         subscriptions: dict | None = None) -> dict:
     current = load()
     if profile:
         current["profile"].update({k: v for k, v in profile.items() if k in PROFILE_DEFAULTS})
@@ -69,11 +82,21 @@ def save(profile: dict | None = None, generation: dict | None = None) -> dict:
         for k, v in generation.items():
             if k in GENERATION_DEFAULTS:
                 current["generation"][k] = v
+    if subscriptions:
+        for k, v in subscriptions.items():
+            if k in SUBSCRIPTION_DEFAULTS:
+                current["subscriptions"][k] = v
     if isinstance(current["generation"].get("max_chars"), str):
         try:
             current["generation"]["max_chars"] = int(current["generation"]["max_chars"])
         except ValueError:
             current["generation"]["max_chars"] = GENERATION_DEFAULTS["max_chars"]
+    for key in ("interval_minutes",):
+        if isinstance(current["subscriptions"].get(key), str):
+            try:
+                current["subscriptions"][key] = int(current["subscriptions"][key] or 0)
+            except ValueError:
+                current["subscriptions"][key] = SUBSCRIPTION_DEFAULTS[key]
     SETTINGS_PATH.write_text(
         json.dumps(current, ensure_ascii=False, indent=2), encoding="utf-8"
     )
@@ -157,7 +180,8 @@ def secret_status() -> dict:
 
 
 def storage_info() -> dict:
-    output = PROJECT_ROOT / "output"
+    # 与 webapp 一致：PA_OUTPUT_DIR 优先（测试与多实例部署都会用到）
+    output = Path(os.environ.get("PA_OUTPUT_DIR") or (PROJECT_ROOT / "output"))
     episodes, size = 0, 0
     if output.exists():
         for d in output.iterdir():

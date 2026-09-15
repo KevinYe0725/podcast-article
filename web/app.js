@@ -48,9 +48,19 @@ function toast(html) {
   clearTimeout(toastTimer); toastTimer = setTimeout(() => $("toast").classList.remove("show"), 6000);
 }
 
+/** 从一段文本里抠出所有链接（用来判断用户是不是一次粘了多条） */
+const URL_RE = /(?:https?:\/\/|~?\/)[^\s,，、]+/g;
+function urlsIn(text) {
+  return [...new Set((text || "").match(URL_RE) || [])];
+}
+
+/** 首页提交：一条直接跑，多条自动改成「加入队列」 */
 async function startRun(opts = {}) {
-  const url = opts.url !== undefined ? opts.url : $("url").value.trim();
-  if (!url) { $("url").focus(); return; }
+  const raw = opts.url !== undefined ? opts.url : $("url").value.trim();
+  if (!raw) { $("url").focus(); return; }
+  const many = urlsIn(raw);
+  if (!opts.url && many.length > 1) { await enqueueLinks(many); return; }
+  const url = raw;
   const resp = await fetch("/api/run", {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -61,9 +71,69 @@ async function startRun(opts = {}) {
     }),
   });
   const data = await resp.json();
-  if (!resp.ok) { toast("⚠ " + esc(data.error || "启动失败")); return; }
+  if (!resp.ok) {
+    // 409 = 已有任务在跑。别只说"失败"，告诉用户在跑什么，并自动等它结束
+    if (resp.status === 409 && data.busy) {
+      toast("⚠ 已有任务在运行：" + esc((data.url || "").slice(0, 60)) + " —— 结束后会自动恢复");
+      if (data.job_id) beginJob(data.job_id);
+      startBusyWatch();
+      return;
+    }
+    toast("⚠ " + esc(data.error || "启动失败"));
+    return;
+  }
   curUrl = url;
   beginJob(data.job_id);
+}
+
+/** 一次粘了多条链接：全部排进队列，然后切到队列视图 */
+async function enqueueLinks(links) {
+  const resp = await fetch("/api/queue", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      urls: links, mode: $("mode").value, lang: $("lang").value,
+      model: $("model").value.trim(), no_subs: $("no_subs").checked,
+    }),
+  });
+  const d = await resp.json();
+  if (!resp.ok) { toast("⚠ " + esc(d.error || "入队失败")); return; }
+  $("url").value = "";
+  updateComposerHint();
+  toast(`✦ 已排入队列 ${d.added.length} 条，后台会依次生成`);
+  showView("queue");
+  renderQueueView(d.queue);
+  queueRun();          // 立刻开跑第一条（有任务在跑时会返回 409，忽略即可）
+}
+
+/* ---- 「已有任务在跑」的提示与自动恢复 ---- */
+let busyTimer = null;
+function startBusyWatch() {
+  if (busyTimer) return;
+  const tick = async () => {
+    try {
+      const d = await (await fetch("/api/jobs/current")).json();
+      $("go").disabled = d.status === "running";
+      $("go").textContent = d.status === "running" ? "有任务在跑…" : "生成文章";
+      if (d.status !== "running") {
+        clearInterval(busyTimer); busyTimer = null;
+        toast("✦ 之前的任务已结束，可以继续了");
+      }
+    } catch (e) { /* 服务不可用时静默 */ }
+  };
+  tick();
+  busyTimer = setInterval(tick, 3000);
+}
+
+function updateComposerHint() {
+  const n = urlsIn($("url").value).length;
+  const btn = $("go");
+  if (n > 1) {
+    btn.textContent = `加入队列 (${n})`;
+    $("hint").innerHTML = `检测到 ${n} 条链接 —— 点按钮会全部排队，后台依次跑完；不想排队就只留一条。`;
+  } else {
+    btn.textContent = "生成文章";
+    $("hint").innerHTML = "⌘/Ctrl + Enter 直接开始 · Esc 关闭文章 / 退出设置 · 产物会缓存，重新生成文章不必重新转写";
+  }
 }
 
 function beginJob(id) {
@@ -75,6 +145,7 @@ function beginJob(id) {
   expandRunview();
   $("result").classList.remove("show");
   $("errline").style.display = "none";
+  curUsage = null; renderCostPill();
   setStage(-1, null);
   $("go").disabled = true; $("go").textContent = "生成中…";
   shownLogs = 0; $("console").innerHTML = "";
@@ -150,6 +221,11 @@ function connectSSE(id) {
     const stageIdx = Math.max(order[p.stage] ?? 0, Math.min(fromLogs, 2));
     setStage(stageIdx, p);
   });
+  es.addEventListener("usage", (e) => {
+    // 实时花费：每完成一次 LLM 调用就会推一次
+    curUsage = JSON.parse(e.data);
+    renderCostPill();
+  });
   es.addEventListener("status", (e) => {
     const d = JSON.parse(e.data);
     es.close(); es = null;
@@ -173,14 +249,17 @@ async function pollJob() {
     const fromLogs = stageIndexFromLogs(job.logs || []);
     setStage(Math.max(order[job.progress.stage] ?? 0, Math.min(fromLogs, 2)), job.progress);
   }
+  if (job.usage) { curUsage = job.usage; renderCostPill(); }
   if (job.status !== "running") {
     clearInterval(pollTimer); pollTimer = null;
-    finishJob({ status: job.status, error: job.error, workdir: job.workdir, meta: job.meta, article_html: job.article_html });
+    finishJob({ status: job.status, error: job.error, workdir: job.workdir, meta: job.meta,
+                usage: job.usage, article_html: job.article_html });
   }
 }
 
 function finishJob(d) {
-  $("go").disabled = false; $("go").textContent = "生成文章";
+  $("go").disabled = false;
+  updateComposerHint();
   if (d.status === "done") {
     setStage(4, null);
     curWorkdir = d.workdir;
@@ -196,6 +275,9 @@ function finishJob(d) {
     $("result").dataset.fromLib = "";
     $("result").classList.add("show");
     $("result").scrollIntoView({ behavior: "smooth", block: "start" });
+    curUsage = d.usage || null;
+    renderCostPill();
+    syncReadButton();
     loadLibrary();
     collapseRunview();
   } else {
@@ -204,6 +286,23 @@ function finishJob(d) {
     $("errline").style.display = "block";
     collapseRunview(d.error || "任务失败");
   }
+}
+
+/* ---- 费用显示 ---- */
+let curUsage = null;
+
+const fmtTokens = (n) => (n >= 1e6 ? (n / 1e6).toFixed(2) + "M" : n >= 1000 ? (n / 1000).toFixed(1) + "k" : String(n || 0));
+const fmtCost = (c) => (c >= 1 ? c.toFixed(2) : c.toFixed(3)) + " 元";
+
+function renderCostPill() {
+  const el = $("costpill");
+  if (!el) return;
+  if (!curUsage || !curUsage.calls) { el.textContent = ""; return; }
+  const hit = curUsage.cache_hit_rate ? ` · 缓存命中 ${curUsage.cache_hit_rate}%` : "";
+  el.textContent = `≈ ${fmtCost(curUsage.cost_cny)} · ${fmtTokens(curUsage.total_tokens)} tokens · ${curUsage.calls} 次调用${hit}`;
+  el.title = `输入 ${curUsage.input_tokens.toLocaleString()} tokens（其中缓存命中 ${curUsage.hit_tokens.toLocaleString()}）\n` +
+             `输出 ${curUsage.out_tokens.toLocaleString()} tokens\n` +
+             `按 DeepSeek 官方价格表估算，分高峰/空闲时段计价`;
 }
 
 async function toggleTranscript() {
@@ -700,11 +799,18 @@ function closeResult() {
   else $("url").focus();
 }
 
-/* ---------------- 历史库：分类 + 拖拽投放 ---------------- */
+/* ---------------- 历史库：分类 + 阅读状态 + 拖拽投放 ---------------- */
 let libItems = [], libCats = [], libAssign = {}, activeCat = "all";
-let dragState = null;
+let libStatus = {}, libStatusCounts = {}, libStatusLabels = {};
+let libUsageTotal = null, dragState = null;
 
 const catById = (id) => libCats.find((c) => c.id === id) || null;
+const statusOf = (dir) => libStatus[dir] || "unread";
+const statusColor = { unread: "#d9d9e0", reading: "#4d6bfe", read: "#10a37f", later: "#d97706" };
+const statusLabel = (s) => libStatusLabels[s] || s;
+/** 筛选用的「智能列表」；"all"/"none" 是结构筛选，其余按阅读状态筛 */
+const SMART = ["unread", "reading", "read", "later"];
+const isSmart = (v) => SMART.includes(v);
 
 async function loadLibrary() {
   const resp = await fetch("/api/library");
@@ -712,11 +818,37 @@ async function loadLibrary() {
   libItems = d.items || [];
   libCats = d.categories || [];
   libAssign = d.assignments || {};
+  libStatus = d.status || {};
+  libStatusCounts = d.status_counts || {};
+  libStatusLabels = d.status_labels || {};
+  libUsageTotal = d.usage_total || null;
   renderCatbar();
   renderGrid();
+  renderUsagePill();
+  setNavCount("navqcount", d.queue_active || 0);
+}
+
+/** 顶栏的累计用量胶囊 */
+function renderUsagePill() {
+  const el = $("usagepill");
+  const t = libUsageTotal;
+  el.textContent = t && t.episodes
+    ? `累计 ${fmtCost(t.cost_cny)} · ${fmtTokens(t.total_tokens)} tokens`
+    : "";
+  if (t && t.episodes) {
+    el.title = `${t.episodes} 篇 · ${t.calls} 次模型调用\n` +
+      `输入 ${t.input_tokens.toLocaleString()} tokens（缓存命中 ${t.hit_tokens.toLocaleString()}，命中率 ${t.cache_hit_rate}%）\n` +
+      `输出 ${t.out_tokens.toLocaleString()} tokens\n点开看分模型明细`;
+  }
+}
+
+function setNavCount(id, n) {
+  const el = $(id);
+  if (el) el.textContent = n ? String(n) : "";
 }
 
 const FOLDER_ICON = `<svg class="ficon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4l2 2.2h7A1.5 1.5 0 0 1 19 9.7v8.6a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 3 18.3z"></path></svg>`;
+const CLOCK_ICON = `<svg class="ficon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"></circle><path d="M12 8v4l2.5 2"></path></svg>`;
 
 function renderCatbar() {
   const unassigned = libItems.filter((it) => !libAssign[it.dir]).length;
@@ -724,14 +856,21 @@ function renderCatbar() {
     `<button class="folder ${activeCat === "all" ? "on" : ""}" data-drop="all" onclick="setCat('all')">
        <svg class="ficon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h10"></path></svg>
        <span class="fname">全部文章</span><span class="fcount">${libItems.length}</span></button>`,
-    `<button class="folder ${activeCat === "none" ? "on" : ""}" data-drop="none" onclick="setCat('none')">
-       <svg class="ficon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"></circle><path d="M12 8v4l2.5 2"></path></svg>
+    `<button class="folder ${activeCat === "none" ? "on" : ""}" data-drop="none" data-dropkind="cat" onclick="setCat('none')">
+       ${CLOCK_ICON}
        <span class="fname">未分类</span><span class="fcount">${unassigned}</span></button>`,
   ];
+  // 智能列表：按阅读状态筛（未读 / 在读 / 已读 / 稍后读）。也可以直接把卡片拖到这些行上改状态。
+  rows.push('<div class="sidegap"></div>');
+  SMART.forEach((s) => {
+    rows.push(`<button class="folder ${activeCat === s ? "on" : ""}" data-drop="${s}" data-dropkind="status" onclick="setCat('${s}')" title="把卡片拖到这里即可标记为「${esc(statusLabel(s))}」">
+      <span class="fdot ${s}"></span>
+      <span class="fname">${esc(statusLabel(s))}</span><span class="fcount">${statusCount(s)}</span></button>`);
+  });
   if (libCats.length) {
     rows.push('<div class="sidegap"></div>');
     libCats.forEach((c) => {
-      rows.push(`<button class="folder ${activeCat === c.id ? "on" : ""}" data-drop="${c.id}" onclick="setCat('${c.id}')">
+      rows.push(`<button class="folder ${activeCat === c.id ? "on" : ""}" data-drop="${c.id}" data-dropkind="cat" onclick="setCat('${c.id}')">
         ${FOLDER_ICON}
         <span class="fname">${esc(c.name)}</span>
         <span class="fcount">${c.count || 0}</span>
@@ -747,43 +886,165 @@ function renderCatbar() {
   $("catnav").innerHTML = rows.join("");
 }
 
-function setCat(v) { activeCat = v; renderCatbar(); renderGrid(); }
+/** 某个阅读状态下实际有几篇（未读要把没有标记的也算上） */
+function statusCount(s) {
+  const marked = libStatusCounts[s] || 0;
+  if (s !== "unread") return marked;
+  return libItems.filter((it) => statusOf(it.dir) === "unread").length;
+}
+
+function setCat(v) {
+  activeCat = v;
+  if (searchQuery) clearSearch(true);      // 从搜索结果切回筛选时把搜索状态清掉
+  showView("lib");
+  renderCatbar(); renderGrid();
+}
+
+function matchesFilter(it) {
+  if (activeCat === "all") return true;
+  if (activeCat === "none") return !libAssign[it.dir];
+  if (isSmart(activeCat)) return statusOf(it.dir) === activeCat;
+  return libAssign[it.dir] === activeCat;
+}
 
 function renderGrid() {
-  const shown = libItems.filter((it) =>
-    activeCat === "all" ? true
-      : activeCat === "none" ? !libAssign[it.dir]
-      : libAssign[it.dir] === activeCat);
+  const shown = libItems.filter(matchesFilter);
   const empty = $("empty-lib");
-  if (!libItems.length) { empty.textContent = "还没有生成过任何文章。"; empty.style.display = "block"; }
-  else if (!shown.length) { empty.textContent = "这个分类下还没有文章 —— 把下面的卡片按住拖到上方分类里即可。"; empty.style.display = "block"; }
-  else empty.style.display = "none";
+  if (searchQuery) { /* 搜索模式由 renderSearch 负责 */ }
+  else if (!libItems.length) { empty.textContent = "还没有生成过任何文章。"; empty.style.display = "block"; }
+  else if (!shown.length) {
+    empty.textContent = isSmart(activeCat)
+      ? `「${statusLabel(activeCat)}」里还没有文章 —— 打开一篇文章后在工具条里标记即可。`
+      : "这个分类下还没有文章 —— 把下面的卡片按住拖到上方分类里即可。";
+    empty.style.display = "block";
+  } else empty.style.display = "none";
 
   document.querySelectorAll("#quicktabs button").forEach((b) =>
     b.classList.toggle("on", b.dataset.quick === activeCat));
-  const cur = activeCat === "all" ? null : activeCat === "none" ? null : catById(activeCat);
-  $("libtitle").textContent = activeCat === "all" ? "全部文章" : activeCat === "none" ? "未分类" : (cur ? cur.name : "分类");
+  const cur = isSmart(activeCat) || activeCat === "all" || activeCat === "none" ? null : catById(activeCat);
+  $("libtitle").textContent = activeCat === "all" ? "全部文章"
+    : activeCat === "none" ? "未分类"
+    : isSmart(activeCat) ? statusLabel(activeCat)
+    : (cur ? cur.name : "分类");
   $("libcount").textContent = shown.length ? `共 ${shown.length} 篇` : "";
-  $("libgrid").innerHTML = shown.map((it) => {
-    const pv = it.preview || {};
-    const c = catById(libAssign[it.dir]);
-    const take = (pv.takeaways || []).map((t) => `<li>${esc(t)}</li>`).join("");
-    return `
-    <div class="ep" data-dir="${esc(it.dir)}" onclick="openEpisode('${encodeURIComponent(it.dir)}')">
-      <button class="kill" title="删除这条记录" onclick="event.stopPropagation();askDelete('${esc(it.dir)}')">✕</button>
-      <div class="t">${esc(it.title)}</div>
-      ${pv.deck ? `<div class="deck">${esc(pv.deck)}</div>` : ""}
-      ${take ? `<ul class="tk">${take}</ul>` : ""}
-      <div class="s">
-        ${c
-          ? `<span class="catlabel" title="点击更换分类" onclick="event.stopPropagation();openCatMenu(event,'${esc(it.dir)}')"><span class="dot" style="background:${esc(c.color)}"></span>${esc(c.name)}</span>`
-          : `<span class="catlabel empty" title="点击归类" onclick="event.stopPropagation();openCatMenu(event,'${esc(it.dir)}')">＋ 分类</span>`}
-        ${it.podcast ? `<span>${esc(it.podcast)}</span>` : ""}
-        ${it.has_article ? `<span class="ok">✓ 有文章</span>` : `<span>无文章</span>`}
-        ${pv.chars ? `<span>${pv.chars} 字</span>` : ""}
-      </div>
-    </div>`;
-  }).join("");
+  $("libgrid").innerHTML = shown.map(cardHTML).join("");
+}
+
+/** 一张文章卡片 */
+function cardHTML(it) {
+  const pv = it.preview || {};
+  const c = catById(libAssign[it.dir]);
+  const st = statusOf(it.dir);
+  const take = (pv.takeaways || []).map((t) => `<li>${esc(t)}</li>`).join("");
+  const dir = esc(it.dir);
+  const cost = it.usage && it.usage.calls ? ` · ≈${fmtCost(it.usage.cost_cny)}` : "";
+  return `
+  <div class="ep" data-dir="${dir}" onclick="openEpisode('${encodeURIComponent(it.dir)}')">
+    <button class="kill" title="删除这条记录" onclick="event.stopPropagation();askDelete('${dir}')">✕</button>
+    <div class="cardacts">
+      <button class="mini-act" title="标为已读" onclick="event.stopPropagation();setArticleStatus('${dir}','read')">✓ 已读</button>
+      <button class="mini-act" title="加入稍后读" onclick="event.stopPropagation();setArticleStatus('${dir}','later')">◷ 稍后读</button>
+      <button class="mini-act" title="导出 Markdown" onclick="event.stopPropagation();exportOne('md','${dir}')">导出</button>
+    </div>
+    <div class="t">${esc(it.title)}</div>
+    ${pv.deck ? `<div class="deck">${esc(pv.deck)}</div>` : ""}
+    ${take ? `<ul class="tk">${take}</ul>` : ""}
+    <div class="s">
+      <span class="catlabel" title="阅读状态：${esc(statusLabel(st))}（点击更换）"
+            onclick="event.stopPropagation();openStatusMenu(event,'${dir}')"><span class="dot" style="background:${statusColor[st]}"></span>${esc(statusLabel(st))}</span>
+      ${c
+        ? `<span class="catlabel" title="点击更换分类" onclick="event.stopPropagation();openCatMenu(event,'${dir}')"><span class="dot" style="background:${esc(c.color)}"></span>${esc(c.name)}</span>`
+        : `<span class="catlabel empty" title="点击归类" onclick="event.stopPropagation();openCatMenu(event,'${dir}')">＋ 分类</span>`}
+      ${it.podcast ? `<span>${esc(it.podcast)}</span>` : ""}
+      ${it.has_article ? `<span class="ok">✓ 有文章</span>` : `<span>无文章</span>`}
+      ${pv.chars ? `<span>${pv.chars} 字</span>` : ""}
+      ${cost ? `<span title="这一集累计消耗">${cost.trim().replace(/^·\s*/, "")}</span>` : ""}
+    </div>
+  </div>`;
+}
+
+/* ---- 阅读状态 ---- */
+async function setArticleStatus(dir, status) {
+  const resp = await fetch("/api/status", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ dir, status }),
+  });
+  const d = await resp.json();
+  if (!resp.ok) { toast("⚠ " + esc(d.error || "标记失败")); return; }
+  libStatus = d.state.status || {};
+  libStatusCounts = d.state.status_counts || {};
+  libStatusLabels = d.state.status_labels || {};
+  renderCatbar(); renderGrid();
+  if (dir === curWorkdir) syncReadButton();
+  toast(`✦ 已标记为「${esc(statusLabel(d.value))}」`);
+}
+
+/** 打开文章时自动从「未读」推进到「在读」（不打断用户，静默执行） */
+async function autoMarkReading(dir) {
+  if (statusOf(dir) !== "unread") return;
+  try {
+    const resp = await fetch("/api/status", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ dir, status: "reading" }),
+    });
+    if (!resp.ok) return;
+    const d = await resp.json();
+    libStatus = d.state.status || {};
+    libStatusCounts = d.state.status_counts || {};
+    renderCatbar();
+  } catch (e) { /* 标记失败不该影响阅读 */ }
+}
+
+/** 文章工具条上的状态按钮：显示当前状态，点开菜单选择 */
+function syncReadButton() {
+  const btn = $("readbtn");
+  if (!btn) return;
+  btn.textContent = curWorkdir ? `${statusLabel(statusOf(curWorkdir))} ▾` : "状态 ▾";
+}
+
+function openStatusMenu(ev, dir) {
+  ev.stopPropagation();
+  const menu = document.createElement("div");
+  menu.className = "catmenu";
+  menu.innerHTML = SMART.map((s) =>
+    `<div class="mi" data-st="${s}"><span class="dot" style="background:${statusColor[s]}"></span>${esc(statusLabel(s))}</div>`
+  ).join("") + `<div class="sep"></div><div class="mi" data-st=""><span class="dot" style="background:#e6e6ec"></span>清除标记</div>`;
+  document.body.appendChild(menu);
+  const r = menu.getBoundingClientRect();
+  menu.style.left = Math.min(ev.clientX, window.innerWidth - r.width - 12) + "px";
+  menu.style.top = Math.min(ev.clientY + 8, window.innerHeight - r.height - 12) + "px";
+  menu.addEventListener("click", async (e) => {
+    const mi = e.target.closest(".mi");
+    if (!mi) return;
+    e.stopPropagation();
+    closeCatMenu();
+    await setArticleStatus(dir, mi.dataset.st);
+  });
+  setTimeout(() => document.addEventListener("pointerdown", outsideCatMenu, true), 0);
+}
+
+/* ---- 工具条上的状态菜单 ---- */
+function toggleReadMenu(ev) {
+  ev.stopPropagation();
+  togglePopmenu("readmenu", ev.currentTarget);
+  if (curWorkdir) {
+    document.querySelectorAll("#readmenu .mi").forEach((mi) => {
+      const st = mi.dataset.st;
+      mi.style.fontWeight = st && st === statusOf(curWorkdir) ? "600" : "";
+    });
+  }
+}
+
+async function markStatus(st) {
+  hidePopmenus();
+  if (!curWorkdir) return;
+  await setArticleStatus(curWorkdir, st);
+}
+
+async function clearStatusMark() {
+  hidePopmenus();
+  if (!curWorkdir) return;
+  await setArticleStatus(curWorkdir, "");
 }
 
 function createCat() {
@@ -977,7 +1238,12 @@ function beginDrag(ev, dir, card) {
     // 拖过之后抑制这次 click，避免顺手把文章打开
     window.__dragged = true;
     setTimeout(() => { window.__dragged = false; }, 80);
-    if (zone) assignArticle(dir, zone.dataset.drop === "none" ? "" : zone.dataset.drop);
+    if (zone) {
+      const key = zone.dataset.drop;
+      // 拖到智能列表行 = 改阅读状态；拖到分类行 = 改分类
+      if (zone.dataset.dropkind === "status") setArticleStatus(dir, key);
+      else assignArticle(dir, key === "none" ? "" : key);
+    }
   };
 
   document.addEventListener("pointermove", move);
@@ -987,8 +1253,7 @@ function beginDrag(ev, dir, card) {
 
 async function openEpisode(dirEnc) {
   if (window.__dragged) return;   // 刚才是拖拽，不要顺手打开文章
-  const dir = decodeURIComponent(dirEnc);
-  const metaResp = await fetch(`/api/file/${dirEnc}/meta.json`);
+  const dir = decodeURIComponent(dirEnc);  const metaResp = await fetch(`/api/file/${dirEnc}/meta.json`);
   const meta = await metaResp.json();
   curWorkdir = dir; curUrl = meta.url || null;
   $("result").dataset.fromLib = "1";   // 关闭时回到历史库而不是回到输入框

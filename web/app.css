@@ -481,3 +481,251 @@
   }
   #toast.show { display: block; }
   #toast a { color: #7bd3b5; }
+
+  /* ============================================================
+     以下为新增组件样式：只追加，不改动上方任何已有规则。
+     新增的窄屏媒体查询放在文件最末，桌面端行为保持不变。
+     ============================================================ */
+
+  /* ---- 1. 侧边栏搜索框：整框浅灰底，聚焦时描边 ---- */
+  .searchbox {
+    display: flex; align-items: center; gap: 8px; margin: 2px 0 10px; padding: 6px 9px;
+    background: var(--bg2); border: 1px solid transparent; border-radius: 10px;
+    transition: border-color .15s, box-shadow .15s, background .15s;
+  }
+  .searchbox:focus-within { background: #fff; border-color: var(--green); box-shadow: 0 0 0 3px rgba(16, 163, 127, .1); }
+  .searchbox .sicon { width: 16px; height: 16px; flex: 0 0 auto; color: var(--dim); }
+  .searchbox input {
+    flex: 1; min-width: 0; padding: 0; border: 0; outline: none; background: transparent;
+    font-family: var(--font); font-size: 13px; line-height: 20px; color: var(--text);
+  }
+  .searchbox input::placeholder { color: #b4b4bc; }
+  /* 去掉 type=search 的原生清除按钮，改用自定义的 .qclear */
+  .searchbox input::-webkit-search-cancel-button,
+  .searchbox input::-webkit-search-decoration { -webkit-appearance: none; appearance: none; display: none; }
+  .searchbox .qclear {
+    display: none; align-items: center; justify-content: center; width: 22px; height: 22px;
+    flex: 0 0 auto; padding: 0; border: 0; border-radius: 50%; background: transparent;
+    color: var(--dim); font-size: 11px; line-height: 1; cursor: pointer; opacity: .7; transition: .15s;
+  }
+  /* 有输入内容时（父级 .has-text）才显示清空按钮 */
+  .searchbox.has-text .qclear { display: flex; opacity: 1; }
+  .searchbox .qclear:hover { background: #e9e9ee; color: var(--text); opacity: 1; }
+
+  /* ---- 2. 侧边栏底部导航组（队列 / 订阅）与计数 ---- */
+  .sidenav {
+    display: flex; flex-direction: column; gap: 2px;
+    margin-top: 10px; padding-top: 12px; border-top: 1px solid var(--border);
+  }
+  /* 与分类行视觉一致：同一字号、同一图标灰，宽度撑满 */
+  .sidenav .folder { width: 100%; font-size: 13.5px; }
+  .sidenav .folder .ficon { color: #a3a3ae; }
+  .sidenav .folder.on .ficon { color: #6e6e80; }
+  /* 计数为空时不占位 */
+  .fcount:empty { display: none; }
+  /* 状态圆点：稍后读 / 已读 / 在读 / 未读 */
+  .fdot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; background: var(--border2); }
+  .fdot.later { background: #d97706; }
+  .fdot.read { background: var(--green); }
+  .fdot.reading { background: #4d6bfe; }
+  .fdot.unread { background: var(--border2); }
+
+  /* ---- 3. 顶栏用量胶囊与移动端汉堡按钮 ---- */
+  .usagepill {
+    display: inline-flex; align-items: center; padding: 5px 12px; border: 1px solid transparent;
+    border-radius: 999px; background: var(--bg2); color: var(--dim);
+    font-family: var(--font); font-size: 12px; line-height: 18px; white-space: nowrap;
+    cursor: pointer; transition: .15s;
+  }
+  .usagepill:hover { background: #ececef; color: var(--text); }
+  .usagepill:empty { display: none; }
+  /* 汉堡按钮：桌面隐藏，只在窄屏出现（见文件末尾媒体查询） */
+  .menubtn { display: none; }
+  /* 抽屉收起按钮：桌面隐藏，窄屏显示在品牌行右侧 */
+  .sidehide { display: none; }
+
+  /* ---- 4. 下拉菜单（导出 / 状态）---- */
+  .menuwrap { position: relative; display: inline-flex; }
+  .popmenu {
+    position: absolute; top: calc(100% + 6px); right: 0; z-index: 40; min-width: 240px;
+    padding: 5px; background: #fff; border: 1px solid var(--border); border-radius: 12px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, .10);
+  }
+  /* hidden 属性必须压过上面的 display，否则菜单关不掉 */
+  .popmenu[hidden] { display: none; }
+  .popmenu .mi {
+    display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 10px;
+    border-radius: 8px; font-size: 13px; color: var(--text); cursor: pointer;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: background .15s;
+  }
+  .popmenu .mi:hover { background: var(--bg2); }
+  .popmenu .sep { height: 1px; background: var(--border); margin: 4px 4px; }
+
+  /* ---- 5. 文章工具条里的费用胶囊 ---- */
+  .costpill {
+    display: inline-flex; align-items: center; align-self: center; gap: 6px; margin-left: auto;
+    padding: 4px 12px; border-radius: 999px; background: var(--bg2); color: var(--dim);
+    font-family: var(--mono); font-size: 11.5px; line-height: 18px; white-space: nowrap;
+  }
+  .costpill:empty { display: none; }
+
+  /* ---- 6. 独立视图（队列 / 订阅）的标题区与空状态 ---- */
+  .viewhead {
+    display: flex; align-items: flex-start; justify-content: space-between; gap: 16px;
+    flex-wrap: wrap; padding-bottom: 14px; margin-bottom: 18px; border-bottom: 1px solid var(--border);
+  }
+  .viewhead h2 { font-size: 20px; font-weight: 600; letter-spacing: -0.02em; line-height: 1.35; }
+  .viewhead .vhint { max-width: 640px; margin-top: 6px; font-size: 13px; color: var(--dim); line-height: 1.6; }
+  .viewhead .vacts { display: flex; align-items: center; gap: 8px; flex-shrink: 0; flex-wrap: wrap; }
+  .viewempty { padding: 56px 0; text-align: center; font-size: 13.5px; color: var(--dim); line-height: 1.7; }
+
+  /* ---- 7. 队列条目 ---- */
+  .qrow {
+    display: flex; align-items: flex-start; gap: 12px; margin-bottom: 8px; padding: 12px 14px;
+    background: #fff; border: 1px solid var(--border); border-radius: 12px;
+    transition: border .15s, box-shadow .15s;
+  }
+  .qrow:hover { border-color: var(--border2); box-shadow: 0 2px 12px rgba(0, 0, 0, .04); }
+  /* 状态胶囊：定宽保证多行对齐 */
+  .qstate {
+    flex: 0 0 auto; width: 56px; margin-top: 2px; text-align: center;
+    padding: 0; border-radius: 999px; background: var(--bg2); color: var(--dim);
+    font-size: 11.5px; line-height: 20px;
+  }
+  .qstate.pending { background: var(--bg2); color: var(--dim); }
+  .qstate.running { background: #eef1ff; color: #4d6bfe; animation: qpulse 1.4s ease-in-out infinite; }
+  .qstate.done { background: #e8f6f1; color: var(--green); }
+  .qstate.error { background: #fdeced; color: var(--red); }
+  .qstate.skipped { background: var(--bg2); color: var(--dim); }
+  /* 运行中状态轻微呼吸，提示还在跑 */
+  @keyframes qpulse { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
+  .qmain { flex: 1; min-width: 0; }
+  .qtitle { font-size: 13.5px; font-weight: 500; line-height: 1.45; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .qurl {
+    margin-top: 3px; font-family: var(--mono); font-size: 12px; color: var(--dim);
+    word-break: break-all; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .qerr { margin-top: 4px; font-size: 12px; line-height: 1.6; color: var(--red); word-break: break-word; white-space: pre-wrap; }
+  /* 行内操作：hover / 键盘聚焦时出现 */
+  .qacts { display: flex; align-items: center; gap: 6px; flex-shrink: 0; opacity: 0; transition: opacity .15s; }
+  .qrow:hover .qacts, .qrow:focus-within .qacts { opacity: 1; }
+
+  /* ---- 8. 订阅条目 ---- */
+  .frow {
+    display: flex; align-items: flex-start; gap: 12px; margin-bottom: 8px; padding: 12px 14px;
+    background: #fff; border: 1px solid var(--border); border-radius: 12px;
+    transition: border .15s, box-shadow .15s;
+  }
+  .frow:hover { border-color: var(--border2); box-shadow: 0 2px 12px rgba(0, 0, 0, .04); }
+  .fmain { flex: 1; min-width: 0; }
+  .ftitle { display: flex; align-items: center; gap: 8px; font-size: 13.5px; font-weight: 500; line-height: 1.45; }
+  .ftag {
+    flex: 0 0 auto; padding: 1px 6px; border-radius: 6px; background: var(--bg2);
+    color: var(--dim); font-size: 11px; font-weight: 400; line-height: 17px;
+  }
+  .furl {
+    margin-top: 3px; font-family: var(--mono); font-size: 12px; color: var(--dim);
+    word-break: break-all; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .fmeta { margin-top: 3px; font-size: 12px; color: var(--dim); }
+  .ferr { margin-top: 4px; font-size: 12px; line-height: 1.6; color: var(--red); word-break: break-word; }
+  .facts { display: flex; align-items: center; gap: 10px; flex-shrink: 0; font-size: 12.5px; }
+  /* 自动生成开关：一行小号 label，checkbox 不撑大 */
+  .fswitch {
+    display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--dim);
+    cursor: pointer; user-select: none; white-space: nowrap;
+  }
+  .fswitch input[type=checkbox] { width: 14px; height: 14px; flex: 0 0 auto; margin: 0; accent-color: var(--green); }
+
+  /* ---- 9. 全文检索结果卡片 ---- */
+  .sr {
+    margin-bottom: 10px; padding: 14px 16px; background: #fff; border: 1px solid var(--border);
+    border-radius: 12px; cursor: pointer; transition: border .15s, box-shadow .15s;
+  }
+  .sr:hover { border-color: var(--border2); box-shadow: 0 2px 14px rgba(0, 0, 0, .05); }
+  .srhead { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+  .srtitle { font-size: 15px; font-weight: 600; line-height: 1.45; letter-spacing: -0.01em; }
+  .srmeta { flex: 0 0 auto; font-size: 12px; color: var(--dim); white-space: nowrap; }
+  .srhit { margin-top: 6px; font-size: 13px; line-height: 1.7; color: var(--dim); }
+  .srhit + .srhit { margin-top: 2px; }
+  .srfield {
+    display: inline-block; margin-right: 6px; padding: 1px 5px; border-radius: 5px;
+    background: var(--bg2); color: var(--dim); font-size: 11px; line-height: 17px;
+  }
+  .srtext { color: var(--dim); }
+  /* 命中高亮：<mark> 与 .hl 两种写法都支持 */
+  mark, .hl { padding: 0 1px; border-radius: 3px; background: #fff3bf; color: var(--text); }
+  /* 结果里的时间戳保持小号绿色可点，不被 .srtext 的 --dim 覆盖 */
+  .srtext .ts {
+    color: var(--green); text-decoration: none; border-bottom: 1px dashed rgba(16, 163, 127, .45);
+    font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; padding: 0 1px; border-radius: 3px;
+  }
+  .srtext .ts:hover { background: #eafaf4; border-bottom-style: solid; }
+
+  /* ---- 10. 文章卡片的状态与操作区（hover 才出现）---- */
+  /* 定位在右上角 .kill 的下方，落在卡片右上那片空白里 */
+  .cardacts {
+    position: absolute; top: 34px; right: 10px; z-index: 1;
+    display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 4px;
+    max-width: calc(100% - 20px); opacity: 0; transition: opacity .15s;
+  }
+  .ep:hover .cardacts, .ep:focus-within .cardacts { opacity: 1; }
+  /* 小号无边框按钮：已读 / 稍后读 / 导出 */
+  .mini-act {
+    padding: 2px 6px; border: 0; border-radius: 6px; background: transparent; color: var(--dim);
+    font-family: var(--font); font-size: 11.5px; line-height: 18px; white-space: nowrap;
+    cursor: pointer; transition: .12s;
+  }
+  .mini-act:hover { background: var(--bg2); color: var(--text); }
+  .mini-act.on { background: #eafaf4; color: var(--green); }
+
+  /* ---- 11. 弹窗里的多行输入与提示 ---- */
+  .modaltarea {
+    width: 100%; min-height: 140px; margin-top: 15px; padding: 10px 12px;
+    border: 1px solid var(--border); border-radius: 10px; background: #fff; color: var(--text);
+    font-family: var(--mono); font-size: 13px; line-height: 1.6; resize: vertical;
+  }
+  .modaltarea:focus { outline: none; border-color: var(--green); }
+  /* 提示段落：同时覆盖 .modalcard p 的字号/颜色，保证在弹窗里也一致 */
+  .modalhint, .modalcard .modalhint { margin-top: 8px; font-size: 12.5px; color: var(--dim); line-height: 1.6; }
+
+  /* ---- 12. 窄屏（≤900px）：侧边栏改为抽屉式 ---- */
+  .sideback { position: fixed; inset: 0; z-index: 55; display: none; background: rgba(0, 0, 0, .28); }
+  @media (max-width: 900px) {
+    .app { display: block; }
+    /* 覆盖上方 900px 块里的「顶部横条」，改成左侧抽屉 */
+    .appside {
+      position: fixed; left: 0; top: 0; bottom: 0; width: 280px; max-width: 86vw; height: 100vh;
+      z-index: 60; padding: 18px 12px 24px; border-right: 1px solid var(--border); border-bottom: 0;
+      flex-direction: column; align-items: stretch; gap: 3px; overflow-x: hidden; overflow-y: auto;
+      background: #fcfcfd; transform: translateX(-100%); transition: transform .2s;
+    }
+    .appside.open { transform: none; box-shadow: 0 0 40px rgba(0, 0, 0, .18); }
+    .sideback.open { display: block; }
+    .appbrand { display: flex; align-items: center; justify-content: space-between; }
+    .appside .sidehide { display: inline-flex; width: 26px; height: 26px; }
+    .appside nav { display: flex; flex-direction: column; gap: 2px; }
+    .appside .folder { width: 100%; background: transparent; white-space: nowrap; }
+    .appside .sidefoot { display: block; }
+    .menubtn { display: inline-flex; }
+    .topbar .meta { display: none; }
+    .appmain { padding: 0 16px 96px; }
+    .col { max-width: none; }
+    /* 工具条：允许换行，按钮均分宽度 */
+    .btnrow { flex-wrap: wrap; gap: 8px; }
+    .btnrow > * { flex: 1 1 auto; min-width: 0; }
+    .btnrow .menuwrap { flex: 1 1 auto; }
+    .btnrow .menuwrap > .btn { width: 100%; justify-content: center; }
+    .btnrow .btn.mini, .btnrow .btn { justify-content: center; }
+    /* 费用胶囊换行单独一行，不再靠右 */
+    .costpill { flex: 1 1 100%; margin-left: 0; justify-content: center; }
+    .popmenu { min-width: 200px; }
+    /* 输入区纵向堆叠：输入框一行、按钮满宽 */
+    .composer .row { flex-direction: column; align-items: stretch; gap: 8px; }
+    .composer .row input[type=text] { padding: 10px 12px; }
+    #go { width: 100%; }
+    /* 队列 / 订阅条目的操作区在窄屏始终可见，并单独占一行 */
+    .qrow, .frow { flex-wrap: wrap; }
+    .qacts, .facts { width: 100%; justify-content: flex-end; opacity: 1; }
+    .viewhead .vacts { width: 100%; }
+  }

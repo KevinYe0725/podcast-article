@@ -11,7 +11,7 @@ from collections import Counter
 
 from openai import OpenAI
 
-from . import config, outline, postprocess, settings
+from . import config, outline, postprocess, settings, usage
 from .util import html_to_text, ts_clock
 
 
@@ -42,6 +42,8 @@ def _chat(
         ],
         "max_tokens": max_tokens,
         "stream": True,
+        # 流式响应默认不带 usage，必须显式索要：最后一个 chunk 会带完整用量
+        "stream_options": {"include_usage": True},
     }
     if thinking:
         kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
@@ -50,13 +52,24 @@ def _chat(
         kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
         kwargs["temperature"] = temperature
 
-    stream = client.chat.completions.create(**kwargs)
+    try:
+        stream = client.chat.completions.create(**kwargs)
+    except Exception as exc:
+        # 兼容不支持 stream_options 的 OpenAI 兼容服务端：去掉它再试一次
+        if "stream_options" not in str(exc):
+            raise
+        log("[llm] 服务端不支持 stream_options，本次不记录 token 用量")
+        kwargs.pop("stream_options", None)
+        stream = client.chat.completions.create(**kwargs)
     parts: list[str] = []
     printed = 0
     think_len = 0
     think_reported = 0
     finish = None
     for chunk in stream:
+        raw_usage = getattr(chunk, "usage", None)
+        if raw_usage is not None:
+            usage.note(model, raw_usage)      # 记账：没有活动记录器时是空操作
         choice = chunk.choices[0] if chunk.choices else None
         if choice is None:
             continue

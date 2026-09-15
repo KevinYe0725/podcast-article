@@ -8,17 +8,38 @@
 </head>
 <body>
 <div class="app">
-  <aside class="appside">
-    <div class="appbrand">podcast<span>-article</span></div>
+  <aside class="appside" id="appside">
+    <div class="appbrand">podcast<span>-article</span>
+      <button class="iconbtn small sidehide" onclick="toggleSide()" title="收起侧边栏" aria-label="收起侧边栏">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M15 6 9 12l6 6"></path></svg>
+      </button>
+    </div>
+
+    <div class="searchbox">
+      <svg class="sicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"></circle><path d="m16 16 4 4"></path></svg>
+      <input id="q" type="search" placeholder="搜索文章与文字稿…" autocomplete="off" spellcheck="false">
+      <button class="qclear" id="qclear" onclick="clearSearch()" title="清空" aria-label="清空">✕</button>
+    </div>
+
     <div class="sidehead">
       <span>文章库</span>
       <button class="iconbtn small" title="新建分类" aria-label="新建分类" onclick="createCat()">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-          <path d="M12 5v14M5 12h14"></path>
-        </svg>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"></path></svg>
       </button>
     </div>
     <nav id="catnav"></nav>
+
+    <div class="sidenav">
+      <button class="folder" id="navqueue" onclick="showView('queue')">
+        <svg class="ficon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h9"></path><circle cx="19" cy="18" r="2.2"></circle></svg>
+        <span class="fname">批量队列</span><span class="fcount" id="navqcount"></span>
+      </button>
+      <button class="folder" id="navfeeds" onclick="showView('feeds')">
+        <svg class="ficon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 19a14 14 0 0 1 14-14"></path><path d="M5 12a7 7 0 0 1 7-7"></path><circle cx="6" cy="18" r="1.6"></circle></svg>
+        <span class="fname">订阅</span><span class="fcount" id="navfcount"></span>
+      </button>
+    </div>
+
     <div class="sidefoot">
       <button class="folder" onclick="openSettings()">
         <svg class="ficon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
@@ -32,8 +53,12 @@
 
   <div class="appmain">
   <div class="topbar">
+    <button class="iconbtn menubtn" onclick="toggleSide()" title="菜单" aria-label="菜单">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"></path></svg>
+    </button>
     <div class="wordmark">podcast<span>-article</span></div>
-    <div style="display:flex;align-items:center;gap:14px">
+    <div style="display:flex;align-items:center;gap:12px">
+      <button class="usagepill" id="usagepill" onclick="openSettings('storage')" title="看一眼累计用量与费用"></button>
       <div class="meta">本地转写 · DeepSeek 精读 · MCP</div>
       <button class="iconbtn" onclick="openSettings()" title="设置" aria-label="设置">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
@@ -73,7 +98,7 @@
       </details>
     </div>
   </div>
-  <div class="hint col">⌘/Ctrl + Enter 直接开始 · Esc 关闭文章 / 退出设置 · 产物会缓存，重新生成文章不必重新转写</div>
+  <div class="hint col" id="hint">⌘/Ctrl + Enter 直接开始 · Esc 关闭文章 / 退出设置 · 产物会缓存，重新生成文章不必重新转写</div>
 
   <div id="runview" class="col">
     <div id="runsum" class="runsum" onclick="toggleRunview()"></div>
@@ -103,6 +128,28 @@
       </div>
       <button class="btn" id="tbtn" onclick="toggleTranscript()">查看文字稿</button>
       <button class="btn" onclick="regenArticle()">重新生成文章</button>
+      <div class="menuwrap">
+        <button class="btn" id="expbtn" onclick="toggleExportMenu(event)">导出 ▾</button>
+        <div class="popmenu" id="exportmenu" hidden>
+          <div class="mi" data-fmt="md" onclick="exportOne('md')">Markdown（带元信息，便于二次编辑）</div>
+          <div class="mi" data-fmt="html" onclick="exportOne('html')">HTML 单文件（可直接发给别人）</div>
+          <div class="mi" data-fmt="txt" onclick="exportOne('txt')">纯文字稿</div>
+          <div class="sep"></div>
+          <div class="mi" onclick="copyArticle()">复制 Markdown 到剪贴板</div>
+        </div>
+      </div>
+      <div class="menuwrap">
+        <button class="btn" id="readbtn" onclick="toggleReadMenu(event)">状态 ▾</button>
+        <div class="popmenu" id="readmenu" hidden>
+          <div class="mi" data-st="unread" onclick="markStatus('unread')">标为未读</div>
+          <div class="mi" data-st="reading" onclick="markStatus('reading')">标为在读</div>
+          <div class="mi" data-st="read" onclick="markStatus('read')">标为已读</div>
+          <div class="mi" data-st="later" onclick="markStatus('later')">加入稍后读</div>
+          <div class="sep"></div>
+          <div class="mi" onclick="clearStatusMark()">清除标记（回到未读）</div>
+        </div>
+      </div>
+      <span class="costpill" id="costpill"></span>
     </div>
     <details id="tplbox" style="display:none">
       <summary>参数模板（把文章字段映射到该 MCP 工具的入参）</summary>
@@ -125,10 +172,46 @@
       <div class="quicktabs" id="quicktabs">
         <button data-quick="all" onclick="setCat('all')">全部</button>
         <button data-quick="none" onclick="setCat('none')">未分类</button>
+        <button data-quick="unread" onclick="setCat('unread')">未读</button>
+        <button data-quick="later" onclick="setCat('later')">稍后读</button>
+        <button data-quick="read" onclick="setCat('read')">已读</button>
       </div>
+      <button class="btn mini" id="zipbtn" onclick="exportAll()" title="把所有文章打包成一个 zip">导出全部</button>
     </div>
     <div class="grid" id="libgrid"></div>
     <div id="empty-lib">还没有生成过任何文章。</div>
+  </div>
+
+  <div id="queueview" class="col" style="display:none">
+    <div class="viewhead">
+      <div>
+        <h2>批量队列</h2>
+        <p class="vhint">把链接一次性排进去，后台一条条跑完。关掉浏览器、重启服务都不影响进度（队列存在本地 queue.json）。</p>
+      </div>
+      <div class="vacts">
+        <button class="btn mini" onclick="openBatch()">＋ 添加链接</button>
+        <button class="btn mini" onclick="queueRun()">立即开始</button>
+        <button class="btn mini" onclick="queueRetry()">重试失败</button>
+        <button class="btn mini" onclick="queueClear(false)">清空已结束</button>
+      </div>
+    </div>
+    <div id="queuelist"></div>
+    <div id="empty-queue" class="viewempty">队列是空的。把攒下来的链接丢进来吧 —— 首页支持一次粘贴多条。</div>
+  </div>
+
+  <div id="feedsview" class="col" style="display:none">
+    <div class="viewhead">
+      <div>
+        <h2>订阅</h2>
+        <p class="vhint">订阅播客 feed，之后新单集会被自动发现并排队生成文章（检查频率在设置里改）。</p>
+      </div>
+      <div class="vacts">
+        <button class="btn mini" onclick="openAddFeed()">＋ 添加订阅</button>
+        <button class="btn mini" onclick="checkFeeds(this)">立即检查</button>
+      </div>
+    </div>
+    <div id="feedlist"></div>
+    <div id="empty-feeds" class="viewempty">还没有订阅任何节目。填一个 RSS / Apple Podcasts 链接即可。</div>
   </div>
 </div><!-- /main -->
 
@@ -146,8 +229,9 @@
     <button class="tab" data-tab="keys" onclick="switchTab('keys')">API 密钥</button>
     <button class="tab" data-tab="dest" onclick="switchTab('dest')">发布目标</button>
     <button class="tab" data-tab="gen" onclick="switchTab('gen')">生成默认值</button>
+    <button class="tab" data-tab="subs" onclick="switchTab('subs')">订阅调度</button>
     <button class="tab" data-tab="mcp" onclick="switchTab('mcp')">MCP 服务器</button>
-    <button class="tab" data-tab="storage" onclick="switchTab('storage')">存储</button>
+    <button class="tab" data-tab="storage" onclick="switchTab('storage')">存储与用量</button>
   </div>
 
   <section class="pane" id="pane-profile">
@@ -180,8 +264,8 @@
     </div>
     <div class="field">
       <div class="fhead"><label class="flabel">DeepSeek 模型</label><span class="fstate" id="st_DEEPSEEK_MODEL"></span></div>
-      <input id="k_DEEPSEEK_MODEL" placeholder="deepseek-chat（默认）" oninput="markDirty()">
-      <p class="fhint">留空使用默认模型。</p>
+      <input id="k_DEEPSEEK_MODEL" placeholder="留空使用默认（deepseek-flash）" oninput="markDirty()">
+      <p class="fhint">留空使用默认模型。通常改「生成默认值 → 成文模型」就够了。</p>
     </div>
     <div class="field">
       <div class="fhead"><label class="flabel">Notion Token</label><span class="fstate" id="st_NOTION_TOKEN"></span></div>
@@ -264,6 +348,33 @@
     </div>
   </section>
 
+  <section class="pane" id="pane-subs" style="display:none">
+    <div class="field" style="border-top:none">
+      <div class="fhead"><label class="flabel">后台自动检查订阅</label></div>
+      <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text)">
+        <input type="checkbox" id="sub_enabled" style="width:auto" onchange="markDirty()"> 服务开着时，按下面间隔自动检查新单集
+      </label>
+      <p class="fhint">只在 <code>python webapp.py</code> 常驻运行时生效；关掉浏览器不影响。</p>
+    </div>
+    <div class="field">
+      <div class="fhead"><label class="flabel" for="sub_interval">检查间隔（分钟）</label></div>
+      <input id="sub_interval" inputmode="numeric" placeholder="120" oninput="markDirty()">
+      <p class="fhint">填 0 表示不自动检查，只在你点「立即检查」时抓一次。</p>
+    </div>
+    <div class="field">
+      <div class="fhead"><label class="flabel">发现新单集时自动生成文章</label></div>
+      <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text)">
+        <input type="checkbox" id="sub_auto" style="width:auto" onchange="markDirty()"> 自动排队（关闭则只提示，不消耗额度）
+      </label>
+      <p class="fhint">自动生成会真的跑下载与转写，请确认磁盘空间与额度。</p>
+    </div>
+    <div class="field">
+      <div class="fhead"><label class="flabel" for="sub_dest">自动生成的文章归入</label></div>
+      <select id="sub_dest" onchange="markDirty()"><option value="">未分类</option></select>
+      <p class="fhint">按节目来源归类会很省事，比如建一个「订阅」分类。</p>
+    </div>
+  </section>
+
   <section class="pane" id="pane-mcp" style="display:none">
     <div class="field" style="border-top:none">
       <div class="fhead"><label class="flabel">已连接的服务器</label></div>
@@ -300,7 +411,17 @@
   </section>
 
   <section class="pane" id="pane-storage" style="display:none">
-    <div id="storagerows"></div>
+    <div class="field" style="border-top:none">
+      <div class="fhead"><label class="flabel">用量与费用</label><span class="fstate" id="usage_state"></span></div>
+      <div id="usagebox"></div>
+      <p class="fhint">费用按 DeepSeek 官方价格表估算（元 / 百万 tokens），分高峰与空闲时段计价；
+        高峰 = 北京时间周一至周五 9:00-12:00、14:00-18:00。逐节写作会把素材当作固定前缀，
+        因此「缓存命中」比例越高越省钱 —— 这也是这套流程便宜的原因。</p>
+    </div>
+    <div class="field">
+      <div class="fhead"><label class="flabel">本机存储</label></div>
+      <div id="storagerows"></div>
+    </div>
   </section>
 
   <div class="savebar" id="savebar">
