@@ -112,6 +112,36 @@ uv run python scripts/report_quality.py output/*/article.md
 
 Reports filler density, longest paragraph, bullet ratio, specificity density, orphan timestamps and mixed-language leaks — used to verify that prompt changes actually make articles more readable.
 
+## 🧠 Model & thinking mode
+
+The default is **`deepseek-flash`**; switch to `deepseek-v4-pro` via Settings → "Article model" or `DEEPSEEK_MODEL` in `.env`.
+
+| Model | Time (concise) | Specificity density | Quotes | Best for |
+|---|---|---|---|---|
+| `deepseek-flash` | ~30 s | 4.4 / 1k chars | 2 | default — fast and good |
+| `deepseek-v4-pro` | ~84 s | **9.0 / 1k chars** | 5 | important episodes — richer prose and detail |
+
+### Thinking mode is explicitly disabled everywhere
+
+DeepSeek's [thinking mode](https://api-docs.deepseek.com/guides/thinking_mode/) is **on by default**
+(effort defaults to `high`) and returns its chain of thought in `reasoning_content`. For this workload it
+has to be turned off — every reason below is measured, not assumed:
+
+- Given a 70k-character transcript in context, the model reasons for **5,000-7,700 characters**
+  (~3,000-4,600 tokens) and frequently exhausts the token budget before writing any content at all,
+  returning an **empty string** (which once produced a zero-length article)
+- Reasoning grows with input size and has no ceiling, so a deterministic per-section budget
+  ("400 characters for this section") can't be guaranteed
+- The docs state that with thinking on, `temperature` / `top_p` **have no effect** — and per-section
+  writing relies on controlled sampling to keep length and voice stable
+
+Calls therefore pass `extra_body={"thinking": {"type": "disabled"}}`. To experiment with it, set
+`THINKING = True` in `podcast_article/outline.py` and raise `THINKING_ALLOWANCE` above 8000.
+
+> The trade-off: no thinking buys **predictable length and 2-3× the speed**, at some cost in complex
+> judgement. That's exactly why `deepseek-v4-pro` stays in Settings — even with thinking off, it lands
+> twice the specificity density of flash.
+
 ## 🚀 Quick start
 
 ```bash
@@ -150,7 +180,7 @@ The **⚙ Settings** button (top right) manages your profile, credentials and ge
 | Profile | Name + long-term interests, injected into the writing prompt as a "reader profile" |
 | API keys | DeepSeek / Notion — **write-only** (the API only ever reports whether a key is configured, plus a masked value), with one-click connection tests |
 | Publish targets | Notion database / parent page ID |
-| Generation defaults | Default length mode, default language, ASR backend, ASR model, direct-read limit, force-ASR flag, auto-review |
+| Generation defaults | Article model (flash / pro), default length mode, default language, ASR backend, ASR model, direct-read limit, force-ASR flag, auto-review |
 | MCP servers | See below |
 | Storage | Output directory, episode count and size, local models, config file paths |
 

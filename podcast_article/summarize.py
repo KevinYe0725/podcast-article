@@ -22,37 +22,73 @@ def _client() -> OpenAI:
 def _chat(
     client: OpenAI, model: str, system: str, user: str,
     log=print, max_tokens: int = 8192, on_chars=None, temperature: float = 1.0,
+    thinking: bool = False, reasoning_effort: str = "low",
 ) -> str:
-    """流式调用，边生成边打印一个简单的进度点。on_chars(已生成字数) 用于实时进度。"""
-    stream = client.chat.completions.create(
-        model=model,
-        messages=[
+    """流式调用。按 DeepSeek 思考模式文档区分两种模式：
+
+    - thinking=False：显式关闭思考（extra_body.thinking.type=disabled）。此时
+      temperature 生效，输出 token 全部用于正文 —— 篇幅可控，适合逐节写作。
+    - thinking=True ：开启思考，思维链走 delta.reasoning_content。此时 DeepSeek
+      文档明确 temperature/top_p 不生效，所以不传；token 预算要额外留出思考开销。
+
+    实测教训：思考模式默认是打开的，若只读 delta.content 且 token 上限偏小，
+    思考会把预算吃光、正文返回空字符串（曾整篇产出 0 字）。
+    """
+    kwargs: dict = {
+        "model": model,
+        "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ],
-        temperature=temperature,
-        max_tokens=max_tokens,
-        stream=True,
-    )
+        "max_tokens": max_tokens,
+        "stream": True,
+    }
+    if thinking:
+        kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
+        kwargs["reasoning_effort"] = reasoning_effort
+    else:
+        kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+        kwargs["temperature"] = temperature
+
+    stream = client.chat.completions.create(**kwargs)
     parts: list[str] = []
     printed = 0
+    think_len = 0
+    think_reported = 0
     finish = None
     for chunk in stream:
         choice = chunk.choices[0] if chunk.choices else None
-        if choice is not None and choice.finish_reason:
+        if choice is None:
+            continue
+        if choice.finish_reason:
             finish = choice.finish_reason
-        delta = choice.delta.content if choice else None
-        if delta:
-            parts.append(delta)
+        delta = choice.delta
+        thought = getattr(delta, "reasoning_content", None)
+        if thought:
+            think_len += len(thought)
+            if think_len >= think_reported + 800:
+                think_reported = think_len
+                log(f"[llm] 思考中 {think_len} 字…")
+        if delta.content:
+            parts.append(delta.content)
             n = len("".join(parts))
             if on_chars:
                 on_chars(n)
             if len(parts) >= printed + 400:
                 printed = len(parts)
                 log(f"[llm] 已生成 {n} 字…")
+
     text = "".join(parts).strip()
+    if not text:
+        raise RuntimeError(
+            f"模型未返回正文（finish_reason={finish}，思考 {think_len} 字，"
+            f"上限 {max_tokens} tokens）——请调大上限或关闭思考模式"
+        )
     if finish == "length":
-        log(f"[llm] ⚠ 输出触达 max_tokens({max_tokens}) 被截断，共 {len(text)} 字")
+        log(f"[llm] ⚠ 正文触达 max_tokens({max_tokens}) 被截断，共 {len(text)} 字"
+            + (f"（另有思考 {think_len} 字）" if think_len else ""))
+    elif think_len:
+        log(f"[llm] 思考 {think_len} 字 → 正文 {len(text)} 字")
     return text
 
 
@@ -162,6 +198,9 @@ STRUCTURES: dict[str, str] = {
 ```""",
 }
 DEFAULT_MODE = "standard"
+# 思考模式实测：长上下文下思考量可膨胀到 5000+ 字并吃光预算，正文为空。
+# 因此默认全程关闭；开启时需同步调大 token 上限。
+THINKING_ALLOWANCE = 8000
 
 # 各档位的目标字数区间，用于复检时压缩/扩写
 # 实测结论：模型产出由内容量决定，指令只能通过「节数」间接影响总字数。
@@ -248,7 +287,7 @@ def _polish(client, model: str, article: str, mode_key: str, log=print, on_chars
         try:
             revised = _chat(client, model, system, f"{ask}\n\n{current}", log=log, on_chars=on_chars,
                             max_tokens=MODE_MAX_TOKENS.get(mode_key, 8192) + 500,
-                            temperature=0.3)  # 机械修改任务用低温，指令遵循更稳
+                            temperature=0.3, thinking=False)  # 关思考时 temperature 才生效
         except Exception as exc:  # 复检失败不该让整篇文章失败
             log(f"[llm] 复检跳过（{type(exc).__name__}: {exc}）")
             return current
@@ -331,9 +370,20 @@ def _digest_segments(client, model: str, segments: list[dict], max_chars: int,
             progress("llm", {"chunk": i, "total": len(chunks)})
         briefs.append(
             _chat(client, model, _CHUNK_SYSTEM, _segments_to_text(chunk), log=log,
-                  max_tokens=4096)
+                  max_tokens=4096, thinking=False)
         )
     return "\n\n".join(f"## 第 {i} 段素材\n{b}" for i, b in enumerate(briefs, 1))
+
+
+def _guard(article: str, log=print) -> str:
+    """空产出守卫：宁可让任务报错重试，也不要保存一篇空文章。"""
+    text = (article or "").strip()
+    if len(text) < 400:
+        raise RuntimeError(
+            f"生成结果异常：仅 {len(text)} 字。常见原因是思考模式吃光 token 预算，"
+            "或 token 上限过小。"
+        )
+    return text
 
 
 def _finalize(article: str, mode_key: str, log=print) -> str:
@@ -398,14 +448,15 @@ def write_article(
             log(f"[llm] 分节写作 · {mode_key} 档｜素材 {len(material_body)} 字符，"
                 f"预算约 {outline.budget_total(mode_key)} 字")
             article = outline.write_outlined(client, model, material, mode_key, log, progress)
-            return _finalize(article, mode_key, log)
+            return _finalize(_guard(article, log), mode_key, log)
         except Exception as exc:
             log(f"[llm] 分节写作失败（{type(exc).__name__}: {exc}），退回单次生成")
 
     if short_enough:
         log(f"[llm] 单次直读 · {mode_key} 档：全文 {len(user_msg)} 字符，模型 {model}")
         article = _chat(client, model, system, user_msg, log=log, on_chars=on_chars,
-                        max_tokens=MODE_MAX_TOKENS.get(mode_key, 8192))
+                        max_tokens=MODE_MAX_TOKENS.get(mode_key, 8192) + THINKING_ALLOWANCE,
+                        thinking=False)
         if polish:
             article = _polish(client, model, article, mode_key, log=log, on_chars=on_chars)
         return _finalize(article, mode_key, log)
@@ -424,7 +475,8 @@ def write_article(
     )
     log(f"[llm] 汇总成文 · {mode_key} 档（{len(final_user)} 字符素材）")
     article = _chat(client, model, system, final_user, log=log, on_chars=on_chars,
-                    max_tokens=MODE_MAX_TOKENS.get(mode_key, 8192))
+                    max_tokens=MODE_MAX_TOKENS.get(mode_key, 8192) + THINKING_ALLOWANCE,
+                    thinking=False)
     if polish:
         article = _polish(client, model, article, mode_key, log=log, on_chars=on_chars)
-    return _finalize(article, mode_key, log)
+    return _finalize(_guard(article, log), mode_key, log)

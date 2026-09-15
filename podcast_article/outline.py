@@ -184,12 +184,28 @@ def build_material(
     return "\n\n".join(parts)
 
 
-def _chat_stream(client, model: str, system: str, user: str, log, on_chars, max_tokens: int) -> str:
+# 关于思考模式的实测（2026-09 实测，模型 deepseek-flash）：
+# 把 7 万字文字稿放进上下文后，思考量会膨胀到 5000-7700 字（约 3000-4600 tokens），
+# 经常在还没写正文时就把 token 预算吃光，正文返回空字符串。思考量随输入规模增长、
+# 没有上限，因此本流水线**全程关闭思考**（thinking.type=disabled）：
+#   - 逐节写作需要精确的篇幅控制，思考会破坏 token 预算的确定性
+#   - 关闭思考后 temperature 才会生效（DeepSeek 文档：思考模式不支持 temperature）
+# 若确实想开，把 THINKING 设为 True，并把 THINKING_ALLOWANCE 提到 8000 以上。
+THINKING = False
+THINKING_ALLOWANCE = 8000
+
+
+def _chat_stream(
+    client, model: str, system: str, user: str, log, on_chars, max_tokens: int,
+    thinking: bool = False, effort: str = "low",
+) -> str:
     """与 summarize._chat 同构，但独立出来避免循环依赖。"""
     from .summarize import _chat
 
-    return _chat(client, model, system, user, log=log, max_tokens=max_tokens,
-                 on_chars=on_chars, temperature=0.9)
+    return _chat(
+        client, model, system, user, log=log, max_tokens=max_tokens,
+        on_chars=on_chars, temperature=0.9, thinking=thinking, reasoning_effort=effort,
+    )
 
 
 def write_outlined(
@@ -210,23 +226,26 @@ def write_outlined(
         if progress:
             progress("llm", {"chars": n})
 
-    def call(system: str, task: str, cap_chars: int, label: str) -> str:
+    def call(system: str, task: str, cap_chars: int, label: str,
+             thinking: bool = False, effort: str = "low", complete: bool = True) -> str:
         nonlocal seen
         base = seen
+        cap = _cap(cap_chars) + (THINKING_ALLOWANCE if thinking else 0)
         text = _chat_stream(
             client, model, system, f"{material}\n\n----\n\n{task}",
-            log, lambda n: tick(base + n), _cap(cap_chars),
+            log, lambda n: tick(base + n), cap, thinking=thinking, effort=effort,
         )
         seen = base + len(text)
         # 撞上限会在半句话处断掉：再要一小段把它收尾（比截断后交稿好）
-        if text and text.rstrip()[-1] not in _TERMINALS:
+        # 但 JSON 输出不能补写——拼接的散文会破坏解析
+        if complete and text and text.rstrip()[-1] not in _TERMINALS:
             log(f"[llm] {label} 结尾不完整，补写收尾…")
             tail = _chat_stream(
                 client, model,
                 "你刚才写的内容在末尾被截断了。只输出接下来的内容，让它自然地收尾，"
                 "总长不超过 120 字；不要重复已经写过的内容，不要另起新话题。",
                 f"{material}\n\n----\n\n以下是已写内容（在末尾被截断）：\n\n{text[-1500:]}",
-                log, None, 320,
+                log, None, 320, thinking=False,
             )
             if tail.strip():
                 text = f"{text.rstrip()} {tail.strip()}"
@@ -238,10 +257,20 @@ def write_outlined(
 
     # 1) 大纲
     log(f"[llm] 分节写作 · {plan['label']}：先生成大纲（{plan['sections']} 节）…")
-    outline = _parse_json(
-        call(_OUTLINE_SYSTEM.replace("{n}", str(plan["sections"])),
-             "请设计这篇文章的大纲，只输出紧凑 JSON。", 1500, "大纲")
-    )
+    outline_system = _OUTLINE_SYSTEM.replace("{n}", str(plan["sections"]))
+    outline_task = "请设计这篇文章的大纲，只输出紧凑 JSON。"
+    try:
+        outline = _parse_json(
+            call(outline_system, outline_task, 1500, "大纲",
+                 thinking=THINKING, effort="low", complete=False)
+        )
+    except (ValueError, json.JSONDecodeError) as exc:
+        log(f"[llm] 大纲解析失败（{exc}），用更大上限重试…")
+        outline = _parse_json(
+            call(outline_system + "\n\n注意：上一次输出被截断，这次务必把 JSON 写完整、更紧凑。",
+                 outline_task, 3000, "大纲（重试）",
+                 thinking=THINKING, effort="low", complete=False)
+        )
     title = (outline.get("title") or "").strip()
     deck = (outline.get("deck") or "").strip()
     sections = [s for s in (outline.get("sections") or []) if s.get("heading")][: plan["sections"]]

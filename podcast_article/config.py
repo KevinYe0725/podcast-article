@@ -6,7 +6,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
-DEFAULT_LLM_MODEL = "deepseek-chat"
+DEFAULT_LLM_MODEL = "deepseek-flash"  # 见 api-docs.deepseek.com/guides/thinking_mode
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 
 

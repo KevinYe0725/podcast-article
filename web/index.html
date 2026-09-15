@@ -337,7 +337,7 @@
       <label class="chip">转写语言
         <select id="lang"><option value="auto">自动</option><option value="zh">中文</option><option value="en">English</option></select>
       </label>
-      <label class="chip">模型 <input type="text" id="model" size="6" placeholder="自动"></label>
+      <label class="chip">转写模型 <input type="text" id="model" size="6" placeholder="自动"></label>
       <label class="chip"><input type="checkbox" id="no_subs"> 强制转写</label>
       <label class="chip"><input type="checkbox" id="ft"> 重转写</label>
       <label class="chip"><input type="checkbox" id="fa"> 重写文章</label>
@@ -476,6 +476,15 @@
       <div class="fhead"><label class="flabel" for="g_asr_model">ASR 模型名</label></div>
       <input id="g_asr_model" placeholder="留空使用默认（whisper-large-v3-turbo）" oninput="markDirty()">
       <p class="fhint">对应 --model 参数；本地缓存目录优先。</p>
+    </div>
+    <div class="field">
+      <div class="fhead"><label class="flabel" for="g_llm">成文模型</label><span class="fstate" id="g_llm_state"></span></div>
+      <select id="g_llm" onchange="markDirty()">
+        <option value="deepseek-flash">deepseek-flash（快，默认）</option>
+        <option value="deepseek-v4-pro">deepseek-v4-pro（慢约 4 倍，适合重要节目）</option>
+        <option value="deepseek-chat">deepseek-chat（会由服务端解析为 flash）</option>
+      </select>
+      <p class="fhint">用于精读与成文。转写是本地跑的，与此无关；改这里不影响已有缓存的文字稿。</p>
     </div>
     <div class="field">
       <div class="fhead"><label class="flabel" for="g_mode">默认篇幅</label></div>
@@ -801,6 +810,7 @@ async function loadSettings() {
   $("g_asr_model").value = g.asr_model || "";
   $("g_max_chars").value = g.max_chars || 75000;
   $("g_mode").value = g.length_mode || "standard";
+  $("g_llm").value = g.llm_model || "deepseek-flash";
   $("g_polish").checked = g.auto_polish !== false;
   $("g_no_subs").checked = !!g.no_subs;
   $("g_models").textContent = (s.models || []).join("、") || "（未检测到本地模型）";
@@ -835,6 +845,7 @@ async function saveSettings() {
       max_chars: parseInt($("g_max_chars").value, 10) || 75000,
       no_subs: $("g_no_subs").checked,
       length_mode: $("g_mode").value,
+      llm_model: $("g_llm").value,
       auto_polish: $("g_polish").checked,
     },
     secrets: {},

@@ -64,6 +64,7 @@ def _new_job(url: str, opts: dict) -> str:
                 language=lang,
                 backend=opts.get("backend") or defaults.get("backend") or "auto",
                 asr_model=(opts.get("model") or defaults.get("asr_model") or None),
+                llm_model=(opts.get("llm_model") or defaults.get("llm_model") or None),
                 no_subs=bool(opts.get("no_subs", defaults.get("no_subs"))),
                 force_transcript=bool(opts.get("force_transcript")),
                 force_article=bool(opts.get("force_article")),
