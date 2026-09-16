@@ -186,6 +186,8 @@ Paste a link → a four-stage timeline advances in real time (download / ASR / L
 
 > **Paste several links at once**: when the input detects more than one URL the button turns into "Add to queue (N)" — they run in order in the background even after you close the tab.
 >
+> **Works on phones**: below 900px the sidebar collapses into a left drawer (menu button top-left), and the composer, article toolbar and queue/feed rows stack automatically; the reading page stays full-screen with a narrower measure, and text inputs are bumped to 16px so iOS Safari does not zoom the page on focus. Drag & drop filing stays a desktop interaction (on touch, use the card's settings icon or the category chip).
+>
 > **Paste a whole share message**: what Bilibili / Xiaoyuzhou / YouTube put on your clipboard is one sentence (`【title】https://www.bilibili.com/video/BV…`). Paste it as-is — only the link is used; titles, numbering, trailing periods and any surrounding prose are ignored, and punctuation stuck to the end of the URL is trimmed.
 
 Quick reference for the main interactions:
@@ -195,8 +197,8 @@ Quick reference for the main interactions:
 | Re-listen to a sentence | Click any `[00:44:03]` or `[00:06:36-00:06:49]` in the article or transcript (Enter / Space works too); a player slides up (draggable, ±15 s) |
 | Go back to the library | "←" in the reading header, `Esc`, or the browser back button |
 | Find something I heard before | Search box top-left: searches bodies *and* transcripts, hits are playable |
-| File an article | Press and drag a card onto a sidebar folder, or click its category label |
-| Track reading progress | Opening an article marks it "reading"; hover a card for "✓ Read / ◷ Read later", or use the toolbar status menu |
+| File an article | Press and drag a card onto a sidebar folder (desktop), or tap the card's category chip / settings icon (works on touch too) |
+| Track reading progress | Opening an article marks it "reading"; tap the status chip at the card's bottom-left to change it, or use the toolbar status menu |
 | See only unread items | The four smart lists in the sidebar (All / Uncategorised / categories sit above them) |
 | Get something out | Toolbar "Export ▾": Markdown (with metadata) / single-file HTML / plain transcript; "Export all" zips the library |
 | Save up links | Paste many links on the home page, or subscribe to shows on the Subscriptions page |

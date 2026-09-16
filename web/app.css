@@ -304,7 +304,9 @@
      1512px 上 5 列、2560px 上 9 列、带鱼屏 13 列，卡片被压到 220 多像素，很挤。
      现在给文章库一个宽度上限、并提高单卡最小宽度 → 稳定落在 3-4 列、单卡 300-380px。 */
   #lib { max-width: 1400px; margin-left: auto; margin-right: auto; }
-  #lib .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
+  /* min(300px, 100%)：手机上容器只有「屏宽 - 32px」，320px 的老机器也不会被
+     300px 的最小轨道撑出横向滚动 */
+  #lib .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr)); gap: 16px; }
   .ep {
     border: 1px solid var(--border); border-radius: 14px; padding: 18px 20px; cursor: pointer;
     transition: border .15s, box-shadow .15s; background: #fff;
@@ -454,7 +456,9 @@
   #article .ts:focus-visible, #transcript .ts:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
 
   .player {
-    position: fixed; left: 50%; bottom: 20px; transform: translate(-50%, 140%);
+    position: fixed; left: 50%; bottom: 20px;
+    bottom: calc(20px + env(safe-area-inset-bottom));
+    transform: translate(-50%, 140%);
     width: min(660px, calc(100vw - 32px)); z-index: 75;
     display: flex; align-items: center; gap: 12px; padding: 11px 14px;
     background: #fff; border: 1px solid var(--border2); border-radius: 15px;
@@ -761,8 +765,12 @@
     .app { display: block; }
     /* 覆盖上方 900px 块里的「顶部横条」，改成左侧抽屉 */
     .appside {
-      position: fixed; left: 0; top: 0; bottom: 0; width: 280px; max-width: 86vw; height: 100vh;
-      z-index: 60; padding: 18px 12px 24px; border-right: 1px solid var(--border); border-bottom: 0;
+      position: fixed; left: 0; top: 0; bottom: 0; width: 280px; max-width: 86vw;
+      height: 100vh; height: 100dvh;   /* iOS 地址栏收放时 100vh 会比可视区高，抽屉底部会被挡 */
+      z-index: 60;
+      padding: 18px 12px 24px;                                  /* 不支持 env() 的老浏览器用这条 */
+      padding: 18px 12px calc(24px + env(safe-area-inset-bottom));
+      border-right: 1px solid var(--border); border-bottom: 0;
       flex-direction: column; align-items: stretch; gap: 3px; overflow-x: hidden; overflow-y: auto;
       background: #fcfcfd; transform: translateX(-100%); transition: transform .2s;
     }
@@ -775,9 +783,13 @@
     .appside .sidefoot { display: block; }
     .menubtn { display: inline-flex; }
     .topbar .meta { display: none; }
+    /* 顶栏在手机上要放得下：品牌名允许截断，用量改成短文案（见 renderUsagePill） */
+    .topbar { gap: 10px; }
+    .topbar .wordmark { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .appmain { padding: 0 16px 96px; }
+    .appmain { padding: 0 16px calc(96px + env(safe-area-inset-bottom)); }
     .col { max-width: none; }
-    /* 窄屏只解除文章库的宽度上限：网格那条 minmax(300px) 自己就能算出
+    /* 窄屏只解除文章库的宽度上限：网格那条 minmax() 自己就能算出
        「手机 1 列 / 平板 2 列」，不必在这里写死列数 */
     #lib { max-width: none; }
     /* 工具条：允许换行，按钮均分宽度 */
@@ -794,6 +806,12 @@
     .composer .row input[type=text],
     .composer .row #url { padding: 10px 12px; }
     #go { width: 100%; }
+    /* ---- iOS 会在聚焦时把字号 < 16px 的输入框整页放大，之后还缩不回去。
+       手机上的输入控件一律给到 16px（桌面保持原来的紧凑字号）。 ---- */
+    .composer #url, .searchbox input, .afoot textarea,
+    .modalcard input, .modaltarea, #tpl, #batchtext, #url, #q, #aq, #modalinput {
+      font-size: 16px;
+    }
     /* 队列 / 订阅条目的操作区在窄屏始终可见，并单独占一行 */
     .qrow, .frow { flex-wrap: wrap; }
     .qacts, .facts { width: 100%; justify-content: flex-end; opacity: 1; }
@@ -802,7 +820,19 @@
     .rdtop { padding: 0 14px; gap: 10px; }
     .rdtop .costpill { display: none; }
     .rdbody { padding: 26px 18px 120px; }
+    .rdbody { padding: 26px 18px calc(120px + env(safe-area-inset-bottom)); }
     .rdtools { margin-bottom: 22px; }
+    /* 正文里的宽内容（表格 / 代码块 / 长链接）不许把整页撑出横向滚动：
+       表格与代码块自己横向滚，长单词与长 URL 断行 */
+    #article table { display: block; overflow-x: auto; max-width: 100%; }
+    #article pre { overflow-x: auto; max-width: 100%; }
+    #article { overflow-wrap: anywhere; }
+  }
+
+  /* 触屏设备没有 hover：靠悬停才显示的入口必须直接可见（否则「＋ 分类」永远看不到） */
+  @media (hover: none) {
+    .ep .catlabel.empty { opacity: 1; }
+    .ep:hover { border-color: var(--border); box-shadow: none; }
   }
 
 /* ==================================================================
@@ -812,7 +842,9 @@
 
 /* 悬浮球：只在文章打开时出现；播放条升起时自动上移（JS 切 body.withplayer） */
 .fab {
-  position: fixed; right: 26px; bottom: 26px; z-index: 30;
+  position: fixed; right: 26px; bottom: 26px;
+  bottom: calc(26px + env(safe-area-inset-bottom));
+  z-index: 30;
   display: none; align-items: center; gap: 7px;
   height: 46px; padding: 0 18px 0 15px; border-radius: 999px;
   border: 1px solid var(--border2); background: #fff; color: var(--text);
@@ -950,8 +982,9 @@ body.assistopen .fab { display: none; }
 @media (max-width: 900px) {
   .assist { width: 100%; max-width: none; }
   .fab { right: 16px; bottom: 18px; height: 44px; padding: 0 15px; }
+  .fab { bottom: calc(18px + env(safe-area-inset-bottom)); }
   .fablbl { display: none; }
-  body.withplayer .fab { bottom: 96px; }
+  body.withplayer .fab { bottom: 96px; bottom: calc(96px + env(safe-area-inset-bottom)); }
 }
 
 /* 助手出错时的提示（例如额度不足 / 网络失败） */

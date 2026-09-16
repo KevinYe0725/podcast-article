@@ -1021,17 +1021,20 @@ async function loadLibrary() {
 }
 
 /** 顶栏的累计用量胶囊 */
+/** 窄屏（手机）：顶栏放不下「累计 1.28 元 · 640k tokens」这么长的字，
+    只留金额，明细仍然在 title 里（点开设置 → 存储与用量也能看全） */
+const isNarrow = () => window.innerWidth <= 600;
+
 function renderUsagePill() {
   const el = $("usagepill");
   const t = libUsageTotal;
-  el.textContent = t && t.episodes
-    ? `累计 ${fmtCost(t.cost_cny)} · ${fmtTokens(t.total_tokens)} tokens`
-    : "";
-  if (t && t.episodes) {
-    el.title = `${t.episodes} 篇 · ${t.calls} 次模型调用\n` +
-      `输入 ${t.input_tokens.toLocaleString()} tokens（缓存命中 ${t.hit_tokens.toLocaleString()}，命中率 ${t.cache_hit_rate}%）\n` +
-      `输出 ${t.out_tokens.toLocaleString()} tokens\n点开看分模型明细`;
-  }
+  if (!t || !t.episodes) { el.textContent = ""; el.title = ""; return; }
+  el.textContent = isNarrow()
+    ? `≈${fmtCost(t.cost_cny)}`
+    : `累计 ${fmtCost(t.cost_cny)} · ${fmtTokens(t.total_tokens)} tokens`;
+  el.title = `${t.episodes} 篇 · ${t.calls} 次模型调用\n` +
+    `输入 ${t.input_tokens.toLocaleString()} tokens（缓存命中 ${t.hit_tokens.toLocaleString()}，命中率 ${t.cache_hit_rate}%）\n` +
+    `输出 ${t.out_tokens.toLocaleString()} tokens\n点开看分模型明细`;
 }
 
 function setNavCount(id, n) {
@@ -2671,6 +2674,8 @@ syncFab();
 // 阅读页：滚动时更新顶栏那条进度线；窗口尺寸变了重新算一次
 $("result").addEventListener("scroll", updateReadProgress, { passive: true });
 window.addEventListener("resize", updateReadProgress);
+// 转屏 / 拉窗口时顶栏用量胶囊要按新宽度换文案（手机短文案 ↔ 桌面完整文案）
+window.addEventListener("resize", renderUsagePill);
 // 地址栏变化（前进/后退，或手改 hash）→ 按地址栏还原界面
 window.addEventListener("hashchange", applyRoute);
 window.addEventListener("popstate", applyRoute);
