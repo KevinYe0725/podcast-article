@@ -51,7 +51,7 @@ fi
 # 每个测试都套 timeout：jsdom 里某个 promise 挂住时，宁可红掉也不要让 CI 卡死
 FAILED=0
 for t in close.test.js modal.test.js sidebar.test.js delete.test.js audio.test.js \
-         search.test.js status.test.js queue.test.js feeds.test.js export.test.js; do
+         search.test.js status.test.js queue.test.js feeds.test.js export.test.js nav.test.js; do
   echo "── $t"
   if command -v timeout >/dev/null 2>&1; then
     timeout 120 node "$t" || FAILED=1

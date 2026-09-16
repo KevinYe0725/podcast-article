@@ -286,6 +286,7 @@ function finishJob(d) {
     curUsage = d.usage || null;
     renderCostPill();
     syncReadButton();
+    syncReadDone();
     loadLibrary();
     collapseRunview();
   } else {
@@ -368,6 +369,19 @@ function closeSettings() {
   $("main").style.display = "block";
   window.scrollTo({ top: 0 });
   loadLibrary();
+}
+
+/** 从设置页退出到主界面（不重新拉数据）。
+
+    设置页是把整个 #main 藏起来的，而侧边栏的分类 / 队列 / 订阅 / 搜索只是切换
+    #main **内部**的子视图 —— 不先把 #main 放出来，点了就「毫无反应」（用户反馈过）。
+    所以所有进入主界面的入口都要先经过这里。
+*/
+function leaveSettings() {
+  if ($("settings").style.display !== "block") return false;
+  $("settings").style.display = "none";
+  $("main").style.display = "block";
+  return true;
 }
 
 function switchTab(name) {
@@ -1011,11 +1025,20 @@ function cardHTML(it) {
   const cost = it.usage && it.usage.calls ? ` · ≈${fmtCost(it.usage.cost_cny)}` : "";
   return `
   <div class="ep" data-dir="${dir}" onclick="openEpisode('${encodeURIComponent(it.dir)}')">
-    <button class="kill" title="删除这条记录" onclick="event.stopPropagation();askDelete('${dir}')">✕</button>
-    <div class="cardacts">
-      <button class="mini-act" title="标为已读" onclick="event.stopPropagation();setArticleStatus('${dir}','read')">✓ 已读</button>
-      <button class="mini-act" title="加入稍后读" onclick="event.stopPropagation();setArticleStatus('${dir}','later')">◷ 稍后读</button>
-      <button class="mini-act" title="导出 Markdown" onclick="event.stopPropagation();exportOne('md','${dir}')">导出</button>
+    <div class="cardtools">
+      <button class="ctool" title="文章设置（状态 / 分类 / 导出）" aria-label="文章设置"
+              onclick="event.stopPropagation();openCardMenu('${dir}')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round">
+          <circle cx="12" cy="12" r="3"></circle>
+          <path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"></path>
+        </svg>
+      </button>
+      <button class="ctool kill" title="删除这条记录" aria-label="删除这条记录"
+              onclick="event.stopPropagation();askDelete('${dir}')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
+          <path d="M18 6 6 18M6 6l12 12"></path>
+        </svg>
+      </button>
     </div>
     <div class="t">${esc(it.title)}</div>
     ${pv.deck ? `<div class="deck">${esc(pv.deck)}</div>` : ""}
@@ -1034,8 +1057,78 @@ function cardHTML(it) {
   </div>`;
 }
 
+/* ---- 卡片右上角的设置弹窗：状态 / 分类 / 导出 / 删除都收在这里 ----
+   原先这些按钮是悬停浮在卡片上的，会压住标题和引语（用户反馈过），
+   现在改成常驻的两个小图标 + 一个弹窗，标题区永远不被遮挡。 */
+
+function openCardMenu(dir) {
+  const it = libItems.find((i) => i.dir === dir) || {};
+  const url = `'${encodeURIComponent(dir)}'`;
+
+  const statusChips = SMART.map((s) => {
+    const on = statusOf(dir) === s ? " on" : "";
+    return `<button class="mchip${on}" onclick="cardMenuStatus('${esc(dir)}','${s}')">
+      <span class="dot" style="background:${statusColor[s]};width:7px;height:7px;border-radius:50%;display:inline-block"></span>${esc(statusLabel(s))}</button>`;
+  }).join("");
+
+  const catOptions = [`<option value="">未分类</option>`]
+    .concat(libCats.map((c) =>
+      `<option value="${esc(c.id)}" ${libAssign[dir] === c.id ? "selected" : ""}>${esc(c.name)}</option>`))
+    .join("");
+
+  showModal({
+    title: it.title || dir,
+    desc: it.podcast || "",
+    withInput: false,
+    okText: "完成",
+    bodyHtml: `
+      <div class="mfield">
+        <span class="mlabel">阅读状态</span>
+        <div class="mchips" id="mstatus">${statusChips}
+          <button class="mchip" onclick="cardMenuStatus('${esc(dir)}','')">清除标记</button></div>
+      </div>
+      <div class="mfield">
+        <span class="mlabel">分类</span>
+        <select id="mcat" onchange="cardMenuAssign('${esc(dir)}', this.value)">${catOptions}</select>
+      </div>
+      <div class="mfield">
+        <span class="mlabel">导出</span>
+        <div class="mchips">
+          <button class="mchip" onclick="exportOne('md','${esc(dir)}')">Markdown</button>
+          <button class="mchip" onclick="exportOne('html','${esc(dir)}')">HTML 单文件</button>
+          <button class="mchip" onclick="exportOne('txt','${esc(dir)}')">纯文字稿</button>
+        </div>
+      </div>
+      <div class="mfield">
+        <span class="mlabel">其他</span>
+        <div class="mchips">
+          <button class="mchip" onclick="closeModal();openEpisode(${url})">打开文章</button>
+          <button class="mchip danger" onclick="closeModal();askDelete('${esc(dir)}')">删除这条记录</button>
+        </div>
+      </div>`,
+  });
+}
+
+/** 弹窗里改状态：改完就地刷新高亮，不关闭弹窗（用户可能还要改分类） */
+async function cardMenuStatus(dir, st) {
+  await setArticleStatus(dir, st, { quiet: true });
+  const box = $("mstatus");
+  if (!box) return;
+  [...box.querySelectorAll(".mchip")].forEach((chip, i) => {
+    const key = SMART[i];
+    if (key) chip.classList.toggle("on", statusOf(dir) === key);
+  });
+  toast(`✦ 已标记为「${esc(statusLabel(statusOf(dir)))}」`);
+  syncReadDone();
+}
+
+async function cardMenuAssign(dir, cid) {
+  await assignArticle(dir, cid, { quiet: true });
+  toast(cid ? `✦ 已移入「${esc((catById(cid) || {}).name || "")}」` : "✦ 已移出分类");
+}
+
 /* ---- 阅读状态 ---- */
-async function setArticleStatus(dir, status) {
+async function setArticleStatus(dir, status, opts = {}) {
   const resp = await fetch("/api/status", {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ dir, status }),
@@ -1046,8 +1139,24 @@ async function setArticleStatus(dir, status) {
   libStatusCounts = d.state.status_counts || {};
   libStatusLabels = d.state.status_labels || {};
   renderCatbar(); renderGrid();
-  if (dir === curWorkdir) syncReadButton();
-  toast(`✦ 已标记为「${esc(statusLabel(d.value))}」`);
+  if (dir === curWorkdir) { syncReadButton(); syncReadDone(); }
+  // quiet：调用方自己会提示（设置弹窗里连改几项，不想弹一串 toast）
+  if (!opts.quiet) toast(`✦ 已标记为「${esc(statusLabel(d.value))}」`);
+}
+
+/* ---- 读完了：文章末尾的确认按钮 ----
+   自动标记「在读」只是推断，读没读完只有本人知道，所以给一个明确的收尾动作。 */
+function syncReadDone() {
+  const box = $("readdone");
+  if (!box) return;
+  const show = !!curWorkdir && statusOf(curWorkdir) !== "read";
+  box.classList.toggle("show", show);
+}
+
+async function finishReading() {
+  if (!curWorkdir) return;
+  await setArticleStatus(curWorkdir, "read", { quiet: true });
+  toast("✦ 已标记为「已读」，之后可以在侧边栏「已读」里找到它");
 }
 
 /** 打开文章时自动从「未读」推进到「在读」（不打断用户，静默执行） */
@@ -1174,7 +1283,7 @@ function deleteCat(ev, cid) {
   });
 }
 
-async function assignArticle(dir, cid) {
+async function assignArticle(dir, cid, opts = {}) {
   const resp = await fetch("/api/assign", {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ dir, category_id: cid }),
@@ -1183,8 +1292,10 @@ async function assignArticle(dir, cid) {
   if (!resp.ok) { toast("⚠ " + esc(d.error || "移动失败")); return; }
   libCats = d.categories || []; libAssign = d.assignments || {};
   renderCatbar(); renderGrid();
-  const c = catById(cid);
-  toast(c ? `✦ 已移入「${esc(c.name)}」` : "✦ 已移出分类");
+  if (!opts.quiet) {
+    const c = catById(cid);
+    toast(c ? `✦ 已移入「${esc(c.name)}」` : "✦ 已移出分类");
+  }
 }
 
 /* ---- 删除历史记录（两种粒度）---- */
@@ -1355,6 +1466,7 @@ async function openEpisode(dirEnc) {
   curUsage = (item && item.usage) || null;
   renderCostPill();
   syncReadButton();
+  syncReadDone();
   autoMarkReading(dir);
 }
 
@@ -1422,6 +1534,7 @@ $("libgrid").addEventListener("pointerdown", (e) => {
 let activeView = "lib";
 
 function showView(name) {
+  leaveSettings();          // 从设置页点侧边栏入口时，必须先把主界面放出来
   activeView = name;
   $("lib").style.display = name === "lib" ? "" : "none";
   $("queueview").style.display = name === "queue" ? "" : "none";

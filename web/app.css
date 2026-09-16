@@ -468,13 +468,8 @@
   .opt .ot { font-size: 13px; font-weight: 500; }
   .opt .od { font-size: 12px; color: var(--dim); margin-top: 3px; line-height: 1.6; }
   .ep { position: relative; }
-  .ep .kill {
-    position: absolute; top: 10px; right: 10px; width: 24px; height: 24px; border-radius: 50%;
-    border: 1px solid var(--border); background: #fff; color: #b9b9c2; font-size: 13px; line-height: 1;
-    display: flex; align-items: center; justify-content: center; cursor: pointer; opacity: 0; transition: .13s; padding: 0;
-  }
-  .ep:hover .kill { opacity: 1; }
-  .ep .kill:hover { border-color: #f7cfd1; background: #fdf4f4; color: var(--red); }
+  /* 标题给右上角的图标按钮留位，任何情况下都不让按钮压到文字上 */
+  .ep .t { padding-right: 62px; }
   .btn.danger { background: var(--red); color: #fff; }
   .btn.danger:hover { background: #d93a3f; }
 
@@ -669,20 +664,48 @@
 
   /* ---- 10. 文章卡片的状态与操作区（hover 才出现）---- */
   /* 定位在右上角 .kill 的下方，落在卡片右上那片空白里 */
-  .cardacts {
-    position: absolute; top: 34px; right: 10px; z-index: 1;
-    display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 4px;
-    max-width: calc(100% - 20px); opacity: 0; transition: opacity .15s;
+  /* 卡片右上角：常驻的两个小图标（文章设置 / 删除）
+     之前是一排悬停浮现的文字按钮，会浮在标题和引语上面把内容压住，
+     现在收成两个圆圈图标 + 一个设置弹窗，标题区永远不被遮挡。 */
+  .cardtools {
+    position: absolute; top: 10px; right: 10px; z-index: 2;
+    display: flex; align-items: center; gap: 4px;
+    opacity: .45; transition: opacity .15s;
   }
-  .ep:hover .cardacts, .ep:focus-within .cardacts { opacity: 1; }
-  /* 小号无边框按钮：已读 / 稍后读 / 导出 */
-  .mini-act {
-    padding: 2px 6px; border: 0; border-radius: 6px; background: transparent; color: var(--dim);
-    font-family: var(--font); font-size: 11.5px; line-height: 18px; white-space: nowrap;
-    cursor: pointer; transition: .12s;
+  .ep:hover .cardtools, .ep:focus-within .cardtools { opacity: 1; }
+  .ctool {
+    width: 24px; height: 24px; padding: 0; border-radius: 50%;
+    border: 1px solid var(--border); background: #fff; color: #9a9aa4;
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer; transition: .13s;
   }
-  .mini-act:hover { background: var(--bg2); color: var(--text); }
-  .mini-act.on { background: #eafaf4; color: var(--green); }
+  .ctool svg { width: 13px; height: 13px; }
+  .ctool:hover { border-color: var(--border2); background: var(--bg2); color: var(--text); }
+  .ctool.kill:hover { border-color: #f7cfd1; background: #fdf4f4; color: var(--red); }
+
+  /* 文章设置弹窗里的字段（状态 / 分类 / 导出） */
+  .mfield { margin-top: 15px; text-align: left; }
+  .mfield:first-child { margin-top: 2px; }
+  .mlabel { display: block; font-size: 12px; color: var(--dim); margin-bottom: 7px; }
+  .mchips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .mchip {
+    display: inline-flex; align-items: center; gap: 5px;
+    border: 1px solid var(--border); border-radius: 999px; background: #fff;
+    padding: 5px 12px; font-family: var(--font); font-size: 12.5px; color: var(--text);
+    cursor: pointer; transition: .13s;
+  }
+  .mchip:hover { border-color: var(--border2); background: var(--bg2); }
+  .mchip.on { border-color: var(--green); background: #eafaf4; color: var(--green); font-weight: 500; }
+  .mchip.danger:hover { border-color: #f7cfd1; background: #fdf4f4; color: var(--red); }
+  .mfield select { width: 100%; }
+
+  /* 文章末尾的「读完了」确认条：只在还没标成已读时出现 */
+  .readdone {
+    display: none; align-items: center; gap: 14px;
+    margin-top: 34px; padding-top: 22px; border-top: 1px solid var(--border);
+  }
+  .readdone.show { display: flex; }
+  .readdone .readhint { font-size: 12.5px; color: var(--dim); }
 
   /* ---- 11. 弹窗里的多行输入与提示 ---- */
   .modaltarea {

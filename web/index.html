@@ -9,7 +9,7 @@
 <body>
 <div class="app">
   <aside class="appside" id="appside">
-    <div class="appbrand">podcast<span>-article</span>
+    <div class="appbrand" onclick="showView('lib');setCat('all')" title="回到文章库" style="cursor:pointer">podcast<span>-article</span>
       <button class="iconbtn small sidehide" onclick="toggleSide()" title="收起侧边栏" aria-label="收起侧边栏">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M15 6 9 12l6 6"></path></svg>
       </button>
@@ -162,6 +162,10 @@
       </div>
     </details>
     <article id="article"></article>
+    <div id="readdone" class="readdone">
+      <button class="btn primary" id="readdonebtn" onclick="finishReading()">✓ 读完了</button>
+      <span class="readhint">标记为已读，之后可以在侧边栏「已读」里翻到它</span>
+    </div>
     <div id="transcript"></div>
   </div>
 
