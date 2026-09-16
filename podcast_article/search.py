@@ -113,12 +113,28 @@ def parse_query(query: str) -> list[list[str]]:
     return groups
 
 
+def _needs_word_boundary(term: str) -> bool:
+    """纯 ASCII 的词要按「整词」匹配，中文/日文这类没有词边界的则按子串匹配。
+
+    原因很实际：搜 `AI` 时按子串匹配会把 `Fails`、`derail` 也算命中（实测搜 "AI" 时
+    一篇讲 Clarity Act 的文章排进了结果，命中的是 "F**ai**ls"）。而中文本来就靠子串
+    检索（"鱼" 要能命中 "鱼不存在"），加 \\b 反而会失效。
+    """
+    return bool(term) and all(ch.isascii() and (ch.isalnum() or ch in "-_") for ch in term)
+
+
 def _compile(groups: list[list[str]]) -> list[tuple[int, str, re.Pattern]]:
     """(组号, 词, 大小写不敏感的正则)。用 re.escape 把词当字面量，偏移量属于原文。"""
     patterns: list[tuple[int, str, re.Pattern]] = []
     for gi, alts in enumerate(groups):
         for alt in alts:
-            patterns.append((gi, alt, re.compile(re.escape(alt), re.IGNORECASE)))
+            body = re.escape(alt)
+            # (?<![\\w-]) / (?![\\w-]) 而不是 \\b：术语里常带连字符（gpt-4、tcp-ip），
+            # \\b 在连字符处也成立，会把 "gpt-4" 切成两半。
+            pattern = (
+                rf"(?<![\w-]){body}(?![\w-])" if _needs_word_boundary(alt) else body
+            )
+            patterns.append((gi, alt, re.compile(pattern, re.IGNORECASE)))
     return patterns
 
 

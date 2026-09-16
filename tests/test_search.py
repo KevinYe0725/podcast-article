@@ -290,3 +290,61 @@ def test_stats_counts(tmp_output):
     (tmp_output / "散落.txt").write_text("x", encoding="utf-8")
 
     assert stats(tmp_output) == {"episodes": 3, "indexed": 2}
+
+
+# ------------------------------------------------ 英文字词边界（子串匹配的噪音）
+#
+# 回归：搜 "AI" 曾经会把 "Fails"、"derail"、"OpenAI" 都算命中，
+# 于是一篇完全无关的文章排进了结果；中文则必须保持子串匹配。
+
+
+def _episode_with(tmp_output, name: str, body: str, *, transcript: str = ""):
+    d = tmp_output / name
+    d.mkdir()
+    (d / "meta.json").write_text(
+        json.dumps({"title": name, "podcast": "测试台"}, ensure_ascii=False), encoding="utf-8"
+    )
+    (d / "article.md").write_text(body, encoding="utf-8")
+    if transcript:
+        (d / "transcript.txt").write_text(transcript, encoding="utf-8")
+    return d
+
+
+def test_ascii_query_does_not_match_inside_english_words(tmp_output):
+    _episode_with(tmp_output, "相关", "# AI infra 的未来\n\nAI infra 正在重塑一切。")
+    _episode_with(tmp_output, "无关", "# Clarity Act 投票失败\n\nit will derail the progress, and it fails.")
+
+    hits = search(tmp_output, "AI")
+    dirs = [h["dir"] for h in hits]
+    assert dirs == ["相关"], f"搜 AI 不该命中 Fails / derail / progress 这类词内子串，实际 {dirs}"
+
+
+def test_ascii_query_matches_at_word_boundaries(tmp_output):
+    _episode_with(tmp_output, "相关", "# 关于 AI 与 ai 的文章\n\nAI 很重要。")
+    hits = search(tmp_output, "ai")
+    assert hits and hits[0]["match_count"] >= 2, f"大小写不同的整词都应命中，实际 {hits}"
+    assert "AI" in hits[0]["hits"][0]["match"] or "ai" in hits[0]["hits"][0]["match"], \
+        f"命中词应原样保留大小写，实际 {hits[0]['hits'][0]['match']}"
+
+
+def test_ascii_term_with_punctuation_boundary(tmp_output):
+    """带下划线/连字符的标识符要能整段命中，不能被当成两个词切开。"""
+    _episode_with(tmp_output, "标识符", "# gpt-4o 与 claude_opus\n\ngpt-4o 是模型名。")
+    hits = search(tmp_output, "gpt-4o")
+    assert hits, "带连字符的查询应当能命中"
+
+
+def test_chinese_query_still_matches_substring(tmp_output):
+    """中文没有词边界，必须继续用子串匹配（否则「鱼」搜不到「鱼不存在」）。"""
+    _episode_with(tmp_output, "中文", "# 鱼不存在\n\n他把名字缝在鱼身上。")
+    hits = search(tmp_output, "鱼")
+    assert hits, "单字中文查询应当能命中（子串匹配）"
+
+
+def test_chinese_query_ignores_word_boundary_rule(tmp_output):
+    """中英混排时，中文词按子串、英文词按整词，各管各的。"""
+    _episode_with(tmp_output, "混排", "# RL 训练与强化学习方法\n\n强化学习（RL）是关键，derail 不是。")
+    hits = search(tmp_output, "强化学习")
+    assert hits, "中文词应能命中"
+    hits2 = search(tmp_output, "RL")
+    assert hits2, "英文缩写 RL 应能作为整词命中"
