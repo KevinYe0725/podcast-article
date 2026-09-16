@@ -14,3 +14,7 @@ node_modules/
 # 个人运行时数据（批量队列 / 订阅）
 queue.json
 feeds.json
+
+# 海报脚本的产物（README 用的是 docs/banner.png 成品图，这两个是备选，按需重新生成）
+docs/alt-banner.png
+docs/alt-social-preview.png

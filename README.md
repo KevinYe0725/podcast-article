@@ -511,7 +511,7 @@ tests/ui/             # jsdom UI 测试（harness.js 为共用骨架）
 
 scripts/
 ├── report_quality.py # 文章可读性体检（套话/段落/密度等指标）
-└── make_banner.py    # 生成宣传海报
+└── make_banner.py    # 生成一版备选海报（不会覆盖 docs/banner.png 成品图）
 ```
 
 ## License

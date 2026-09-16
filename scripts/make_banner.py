@@ -1,4 +1,11 @@
-"""生成项目宣传海报：docs/banner.png（README 用，@2x）+ docs/social-preview.png（1280x640）。"""
+"""程序化生成一版**备选**宣传海报 → docs/alt-banner.png。
+
+注意：`docs/banner.png` 现在是**设计好的成品图**（不是这个脚本画的），README 直接引用它。
+所以这个脚本**故意不再写 banner.png** —— 否则谁跑一次就会把成品图覆盖掉且找不回来。
+要换成品图请直接替换文件。
+
+用法：uv run python scripts/make_banner.py
+"""
 from PIL import Image, ImageDraw, ImageFont
 import math, random
 
@@ -107,6 +114,8 @@ src = "xiaoyuzhoufm · YouTube · Bilibili · Apple Podcasts · RSS"
 sw = d.textlength(src, font=sf(38, 480))
 d.text((W - M - sw, 1240), src, font=sf(38, 480), fill=(90, 115, 108), anchor="lm")
 
-img.save("docs/banner.png", optimize=True)
-img.resize((1280, 640), Image.LANCZOS).save("docs/social-preview.png", optimize=True)
-print("done:", W, "x", H, "->", "docs/banner.png + docs/social-preview.png")
+# 故意不写 docs/banner.png：那是设计好的成品图，被覆盖就找不回来了。
+img.save("docs/alt-banner.png", optimize=True)
+img.resize((1280, 640), Image.LANCZOS).save("docs/alt-social-preview.png", optimize=True)
+print("done:", W, "x", H, "->", "docs/alt-banner.png + docs/alt-social-preview.png")
+print("提示：README 用的是 docs/banner.png（成品图），本脚本不会覆盖它。")
