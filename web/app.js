@@ -48,10 +48,48 @@ function toast(html) {
   clearTimeout(toastTimer); toastTimer = setTimeout(() => $("toast").classList.remove("show"), 6000);
 }
 
-/** 从一段文本里抠出所有链接（用来判断用户是不是一次粘了多条） */
-const URL_RE = /(?:https?:\/\/|~?\/)[^\s,，、]+/g;
+/* ---------------- 从粘贴的文本里抠链接 ----------------
+   分享按钮复制出来的内容基本都带着说明文字：
+
+     【赫拉利警示：AI正在悄然接管人类世界。】https://www.bilibili.com/video/BV1aphc6NEb6?vd_source=…
+
+   所以不能假设「整行就是一个链接」：先把链接本身挑出来，再修掉粘在它末尾的标点。
+   服务端有一份同样的逻辑（podcast_article/links.py），两边都用，粘哪种形式都能跑。 */
+const URL_RE = /https?:\/\/[^\s]+/gi;
+// 一行里连着写了好几个链接时的分隔符（`https://a.com/2，https://a.com/3`）。
+// 只有分隔符后面紧跟 http(s):// 时才拆：链接里本来就可能有逗号（`?ids=1,2`）。
+const GLUED_RE = /[\s,，、;；]+(?=https?:\/\/)/i;
+const TAIL_JUNK = "。，、；：！？…,.;:!?\"'“”‘’";
+// 成对的右括号：链接里没有对应左括号时，它才算「粘上来的噪音」（/wiki/Foo_(bar) 要留着）
+const CLOSERS = { ")": "(", "）": "（", "]": "[", "】": "【", "》": "《", "」": "「", "』": "『" };
+
+function cleanUrl(u) {
+  let s = u || "";
+  while (s) {
+    const last = s.slice(-1);
+    const opener = CLOSERS[last];
+    if (opener) {
+      if (s.split(opener).length >= s.split(last).length) break;
+      s = s.slice(0, -1); continue;
+    }
+    if (TAIL_JUNK.includes(last)) { s = s.slice(0, -1); continue; }
+    break;
+  }
+  return s;
+}
+
+/** 抠出一段文本里的链接（按出现顺序、去重）。也认「整行就是本机路径」那种输入 */
 function urlsIn(text) {
-  return [...new Set((text || "").match(URL_RE) || [])];
+  const t = String(text || "");
+  const out = [];
+  const push = (u) => { if (u && out.indexOf(u) < 0) out.push(u); };
+  (t.match(URL_RE) || []).forEach((u) => u.split(GLUED_RE).forEach((piece) => push(cleanUrl(piece))));
+  // 本机文件路径（转写本地音频）只在整行就是路径时才算，标题里的「AI/人类」不算
+  t.split("\n").forEach((line) => {
+    const s = line.trim();
+    if (/^~?\/[^\s]+$/.test(s)) push(s);
+  });
+  return out;
 }
 
 /** 首页提交：一条直接跑，多条自动改成「加入队列」 */
@@ -60,7 +98,9 @@ async function startRun(opts = {}) {
   if (!raw) { $("url").focus(); return; }
   const many = urlsIn(raw);
   if (!opts.url && many.length > 1) { await enqueueLinks(many); return; }
-  const url = raw;
+  // 只把链接本身发给后端：粘贴过来的「【标题】https://…」里那串说明文字会让解析失败。
+  // 本机路径不走这一步（路径可能带空格，抠出来会断成两截）。
+  const url = many.find((u) => /^https?:\/\//i.test(u)) || raw;
   const resp = await fetch("/api/run", {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -1963,7 +2003,7 @@ function queueClear(keepFailed) {
 function openBatch() {
   showModal({
     title: "批量添加链接",
-    desc: "一行一条，从聊天记录里直接粘一串也可以。会按顺序依次生成。",
+    desc: "一行一条，从聊天记录里直接粘一串也可以 —— 带标题、序号、说明文字都没关系，只挑里面的链接。会按顺序依次生成。",
     withInput: false,
     okText: "加入队列",
     bodyHtml: `<textarea id="batchtext" class="modaltarea" spellcheck="false"

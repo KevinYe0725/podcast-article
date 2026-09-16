@@ -3,13 +3,16 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from .. import links
 from .base import Episode
 from . import rss, xyz, ytdlp_src
 
 
 def resolve(url: str, pick: int = 1) -> Episode:
     """识别链接类型并抓取单集元信息。"""
-    url = url.strip()
+    # 分享按钮复制出来的内容常常是「【标题】https://…」，先把链接本身抠出来，
+    # 否则会一路走到最后报「无法识别的链接」。本地路径里没有链接，会原样返回。
+    url = links.first_link(url)
 
     # 本地文件直接当音频
     p = Path(url).expanduser()

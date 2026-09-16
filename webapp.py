@@ -28,6 +28,7 @@ from podcast_article import usage as usage_mod
 from podcast_article import cover as cover_mod
 from podcast_article import export as export_mod
 from podcast_article import feeds as feeds_mod
+from podcast_article import links as links_mod
 from podcast_article import queue as queue_mod
 from podcast_article import search as search_mod
 from podcast_article.config import PROJECT_ROOT
@@ -234,7 +235,8 @@ def _running_job_id() -> str | None:
 @app.post("/api/run")
 def api_run():
     data = request.get_json(force=True, silent=True) or {}
-    url = (data.get("url") or "").strip()
+    # 粘贴过来的常常是「【标题】https://…」：任务里存的、界面上显示的都该是链接本身
+    url = links_mod.first_link(data.get("url") or "")
     if not url:
         return jsonify({"error": "请填写链接"}), 400
     busy = _running_job_id()

@@ -185,6 +185,8 @@ Paste a link → a four-stage timeline advances in real time (download / ASR / L
 > The reading page has its own URL: `http://127.0.0.1:8787/#/a/<folder>`. Bookmark a piece, share the link, refresh — you land on the same article. `Esc`, the browser back button, or the "←" in the header all return to the library, which is still exactly where you left it.
 
 > **Paste several links at once**: when the input detects more than one URL the button turns into "Add to queue (N)" — they run in order in the background even after you close the tab.
+>
+> **Paste a whole share message**: what Bilibili / Xiaoyuzhou / YouTube put on your clipboard is one sentence (`【title】https://www.bilibili.com/video/BV…`). Paste it as-is — only the link is used; titles, numbering, trailing periods and any surrounding prose are ignored, and punctuation stuck to the end of the URL is trimmed.
 
 Quick reference for the main interactions:
 
@@ -198,6 +200,7 @@ Quick reference for the main interactions:
 | See only unread items | The four smart lists in the sidebar (All / Uncategorised / categories sit above them) |
 | Get something out | Toolbar "Export ▾": Markdown (with metadata) / single-file HTML / plain transcript; "Export all" zips the library |
 | Save up links | Paste many links on the home page, or subscribe to shows on the Subscriptions page |
+| Paste a share message | Paste the whole sentence an app's Share button copied (`【title】https://…`) — only the link inside is used |
 | Check what it cost | The usage pill in the top bar (click for the breakdown); each article shows its own measured cost |
 
 **Delete**: the ✕ on a card removes a record, with two levels — "delete the whole record" (article + audio + transcript, and it tells you how much space is freed; an episode is often 50-200 MB) or "delete the article only" (keeps audio and transcript so it can be regenerated).

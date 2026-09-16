@@ -173,6 +173,65 @@ const clearQueue = () => writeQueue([]);
     fails.push(`keep_failed=true 时应只清掉 done，实际 ${JSON.stringify(out.保留失败_文件状态)}`);
   }
 
+  // ---------- 8) 粘贴分享文案（带标题、序号、句末标点）：只认链接
+  // 用户真实遇到的形态：B 站/小宇宙的分享按钮复制出来是「【标题】https://…」，
+  // 以前整行不是一个链接就识别不出来。
+  const titled = [
+    "【赫拉利警示：AI正在悄然接管人类世界。】http://127.0.0.1:9/titled-one",
+    "2. 另一期节目 http://127.0.0.1:9/titled-two 讲得不错",
+  ];
+  const WANT = "http://127.0.0.1:9/titled-one,http://127.0.0.1:9/titled-two";
+  out.抠链接_带标题 = window.urlsIn(titled.join("\n"));
+  out.抠链接_句末标点 = window.urlsIn("看这个 http://127.0.0.1:9/x。 挺有意思");
+  out.抠链接_连写多条 = window.urlsIn("http://127.0.0.1:9/a，http://127.0.0.1:9/b");
+  out.抠链接_本地路径 = window.urlsIn("/Users/me/录音.m4a");
+  if (out.抠链接_带标题.join() !== WANT) {
+    fails.push(`带标题的粘贴应只抠出链接，实际 ${JSON.stringify(out.抠链接_带标题)}`);
+  }
+  if (out.抠链接_句末标点.join() !== "http://127.0.0.1:9/x") {
+    fails.push(`链接末尾的句号应被去掉，实际 ${JSON.stringify(out.抠链接_句末标点)}`);
+  }
+  if (out.抠链接_连写多条.join() !== "http://127.0.0.1:9/a,http://127.0.0.1:9/b") {
+    fails.push(`一行里连写的多条链接应拆开，实际 ${JSON.stringify(out.抠链接_连写多条)}`);
+  }
+  if (out.抠链接_本地路径.join() !== "/Users/me/录音.m4a") {
+    fails.push(`本机路径不该被当成链接抠坏，实际 ${JSON.stringify(out.抠链接_本地路径)}`);
+  }
+
+  // 首页一次粘两段带标题的文案 → 按钮显示 2 条，入队的是纯链接
+  clearQueue();
+  await window.loadQueue();
+  $("url").value = titled.join("\n");
+  $("url").dispatchEvent(new window.Event("input", { bubbles: true }));
+  await sleep(200);
+  out.按钮文案_带标题 = $("go").textContent.trim();
+  // 前面的小节起过一个真任务，任务在跑时首页按钮是禁用的（禁用按钮的 click 不触发）——
+  // 这里等它跑完再做这一段的断言，不然测的是「按钮禁用」而不是「抠链接」
+  out.按钮可点 = await until(() => !$("go").disabled, 15000, 150);
+  $("go").click();
+  await until(() => readQueue().items.length === 2, 8000, 150);
+  out.落盘链接_带标题 = readQueue().items.map((i) => i.url);
+  if (!out.按钮文案_带标题.includes("2")) {
+    fails.push(`两段带标题的文案应识别成 2 条链接，按钮是「${out.按钮文案_带标题}」`);
+  }
+  if (!out.按钮可点) fails.push("前面的任务一直没结束，按钮始终是禁用的（测试环境问题）");
+  if (out.落盘链接_带标题.join() !== WANT) {
+    fails.push(`入队应是纯链接，实际 ${JSON.stringify(out.落盘链接_带标题)}`);
+  }
+
+  // 批量弹窗走的是服务端解析（整段文本原样提交）：带说明句、没有链接的行都要忽略
+  clearQueue();
+  await window.loadQueue();
+  window.openBatch();
+  await sleep(250);
+  $("batchtext").value = titled.join("\n") + "\n这句没有链接，应该被忽略";
+  $("modalok").click();
+  await until(() => readQueue().items.length === 2, 8000, 150);
+  out.弹窗落盘链接 = readQueue().items.map((i) => i.url);
+  if (out.弹窗落盘链接.join() !== WANT) {
+    fails.push(`批量弹窗里整段粘贴也应只入队链接，实际 ${JSON.stringify(out.弹窗落盘链接)}`);
+  }
+
   clearQueue();   // 收尾：别把临时目录里的队列留给下一个测试
   report("批量队列全部通过", out, fails);
 })();

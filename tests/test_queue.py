@@ -46,6 +46,26 @@ def test_parse_urls_strips_bullet_prefixes():
     assert got == [f"https://a.com/{n}" for n in range(1, 6)], f"行首序号/项目符号应被去掉：{got}"
 
 
+def test_parse_urls_extracts_link_from_share_text():
+    """分享按钮复制出来的是一整句文案（【标题】https://…），只该入队链接本身。
+
+    真实反馈：粘「【赫拉利警示：AI正在悄然接管人类世界。】https://www.bilibili.com/video/BV…」
+    会被判成「没有识别到链接」，因为整行不是以 http 开头。
+    """
+    pasted = ("【赫拉利警示：AI正在悄然接管人类世界。】"
+              "https://www.bilibili.com/video/BV1aphc6NEb6?vd_source=ef96ebb3b1001d1943c031ad435f1d46")
+    got = queue.parse_urls(pasted)
+    assert got == ["https://www.bilibili.com/video/BV1aphc6NEb6"
+                   "?vd_source=ef96ebb3b1001d1943c031ad435f1d46"], f"应只入队链接本身：{got}"
+
+
+def test_parse_urls_share_text_multiline():
+    got = queue.parse_urls("【第一期】https://a.com/1\n"
+                           "2. 第二期 https://a.com/2 讲得不错\n"
+                           "（顺带一提 https://a.com/3。）")
+    assert got == ["https://a.com/1", "https://a.com/2", "https://a.com/3"], f"多行带文案：{got}"
+
+
 def test_parse_urls_keeps_local_paths():
     got = queue.parse_urls("/Users/me/录音.m4a\n~/Downloads/某播客.mp3")
     assert got == ["/Users/me/录音.m4a", "~/Downloads/某播客.mp3"], \

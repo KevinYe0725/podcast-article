@@ -31,6 +31,7 @@ import time
 import uuid
 from pathlib import Path
 
+from . import links
 from .config import PROJECT_ROOT
 
 # "1. http…" / "- http…" / "* http…" / "• http…" 这类行首标记
@@ -87,16 +88,22 @@ def snapshot() -> dict:
 def parse_urls(text: str | list[str]) -> list[str]:
     """把用户粘贴的一坨文本拆成链接列表。
 
-    支持每行一条，也支持一行里用空格/逗号分开；顺手去掉重复与常见噪音
-    （行首的序号、项目符号），因为从聊天记录里复制过来经常带着这些东西。
+    支持每行一条、一行里用空格/逗号分开，也支持链接夹在说明文字里
+    （分享按钮复制出来就是「【标题】https://…」）；顺手去掉重复与常见噪音
+    （行首的序号、项目符号）—— 从聊天记录里复制过来经常带着这些东西。
     """
     raw = text if isinstance(text, list) else str(text or "").splitlines()
     out: list[str] = []
     for line in raw:
-        for token in re.split(r"[\s,，、]+", str(line)):
-            # 去掉 "1. " / "- " / "* " / "•" 这类行首标记
+        line = str(line)
+        # 链接：不必整行都是链接，抠出来就行（【标题】https://… / 1. https://…）
+        for url in links.extract_links(line):
+            if url not in out:
+                out.append(url)
+        # 本地文件路径：只认「以 / 或 ~ 开头的整段 token」，避免把标题里的 AI/人类 当路径
+        for token in re.split(r"[\s,，、]+", line):
             token = _BULLET.sub("", token.strip()).strip()
-            if not token or not token.lower().startswith(("http://", "https://", "/", "~")):
+            if not token or not token.startswith(("/", "~")):
                 continue
             if token not in out:
                 out.append(token)
@@ -108,7 +115,7 @@ def add(urls: str | list[str], *, opts: dict | None = None,
     """入队。返回新加进去的条目（已在队列里的重复链接会被跳过）。"""
     items = parse_urls(urls)
     if not items:
-        raise ValueError("没有识别到链接（需要 http/https 开头，或本地文件路径）")
+        raise ValueError("没有识别到链接（需要 http/https 链接，或本地文件路径）")
     data = _load()
     known = {(i.get("url"), i.get("pick", 1)) for i in data["items"]
              if i.get("state") in ("pending", "running")}

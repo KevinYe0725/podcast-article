@@ -738,6 +738,40 @@ def test_run_returns_409_when_job_running(client, monkeypatch):
         webapp._JOBS.pop("job-busy001", None)
 
 
+def test_run_extracts_link_from_pasted_text(client, monkeypatch):
+    """首页粘「【标题】https://…」时，任务里存的必须是链接本身。
+
+    存整串的坏处：解析器报「无法识别的链接」，任务列表里也显示一长串标题文案。
+    """
+    import webapp
+
+    calls = []
+
+    def fake_new_job(url, opts, *, source="manual", queue_id=None):
+        calls.append(url)
+        return "job-fake-paste"
+
+    monkeypatch.setattr(webapp, "_new_job", fake_new_job)
+    pasted = ("【赫拉利警示：AI正在悄然接管人类世界。】"
+              "https://www.bilibili.com/video/BV1aphc6NEb6?vd_source=ef96ebb3b1001d1943c031ad435f1d46")
+    resp = client.post("/api/run", json={"url": pasted})
+    assert resp.status_code == 200, f"带标题的粘贴应能正常开始，实际 {resp.status_code}"
+    assert calls == ["https://www.bilibili.com/video/BV1aphc6NEb6"
+                     "?vd_source=ef96ebb3b1001d1943c031ad435f1d46"], f"应只把链接给流水线：{calls}"
+
+
+def test_run_keeps_local_path_untouched(client, monkeypatch):
+    """没有链接时要原样透传：本地文件路径不是链接，也不能被抠坏。"""
+    import webapp
+
+    calls = []
+    monkeypatch.setattr(webapp, "_new_job",
+                        lambda url, opts, **kw: (calls.append(url), "job-fake-path")[1])
+    resp = client.post("/api/run", json={"url": "/Users/me/某播客 第1集.m4a"})
+    assert resp.status_code == 200
+    assert calls == ["/Users/me/某播客 第1集.m4a"], f"本地路径应原样透传：{calls}"
+
+
 def test_run_requires_url(client):
     resp = client.post("/api/run", json={})
     assert resp.status_code == 400, f"空链接应 400，实际 {resp.status_code}"
