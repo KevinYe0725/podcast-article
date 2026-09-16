@@ -155,11 +155,40 @@ Calls therefore pass `extra_body={"thinking": {"type": "disabled"}}`. To experim
 
 ## 🚀 Quick start
 
+### One-line installer (macOS / Linux / Windows)
+
+```bash
+# macOS / Linux
+curl -fsSL https://raw.githubusercontent.com/KevinYe0725/podcast-article/main/scripts/install.sh | bash
+
+# Windows (PowerShell; or download the repo and double-click scripts\install.bat)
+powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/KevinYe0725/podcast-article/main/scripts/install.ps1 | iex"
+```
+
+The script installs **uv** (Python runtime manager — no suitable system Python needed), fetches
+**Python 3.12** with it, gets the code, runs `uv sync`, checks **ffmpeg** (tries to install it if
+missing), writes `.env` (asks once for your DeepSeek key, skippable) and runs a smoke test. It never
+touches your system Python or global packages.
+
+```bash
+bash scripts/install.sh --check      # dry run: check the environment only
+bash scripts/install.sh --cn         # behind the GFW: dependencies via the Aliyun PyPI mirror
+bash scripts/install.sh --no-ffmpeg  # leave ffmpeg alone
+PA_DEEPSEEK_KEY=sk-xxx bash scripts/install.sh            # non-interactive
+PA_GH_PROXY=https://ghproxy.net/ bash scripts/install.sh  # when github.com is unreachable
+```
+
+> **The ASR backend is picked per platform**: macOS Apple Silicon gets `mlx-whisper` (GPU, ~38x
+> realtime); Linux / Windows get `faster-whisper` (CPU only — a 100-minute episode takes tens of
+> minutes; platform subtitles skip ASR entirely).
+
+### Manual install
+
 ```bash
 git clone https://github.com/KevinYe0725/podcast-article.git
 cd podcast-article
 
-uv sync                # install deps (creates .venv)
+uv sync                # install deps (creates .venv); add --extra faster on Linux/Windows
 brew install ffmpeg    # if not installed
 cp .env.example .env   # fill in DEEPSEEK_API_KEY
 ```

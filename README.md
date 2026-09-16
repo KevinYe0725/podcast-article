@@ -153,11 +153,39 @@ DeepSeek 的[思考模式](https://api-docs.deepseek.com/zh-cn/guides/thinking_m
 
 ## 🚀 快速开始
 
+### 一键安装脚本（macOS / Linux / Windows）
+
+```bash
+# macOS / Linux
+curl -fsSL https://raw.githubusercontent.com/KevinYe0725/podcast-article/main/scripts/install.sh | bash
+
+# Windows：在 PowerShell 里跑（或下载仓库后双击 scripts\install.bat）
+powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/KevinYe0725/podcast-article/main/scripts/install.ps1 | iex"
+```
+
+脚本会自己搞定：装 **uv**（Python 运行时管理器，不需要系统里已有合适的 Python）→ 用 uv 装
+**Python 3.12** → 取代码 → `uv sync` 装依赖 → 检查 **ffmpeg**（没有就尝试自动装）→ 写 `.env`
+（问一次 DeepSeek API key，可跳过）→ 跑一次冒烟测试。全程不改系统 Python、不动全局环境。
+
+```bash
+bash scripts/install.sh --check      # 只体检，不安装
+bash scripts/install.sh --cn         # 国内网络（依赖走阿里云 PyPI 镜像）
+bash scripts/install.sh --no-ffmpeg  # 不碰 ffmpeg
+PA_DEEPSEEK_KEY=sk-xxx bash scripts/install.sh    # 非交互（批量装机）
+PA_GH_PROXY=https://ghproxy.net/ bash scripts/install.sh   # GitHub 连不上时走代理
+```
+
+> **转写后端按平台自动选**：macOS Apple Silicon 装 `mlx-whisper`（走 GPU，约 38x 实时）；
+> Linux / Windows 装 `faster-whisper`（纯 CPU，100 分钟节目要几十分钟到一两小时 —— 有平台字幕时
+> 会直接用字幕，零转写成本）。
+
+### 手动安装（想自己控制每一步）
+
 ```bash
 git clone https://github.com/KevinYe0725/podcast-article.git
 cd podcast-article
 
-uv sync                # 安装依赖（自动创建 .venv）
+uv sync                # 安装依赖（自动创建 .venv）；Linux/Windows 加 --extra faster
 brew install ffmpeg    # 如尚未安装
 cp .env.example .env   # 填入 DEEPSEEK_API_KEY
 ```
