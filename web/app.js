@@ -133,7 +133,7 @@ function updateComposerHint() {
     $("hint").innerHTML = `检测到 ${n} 条链接 —— 点按钮会全部排队，后台依次跑完；不想排队就只留一条。`;
   } else {
     btn.textContent = "生成文章";
-    $("hint").innerHTML = "⌘/Ctrl + Enter 直接开始（批量时一行一条链接）· Esc 关闭文章 / 退出设置 · 产物会缓存，重新生成文章不必重新转写";
+    $("hint").innerHTML = "⌘/Ctrl + Enter 直接开始（批量时一行一条链接）· 生成完会直接进阅读页，Esc 返回 · 产物会缓存，重新生成文章不必重新转写";
   }
 }
 
@@ -277,12 +277,12 @@ function finishJob(d) {
       (m.duration ? `<span>${humanDur(m.duration)}</span>` : "");
     $("article").innerHTML = d.article_html || "";
     $("transcript").textContent = ""; $("transcript").dataset.loaded = "";
-    $("transcript").classList.remove("show"); $("result").classList.remove("withTranscript", "wide");
+    $("transcript").classList.remove("show"); $("result").classList.remove("withTranscript");
     $("tbtn").textContent = "查看文字稿";
     $("nbtn").disabled = false;
     $("result").dataset.fromLib = "";
-    $("result").classList.add("show");
-    $("result").scrollIntoView({ behavior: "smooth", block: "start" });
+    openReader();                                  // 文章写好了直接进阅读页，不再挤在日志下面
+    if (d.workdir) pushRoute(d.workdir);
     curUsage = d.usage || null;
     renderCostPill();
     syncReadButton();
@@ -319,7 +319,7 @@ function renderCostPill() {
 async function toggleTranscript() {
   const el = $("transcript");
   if (el.classList.contains("show")) {
-    el.classList.remove("show"); $("result").classList.remove("withTranscript", "wide");
+    el.classList.remove("show"); $("result").classList.remove("withTranscript");
     $("tbtn").textContent = "查看文字稿"; return;
   }
   if (!el.dataset.loaded && curWorkdir) {
@@ -327,7 +327,7 @@ async function toggleTranscript() {
     el.innerHTML = renderTranscript(await resp.text());
     el.dataset.loaded = "1";
   }
-  el.classList.add("show"); $("result").classList.add("withTranscript", "wide");
+  el.classList.add("show"); $("result").classList.add("withTranscript");
   $("tbtn").textContent = "收起文字稿";
 }
 
@@ -359,6 +359,9 @@ const SECRET_KEYS = ["DEEPSEEK_API_KEY", "DEEPSEEK_MODEL", "NOTION_TOKEN", "NOTI
 
 async function openSettings(tab) {
   closeAssist();                 // 抽屉会盖住设置页
+  // 阅读页是固定整屏的一层，盖在主界面之上；设置页在 #main 里，不先收掉阅读页就会
+  // 「点了设置什么都不发生」。顺手把地址栏带回主页面。
+  if ($("result").classList.contains("show")) closeResult();
   $("main").style.display = "none";
   $("settings").style.display = "block";
   window.scrollTo({ top: 0 });
@@ -631,10 +634,26 @@ function closePlayer() {
   syncFab();
 }
 
+/** 时间戳统一渲染成 <span>。
+    它本来就不是链接：用 <a> 会额外带来一次「导航」—— 带 href="#" 会跳到 #，不带 href 时
+    jsdom 也照旧把它当成空相对地址去 follow。而阅读页把地址栏当路由（#/a/<目录名>），
+    这种导航会被判成「离开了这一篇」，刚打开的文章整页收起来（UI 测试抓到过）。
+    span 没有默认动作，点击交给文档上的委托监听（见 playFromTs）；键盘用 role/tabindex。
+      dir:    点了跳哪一集（默认用当前打开的那篇）
+      inline: 所在卡片整块可点（搜索结果）——要在自己身上挡住冒泡并自己播放，
+              否则会顺带把文章打开。 */
+function TS_HTML(sec, label, opts) {
+  const o = opts || {};
+  const dir = o.dir ? ` data-dir="${esc(o.dir)}"` : "";
+  const act = o.inline ? ` onclick="event.stopPropagation();playFromTs(this)"` : "";
+  return `<span class="ts" data-sec="${sec}"${dir} role="button" tabindex="0"` +
+         ` title="跳到音频此处"${act}>${label}</span>`;
+}
+
 /** 文字稿里的时间戳也做成可点 */
 function renderTranscript(text) {
   return esc(text).replace(/\[(\d{1,2}):(\d{2}):(\d{2})\]/g,
-    (_m, h, mi, s) => `<a class="ts" data-sec="${+h * 3600 + +mi * 60 + +s}" title="跳到音频此处">[${h}:${mi}:${s}]</a>`);
+    (_m, h, mi, s) => TS_HTML(+h * 3600 + +mi * 60 + +s, `[${h}:${mi}:${s}]`));
 }
 
 /* ---------------- 模态框（同风格弹窗）---------------- */
@@ -883,11 +902,16 @@ function delServer(name) {
   });
 }
 
-function closeResult() {
+function closeResult(opts) {
+  // keepRoute：由浏览器后退（地址栏已经变成 #/）触发时不要再推一条历史，否则会顶掉后退
+  const keepRoute = !!(opts && opts.keepRoute);
   const el = $("result");
   const fromLib = el.dataset.fromLib === "1";
-  el.classList.remove("show", "withTranscript", "wide");
+  el.classList.remove("show", "withTranscript");
   el.dataset.fromLib = "";
+  document.body.classList.remove("reading");
+  if (!keepRoute) pushRoute("");          // 地址栏回到主页面
+  $("rdprogbar").style.transform = "scaleX(0)";
   $("tplbox").style.display = "none";
   $("article").innerHTML = "";
   $("transcript").classList.remove("show");
@@ -902,6 +926,8 @@ function closeResult() {
   pa().pause();
   pa().removeAttribute("src");
   syncFab();
+  // 阅读页是整屏浮层，关掉后主页面还停在原来那一屏：从库里点开的就回到那张卡片，
+  // 从生成流程进来的就回到输入框。
   if (fromLib) $("lib").scrollIntoView({ behavior: "smooth", block: "start" });
   else $("url").focus();
 }
@@ -1466,12 +1492,89 @@ function beginDrag(ev, dir, card) {
   document.addEventListener("pointercancel", up);
 }
 
+/* ---------------- 阅读页（独立整屏页面）----------------
+   文章不再内嵌在主页面里跟着一起滚（原来顺序是：输入框 → 进度日志 → 文章 → 文章库），
+   而是单独占满整屏的一层：
+     · 打开时写进地址栏 #/a/<目录名> —— 刷新、收藏、前进后退都能回到同一篇
+     · 「返回」（或 Esc、浏览器后退）回到文章库，主页面停在原来那一屏
+   地址栏是唯一事实来源：它变了（hashchange）就按它把界面调成对应状态。
+*/
+
+const ROUTE_RE = /^#\/a\/(.+)$/;
+
+/** 地址栏里指的是哪一篇（空字符串 = 主页面） */
+function routeDir() {
+  const m = ROUTE_RE.exec(location.hash || "");
+  if (!m) return "";
+  try { return decodeURIComponent(m[1]); } catch (e) { return ""; }
+}
+
+/** 把当前状态写进地址栏。
+    这里用「给 location.hash 赋值」而不是 history.pushState：两者同样会留下一条历史记录
+    （浏览器后退键照样能用），但 hash 赋值在任何环境下都真的把 URL 改掉、事件里读到的
+    也是新地址；而 pushState 在 jsdom 里会异步补发一次 popstate，触发时 location.hash
+    读到的是空的 —— UI 测试里会把刚打开的阅读页误关掉。赋值引发的 hashchange 由
+    applyRoute 兜住，它是幂等的。 */
+function pushRoute(dir) {
+  const want = dir ? "#/a/" + encodeURIComponent(dir) : "#/";
+  if (location.hash === want) return;
+  location.hash = want;
+}
+
+/** 亮出阅读页这一层（内容由 showArticle 填好） */
+function openReader() {
+  const el = $("result");
+  el.classList.add("show");
+  document.body.classList.add("reading");   // 阅读页自己滚，底下的主页面别跟着动
+  el.scrollTop = 0;
+  updateReadProgress();
+}
+
+/** 顶栏底部那条阅读进度线 */
+function updateReadProgress() {
+  const el = $("result"), bar = $("rdprogbar");
+  if (!el || !bar) return;
+  const max = el.scrollHeight - el.clientHeight;
+  const p = max > 8 ? el.scrollTop / max : 0;
+  bar.style.transform = "scaleX(" + Math.min(1, Math.max(0, p)).toFixed(4) + ")";
+}
+
+/** 地址栏 → 界面：刷新、前进后退、手改 hash 都走这里。幂等，重复调用没有副作用。 */
+async function applyRoute() {
+  const dir = routeDir();
+  const open = $("result").classList.contains("show");
+  if (dir) {
+    if (!open || curWorkdir !== dir) await showArticle(dir, { route: false });
+  } else if (open) {
+    closeResult({ keepRoute: true });   // 后退键关掉文章，地址栏已经是对的了，不要再推一条
+  }
+}
+
 async function openEpisode(dirEnc) {
   if (window.__dragged) return;   // 刚才是拖拽，不要顺手打开文章
-  const dir = decodeURIComponent(dirEnc);  const metaResp = await fetch(`/api/file/${dirEnc}/meta.json`);
+  await showArticle(decodeURIComponent(dirEnc), { fromLib: true });
+}
+
+/**
+ * 打开一篇文章（内容 + 阅读页）。
+ *   fromLib: 关掉之后回到文章库（false = 回到输入框，比如刚生成完）
+ *   route:   是否把这次打开写进地址栏（从地址栏进来的那次不能再写，否则后退会失灵）
+ */
+async function showArticle(dir, opts) {
+  const o = opts || {};
+  const fromLib = o.fromLib !== false, route = o.route !== false;
+  const dirEnc = encodeURIComponent(dir);
+  const metaResp = await fetch(`/api/file/${dirEnc}/meta.json`);
+  if (!metaResp.ok) {
+    // 记录已经不在了（在别处删掉、或地址栏是个旧链接）：别把用户留在空白页上
+    toast("⚠ 这篇的记录已经不在本地了");
+    if ($("result").classList.contains("show")) closeResult({ keepRoute: true });
+    if (route) pushRoute("");
+    return;
+  }
   const meta = await metaResp.json();
   curWorkdir = dir; curUrl = meta.url || null;
-  $("result").dataset.fromLib = "1";   // 关闭时回到历史库而不是回到输入框
+  $("result").dataset.fromLib = fromLib ? "1" : "";   // 关闭时回到历史库而不是回到输入框
   const artResp = await fetch(`/api/file/${dirEnc}/article.md`);
   if (!artResp.ok) {
     $("rmeta").innerHTML = `<span class="pod">${esc(meta.podcast || "")}</span><span>${esc(meta.title || "")}</span>`;
@@ -1488,12 +1591,12 @@ async function openEpisode(dirEnc) {
       (meta.duration ? `<span>${humanDur(meta.duration)}</span>` : "");
     $("article").innerHTML = html;
     $("transcript").textContent = ""; $("transcript").dataset.loaded = "";
-    $("transcript").classList.remove("show"); $("result").classList.remove("withTranscript", "wide");
+    $("transcript").classList.remove("show"); $("result").classList.remove("withTranscript");
     $("tbtn").textContent = "查看文字稿";
     $("nbtn").disabled = false;
   }
-  $("result").classList.add("show");
-  $("result").scrollIntoView({ behavior: "smooth", block: "start" });
+  openReader();
+  if (route) pushRoute(dir);
   // 打开即从「未读」推进到「在读」，并把这一集的累计花费显示出来
   const item = libItems.find((i) => i.dir === dir);
   curUsage = (item && item.usage) || null;
@@ -1540,6 +1643,14 @@ function playFromTs(el) {
 
 document.addEventListener("click", (e) => {
   const ts = e.target.closest(".ts");
+  if (!ts) return;
+  e.preventDefault();
+  playFromTs(ts);
+});
+// 时间戳是 <span role="button" tabindex="0">（不是链接），键盘回听得自己接
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Enter" && e.key !== " ") return;
+  const ts = e.target && e.target.closest ? e.target.closest(".ts") : null;
   if (!ts) return;
   e.preventDefault();
   playFromTs(ts);
@@ -1730,8 +1841,7 @@ function searchCardHTML(it) {
     const ts = h.ts
       // 这里必须内联处理：stopPropagation 会连 document 上的委托监听一起挡掉，
       // 所以不能只写 stopPropagation 把播放交给全局委托（那样点了不会出声）。
-      ? `<a class="ts" data-sec="${tsToSec(h.ts)}" data-dir="${esc(it.dir)}" title="跳到音频此处"
-            onclick="event.stopPropagation();playFromTs(this)">[${esc(h.ts)}]</a> `
+      ? TS_HTML(tsToSec(h.ts), `[${esc(h.ts)}]`, { dir: it.dir, inline: true })
       : "";
     return `<div class="srhit"><span class="srfield">${field}</span>${ts}<span class="srtext">${esc(h.before)}<mark>${esc(h.match)}</mark>${esc(h.after)}</span></div>`;
   }).join("");
@@ -2232,8 +2342,7 @@ function attachSources(bubble, src) {
     const list = doc_el("div", "apassages");
     list.innerHTML = passages.map((p) => `
       <div class="apass">
-        ${p.ts ? `<a class="ts" data-sec="${tsToSec(p.ts)}" data-dir="${esc(assistDir || curWorkdir || "")}"
-              title="跳到音频此处" onclick="event.preventDefault();playFromTs(this)">[${esc(p.ts)}]</a>` : ""}
+        ${p.ts ? TS_HTML(tsToSec(p.ts), `[${esc(p.ts)}]`, { dir: assistDir || curWorkdir || "" }) : ""}
         <span class="aptext">${esc(p.text || "")}</span>
       </div>`).join("");
     box.appendChild(list);
@@ -2393,8 +2502,7 @@ function mdLite(md) {
     .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g,
       '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
     .replace(/\[(\d{1,2}:\d{2}:\d{2})\]/g,
-      (_m, t) => `<a class="ts" data-sec="${tsToSec(t)}" data-dir="${esc(assistDir || curWorkdir || "")}"
-        title="跳到音频此处" onclick="event.preventDefault();playFromTs(this)">[${t}]</a>`);
+      (_m, t) => TS_HTML(tsToSec(t), `[${t}]`, { dir: assistDir || curWorkdir || "" }));
   const out = [];
   let para = [], list = [];
   const flushP = () => { if (para.length) { out.push(`<p>${inline(para.join(" "))}</p>`); para = []; } };
@@ -2496,7 +2604,7 @@ async function pollCurrentJob() {
   } catch (e) { /* 静默 */ }
 }
 
-loadLibrary();
+loadLibrary().then(() => { if (routeDir()) applyRoute(); });   // 地址栏给了文章就先还原那一篇
 loadMcp();
 loadSettings();
 loadQueue();
@@ -2505,6 +2613,12 @@ pollCurrentJob();
 updateComposerHint();
 autoGrow();
 syncFab();
+// 阅读页：滚动时更新顶栏那条进度线；窗口尺寸变了重新算一次
+$("result").addEventListener("scroll", updateReadProgress, { passive: true });
+window.addEventListener("resize", updateReadProgress);
+// 地址栏变化（前进/后退，或手改 hash）→ 按地址栏还原界面
+window.addEventListener("hashchange", applyRoute);
+window.addEventListener("popstate", applyRoute);
 // 抽屉里的输入框也随内容长高
 $("aq").addEventListener("input", () => {
   const el = $("aq");

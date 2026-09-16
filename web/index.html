@@ -99,7 +99,7 @@
       </details>
     </div>
   </div>
-  <div class="hint col" id="hint">⌘/Ctrl + Enter 直接开始 · Esc 关闭文章 / 退出设置 · 产物会缓存，重新生成文章不必重新转写</div>
+  <div class="hint col" id="hint">⌘/Ctrl + Enter 直接开始 · 生成完会直接进阅读页，Esc 返回 · 产物会缓存，重新生成文章不必重新转写</div>
 
   <div id="runview" class="col">
     <div id="runsum" class="runsum" onclick="toggleRunview()"></div>
@@ -111,62 +111,6 @@
     <div id="errline" class="errline" style="display:none"></div>
     <details id="logdetails"><summary>详细日志</summary><div id="console"></div></details>
     </div><!-- /runbody -->
-  </div>
-
-  <div id="result" class="col">
-    <div class="rhead">
-      <div class="rmeta" id="rmeta"></div>
-      <button class="iconbtn small" onclick="closeResult()" title="关闭（Esc）" aria-label="关闭">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-          <path d="M18 6 6 18M6 6l12 12"></path>
-        </svg>
-      </button>
-    </div>
-    <div class="btnrow">
-      <div class="pubrow">
-        <select class="sel" id="dest" onchange="onDestChange()"></select>
-        <button class="btn primary" id="nbtn" onclick="pushArticle()">✦ 发布</button>
-      </div>
-      <button class="btn" id="tbtn" onclick="toggleTranscript()">查看文字稿</button>
-      <button class="btn" onclick="regenArticle()">重新生成文章</button>
-      <div class="menuwrap">
-        <button class="btn" id="expbtn" onclick="toggleExportMenu(event)">导出 ▾</button>
-        <div class="popmenu" id="exportmenu" hidden>
-          <div class="mi" data-fmt="md" onclick="exportOne('md')">Markdown（带元信息，便于二次编辑）</div>
-          <div class="mi" data-fmt="html" onclick="exportOne('html')">HTML 单文件（可直接发给别人）</div>
-          <div class="mi" data-fmt="txt" onclick="exportOne('txt')">纯文字稿</div>
-          <div class="sep"></div>
-          <div class="mi" onclick="copyArticle()">复制 Markdown 到剪贴板</div>
-        </div>
-      </div>
-      <div class="menuwrap">
-        <button class="btn" id="readbtn" onclick="toggleReadMenu(event)">状态 ▾</button>
-        <div class="popmenu" id="readmenu" hidden>
-          <div class="mi" data-st="unread" onclick="markStatus('unread')">标为未读</div>
-          <div class="mi" data-st="reading" onclick="markStatus('reading')">标为在读</div>
-          <div class="mi" data-st="read" onclick="markStatus('read')">标为已读</div>
-          <div class="mi" data-st="later" onclick="markStatus('later')">加入稍后读</div>
-          <div class="sep"></div>
-          <div class="mi" onclick="clearStatusMark()">清除标记（回到未读）</div>
-        </div>
-      </div>
-      <span class="costpill" id="costpill"></span>
-    </div>
-    <details id="tplbox" style="display:none">
-      <summary>参数模板（把文章字段映射到该 MCP 工具的入参）</summary>
-      <textarea id="tpl" spellcheck="false"></textarea>
-      <div class="tplhint">
-        占位符：<code>{{title}}</code> <code>{{podcast}}</code> <code>{{date}}</code>
-        <code>{{duration}}</code> <code>{{url}}</code> <code>{{content}}</code>（markdown 全文）
-        <code>{{blocks}}</code>（Notion 块数组，会作为 JSON 注入）
-      </div>
-    </details>
-    <article id="article"></article>
-    <div id="readdone" class="readdone">
-      <button class="btn primary" id="readdonebtn" onclick="finishReading()">✓ 读完了</button>
-      <span class="readhint">标记为已读，之后可以在侧边栏「已读」里翻到它</span>
-    </div>
-    <div id="transcript"></div>
   </div>
 
   <div id="lib">
@@ -219,6 +163,73 @@
     <div id="empty-feeds" class="viewempty">还没有订阅任何节目。填一个 RSS / Apple Podcasts 链接即可。</div>
   </div>
 </div><!-- /main -->
+
+<!-- 阅读页：点开文章后接管整屏 —— 不再挤在主页面的滚动流里（原来文章、输入框、
+     进度日志、文章库全在同一页往下滚）。这一层自带粘性顶栏、阅读进度线与偏窄的
+     正文栏宽；地址栏会变成 #/a/<目录名>，刷新 / 收藏 / 前进后退都能回到同一篇。 -->
+<div id="result" class="rdpage">
+  <header class="rdtop">
+    <button class="btn rdback" onclick="closeResult()" title="返回文章库（Esc）">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px">
+        <path d="M15 6 9 12l6 6"></path>
+      </svg>
+      文章库
+    </button>
+    <div class="rmeta" id="rmeta"></div>
+    <span class="costpill" id="costpill"></span>
+    <div class="rdprog" aria-hidden="true"><i id="rdprogbar"></i></div>
+  </header>
+
+  <div class="rdbody">
+    <div class="rdtools">
+      <div class="btnrow">
+        <div class="pubrow">
+          <select class="sel" id="dest" onchange="onDestChange()"></select>
+          <button class="btn primary" id="nbtn" onclick="pushArticle()">✦ 发布</button>
+        </div>
+        <button class="btn" id="tbtn" onclick="toggleTranscript()">查看文字稿</button>
+        <button class="btn" onclick="regenArticle()">重新生成文章</button>
+        <div class="menuwrap">
+          <button class="btn" id="expbtn" onclick="toggleExportMenu(event)">导出 ▾</button>
+          <div class="popmenu" id="exportmenu" hidden>
+            <div class="mi" data-fmt="md" onclick="exportOne('md')">Markdown（带元信息，便于二次编辑）</div>
+            <div class="mi" data-fmt="html" onclick="exportOne('html')">HTML 单文件（可直接发给别人）</div>
+            <div class="mi" data-fmt="txt" onclick="exportOne('txt')">纯文字稿</div>
+            <div class="sep"></div>
+            <div class="mi" onclick="copyArticle()">复制 Markdown 到剪贴板</div>
+          </div>
+        </div>
+        <div class="menuwrap">
+          <button class="btn" id="readbtn" onclick="toggleReadMenu(event)">状态 ▾</button>
+          <div class="popmenu" id="readmenu" hidden>
+            <div class="mi" data-st="unread" onclick="markStatus('unread')">标为未读</div>
+            <div class="mi" data-st="reading" onclick="markStatus('reading')">标为在读</div>
+            <div class="mi" data-st="read" onclick="markStatus('read')">标为已读</div>
+            <div class="mi" data-st="later" onclick="markStatus('later')">加入稍后读</div>
+            <div class="sep"></div>
+            <div class="mi" onclick="clearStatusMark()">清除标记（回到未读）</div>
+          </div>
+        </div>
+      </div>
+      <details id="tplbox" style="display:none">
+        <summary>参数模板（把文章字段映射到该 MCP 工具的入参）</summary>
+        <textarea id="tpl" spellcheck="false"></textarea>
+        <div class="tplhint">
+          占位符：<code>{{title}}</code> <code>{{podcast}}</code> <code>{{date}}</code>
+          <code>{{duration}}</code> <code>{{url}}</code> <code>{{content}}</code>（markdown 全文）
+          <code>{{blocks}}</code>（Notion 块数组，会作为 JSON 注入）
+        </div>
+      </details>
+    </div>
+
+    <article id="article"></article>
+    <div id="readdone" class="readdone">
+      <button class="btn primary" id="readdonebtn" onclick="finishReading()">✓ 读完了</button>
+      <span class="readhint">标记为已读，之后可以在侧边栏「已读」里翻到它</span>
+    </div>
+    <div id="transcript"></div>
+  </div>
+</div><!-- /result（阅读页） -->
 
 <div id="settings" style="display:none">
   <div class="sethead">

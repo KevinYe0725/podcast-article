@@ -160,29 +160,60 @@
   #console .ln.err { color: var(--red); }
   #console .ln.ok { color: var(--green); }
 
-  /* 结果 */
-  #result { display: none; margin-top: 48px; }
+  /* ---- 阅读页 ----
+     原来文章是内嵌在主页面的滚动流里的：输入框 → 进度日志 → 文章 → 文章库一路往下滚，
+     读一篇长文前后都是别的东西，很散。现在 #result 自成一层的整屏页面（自带滚动、
+     粘性顶栏、阅读进度线），关掉就回到刚才的位置，主页面（#main）原样不动。 */
+  #result {
+    display: none; position: fixed; inset: 0; z-index: 28;
+    background: var(--bg); overflow-y: auto; overscroll-behavior: contain;
+  }
   #result.show { display: block; }
-  /* 宽屏：文字稿打开时进入分栏阅读模式 */
+  body.reading { overflow: hidden; }      /* 阅读页自己滚，别让底下的主页面跟着动 */
+
+  /* 顶栏：返回 + 这篇是谁的什么 + 花费；底部压一条阅读进度线 */
+  .rdtop {
+    position: sticky; top: 0; z-index: 6;
+    display: flex; align-items: center; gap: 13px;
+    height: 58px; padding: 0 22px;
+    background: rgba(255,255,255,.92); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--border);
+  }
+  .rdtop .rdback { flex-shrink: 0; padding: 6px 14px 6px 11px; font-size: 13px; }
+  .rdtop .rmeta { flex: 1; min-width: 0; margin-bottom: 0; flex-wrap: nowrap; overflow: hidden; }
+  .rdtop .rmeta span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rdtop .rmeta .pod { flex: 0 1 auto; }
+  .rdtop .costpill { margin-left: 12px; }
+  .rdprog { position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; }
+  .rdprog i { display: block; height: 100%; background: var(--green); transform: scaleX(0); transform-origin: 0 50%; }
+
+  /* 正文栏宽：728px 上限减掉 2×24 内边距 = 680px 行宽 —— 16.5px 字号下每行约 41 个汉字。
+     中文整行 30-42 个汉字最好读；再宽眼睛回到下一行时容易串行，再窄又断得碎。 */
+  .rdbody { max-width: 728px; margin: 0 auto; padding: 40px 24px 150px; }
+  .rdtools { margin-bottom: 30px; }
+  .rdtools .btnrow { margin-bottom: 0; }
+  .rdtools #tplbox { margin: 16px 0 0; }
+  /* 宽屏 + 打开文字稿：正文与文字稿分栏（680 正文 + 44 间距 + 360 文字稿 + 48 内边距 = 1132），
+     正文那一栏宽度和单栏阅读时一模一样，不会因为开文字稿就换行。文字稿贴右侧一起滚。 */
   @media (min-width: 1080px) {
     body { font-size: 15px; }
-    #result.withTranscript {
-      display: grid; grid-template-columns: minmax(0, 1fr) 380px; column-gap: 44px;
-      grid-template-areas: "meta side" "btns side" "art side"; align-items: start; align-content: start;
+    #result.withTranscript .rdbody {
+      max-width: 1132px;
+      display: grid; grid-template-columns: minmax(0, 1fr) 360px; column-gap: 44px;
+      grid-template-areas: "tools side" "art side" "done side";
+      align-items: start; align-content: start;
     }
-    #result.withTranscript .rhead { grid-area: meta; }
-    #result.withTranscript .btnrow { grid-area: btns; }
+    #result.withTranscript .rdtools { grid-area: tools; }
     #result.withTranscript #article { grid-area: art; }
+    #result.withTranscript #readdone { grid-area: done; }
     #result.withTranscript #transcript {
-      grid-area: side; display: block; position: sticky; top: 84px;
+      grid-area: side; display: block; position: sticky; top: 82px;
       max-height: calc(100vh - 120px); margin-top: 0;
     }
   }
-  .rhead { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; margin-bottom: 18px; }
-  .rhead .rmeta { margin-bottom: 0; flex: 1; min-width: 0; }
   .iconbtn.small { width: 30px; height: 30px; flex-shrink: 0; }
   .iconbtn.small svg { width: 14px; height: 14px; }
-  .rmeta { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 18px; font-size: 13px; color: var(--dim); }
+  .rmeta { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; font-size: 13px; color: var(--dim); }
   .rmeta .pod { font-weight: 600; color: var(--text); }
   .btnrow { display: flex; gap: 10px; margin-bottom: 26px; flex-wrap: wrap; }
   .btn {
@@ -241,16 +272,14 @@
   #tpl { min-height: 168px; margin-top: 9px; font-family: var(--mono); font-size: 12.5px; resize: vertical; }
   .tplhint { font-size: 11.5px; color: var(--dim); margin-top: 7px; line-height: 1.7; }
   .tplhint code { font-family: var(--mono); background: var(--bg2); padding: 1px 5px; border-radius: 5px; }
-  #article { font-size: 15px; line-height: 1.85; }
-  #result.wide { max-width: 1180px; }
-  @media (min-width: 1080px) { #result:not(.withTranscript) #article { max-width: 800px; } }
-  #article h1 { font-size: 30px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.3; margin: 8px 0 18px; }
-  #article h2 { font-size: 20px; font-weight: 600; letter-spacing: -0.01em; margin: 36px 0 12px; }
-  #article h3 { font-size: 16px; font-weight: 600; margin: 24px 0 8px; }
-  #article p { margin: 10px 0; color: #3d3d44; }
+  #article { font-size: 16.5px; line-height: 1.9; }
+  #article h1 { font-size: 32px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.28; margin: 6px 0 20px; }
+  #article h2 { font-size: 20px; font-weight: 600; letter-spacing: -0.01em; margin: 40px 0 12px; }
+  #article h3 { font-size: 16.5px; font-weight: 600; margin: 26px 0 8px; }
+  #article p { margin: 13px 0; color: #3d3d44; }
   #article blockquote {
-    border-left: 2.5px solid var(--text); padding: 4px 0 4px 18px; margin: 16px 0;
-    color: var(--text); font-size: 15px;
+    border-left: 2.5px solid var(--text); padding: 4px 0 4px 18px; margin: 18px 0;
+    color: var(--text); font-size: 16.5px;
   }
   #article ul, #article ol { padding-left: 22px; margin: 10px 0; }
   #article li { margin: 6px 0; color: #3d3d44; }
@@ -418,9 +447,11 @@
   #article .ts, #transcript .ts {
     color: var(--green); text-decoration: none; border-bottom: 1px dashed rgba(16,163,127,.45);
     font-variant-numeric: tabular-nums; white-space: nowrap; padding: 0 1px; border-radius: 3px;
+    cursor: pointer;   /* 时间戳故意不带 href（免得触发 # 片段导航），指针手型得自己给 */
   }
   #article .ts:hover, #transcript .ts:hover { background: #eafaf4; border-bottom-style: solid; }
   #article .ts.active, #transcript .ts.active { background: var(--green); color: #fff; border-bottom-color: transparent; }
+  #article .ts:focus-visible, #transcript .ts:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
 
   .player {
     position: fixed; left: 50%; bottom: 20px; transform: translate(-50%, 140%);
@@ -767,6 +798,11 @@
     .qrow, .frow { flex-wrap: wrap; }
     .qacts, .facts { width: 100%; justify-content: flex-end; opacity: 1; }
     .viewhead .vacts { width: 100%; }
+    /* 阅读页顶栏：窄屏只留「返回 + 节目/标题」，花费收起来（在设置 → 存储与用量里看） */
+    .rdtop { padding: 0 14px; gap: 10px; }
+    .rdtop .costpill { display: none; }
+    .rdbody { padding: 26px 18px 120px; }
+    .rdtools { margin-bottom: 22px; }
   }
 
 /* ==================================================================

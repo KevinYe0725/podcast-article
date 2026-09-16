@@ -13,10 +13,10 @@ const { boot, report } = require("./harness");
   await new Promise((r) => setTimeout(r, 1200));
   out.打开后_显示 = $("result").classList.contains("show");
   out.打开后_来源标记 = $("result").dataset.fromLib;
-  out.关闭按钮存在 = !!doc.querySelector(".rhead .iconbtn.small");
+  out.返回按钮存在 = !!doc.querySelector(".rdtop .rdback");
   out.正文长度 = $("article").textContent.trim().length;
   if (!out.打开后_显示) fails.push("打开文章后未显示结果区");
-  if (!out.关闭按钮存在) fails.push("结果区没有关闭按钮");
+  if (!out.返回按钮存在) fails.push("阅读页顶栏没有返回按钮");
 
   // 点关闭
   scrolled.length = 0;

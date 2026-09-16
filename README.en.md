@@ -32,7 +32,8 @@ podcast-article hands that job to the machine: local speech-to-text plus LLM clo
 | 🎧 **Local transcription** | mlx-whisper on Apple Silicon GPU, ~38× realtime; parses platform subtitles when available |
 | 📝 **Deep writing** | No boring recap: logic-driven sections, facts vs. opinions, timestamped quotes, critical editorial notes |
 | 📊 **Live progress** | Web UI with SSE push: download percentage, ASR progress & ETA, LLM characters generated |
-| ⏱ **Timestamp playback** | Every `[00:44:03]` in the article and transcript is a link that plays your **local audio** from that second — verify any claim on the spot |
+| 📖 **Dedicated reading page** | Opening an article gives it a **full page of its own** (no sidebar, no composer), with a sticky header, a reading-progress line and a comfortable measure; the URL becomes `#/a/<folder>`, so refresh, bookmarks and shared links all reopen the same piece |
+| ⏱ **Timestamp playback** | Every `[00:44:03]` in the article and transcript is clickable and plays your **local audio** from that second — verify any claim on the spot |
 | 🔎 **Full-text search** | Searches article bodies *and* transcripts, with context snippets and highlighting; timestamps in hits are directly playable |
 | 🗂 **Library management** | Sidebar category folders with drag & drop filing; unread / reading / read / read-later states with one-click smart lists |
 | 🖼 **Card covers** | Fetches each episode's artwork (YouTube / Bilibili thumbnails, podcast show art) and **downloads it locally**, so cards render even offline |
@@ -179,7 +180,9 @@ uv run podcast-article "https://www.xiaoyuzhoufm.com/episode/xxxx"
 uv run python webapp.py    # open http://127.0.0.1:8787
 ```
 
-Paste a link → a four-stage timeline advances in real time (download / ASR / LLM percentages and ETAs) and then **collapses into a one-line summary** (elapsed time / download size / segments / characters) that you can re-expand → read the article, with an optional **side-by-side transcript view**. Then pick a publish target and send it to Notion or any MCP tool.
+Paste a link → a four-stage timeline advances in real time (download / ASR / LLM percentages and ETAs) and then **collapses into a one-line summary** (elapsed time / download size / segments / characters) that you can re-expand → the finished article **opens on its own full-page reading view** (header is just "back + show · title + this article's cost", with a reading-progress line on top; transcript can be shown **side by side**). Then pick a publish target and send it to Notion or any MCP tool.
+
+> The reading page has its own URL: `http://127.0.0.1:8787/#/a/<folder>`. Bookmark a piece, share the link, refresh — you land on the same article. `Esc`, the browser back button, or the "←" in the header all return to the library, which is still exactly where you left it.
 
 > **Paste several links at once**: when the input detects more than one URL the button turns into "Add to queue (N)" — they run in order in the background even after you close the tab.
 
@@ -187,7 +190,8 @@ Quick reference for the main interactions:
 
 | I want to… | How |
 |---|---|
-| Re-listen to a sentence | Click any `[00:44:03]` in the article or transcript; a player slides up (draggable, ±15 s) |
+| Re-listen to a sentence | Click any `[00:44:03]` in the article or transcript (Enter / Space works too); a player slides up (draggable, ±15 s) |
+| Go back to the library | "←" in the reading header, `Esc`, or the browser back button |
 | Find something I heard before | Search box top-left: searches bodies *and* transcripts, hits are playable |
 | File an article | Press and drag a card onto a sidebar folder, or click its category label |
 | Track reading progress | Opening an article marks it "reading"; hover a card for "✓ Read / ◷ Read later", or use the toolbar status menu |
@@ -532,14 +536,14 @@ Automatic checks only happen while **`python webapp.py` is running as a daemon**
 ## ✅ Tests
 
 ```bash
-uv run pytest tests/ -q        # backend: 254 tests
-bash tests/ui/run.sh           # UI: jsdom against a real server (9 files)
+uv run pytest tests/ -q        # backend: 522 tests
+bash tests/ui/run.sh           # UI: jsdom against a real server (13 files)
 ```
 
 | Scope | Coverage |
 |---|---|
 | Backend | Post-processing fixers, outline writing, category & reading-status store, queue, feeds, export, usage pricing, search, publish templates, MCP config, settings & `.env` semantics, every HTTP endpoint (including audio Range requests and path-traversal guards), background scheduler |
-| UI | Drag-to-categorise, drag-to-change-status, deleting records (both scopes), styled modals, closing articles with layered Esc, timestamp playback, full-text search & highlighting, batch enqueue, subscription management, export URLs |
+| UI | Reading page (full-screen layer, URL routing, deep-link restore), drag-to-categorise, drag-to-change-status, deleting records (both scopes), styled modals, closing articles with layered Esc, timestamp playback, full-text search & highlighting, batch enqueue, subscription management, export URLs |
 
 Both suites run against **temporary directories and temporary data files**
 (`PA_OUTPUT_DIR` / `PA_LIBRARY_FILE` / `PA_QUEUE_FILE` / `PA_FEEDS_FILE`) — your real `output/`

@@ -36,8 +36,13 @@ def test_assign_unknown_category_rejected(client):
 
 def test_article_html_linkifies_timestamps(client):
     html = client.get("/api/file/20240101-测试台-测试单集/article.md").get_json()["html"]
-    assert '<a class="ts" data-sec="607"' in html
+    assert '<span class="ts" data-sec="607"' in html
     assert "[00:10:07]" in html
+    # 时间戳必须是 <span> 而不是 <a>：任何 <a>（哪怕没有 href）都可能触发一次导航，
+    # 而阅读页把地址栏当路由（#/a/<目录名>）—— 点一下时间戳，刚打开的文章会被判成
+    # 「离开了这一篇」整页收起来。UI 测试与 jsdom 都抓到过这个坑。
+    assert 'href="#"' not in html
+    assert '<a class="ts"' not in html
 
 
 def test_file_whitelist_blocks_other_names(client):

@@ -198,12 +198,18 @@ def _audio_path(base: Path) -> Path | None:
 
 
 def _linkify_timestamps(html: str) -> str:
-    """把正文里的 [时:分:秒] 变成可点元素，点了跳到音频对应位置。"""
+    """把正文里的 [时:分:秒] 变成可点元素，点了跳到音频对应位置。
+
+    用 <span> 而不是 <a>：时间戳本来就不是链接，而 <a> 无论带不带 href 都可能触发一次
+    「导航」—— 带 href="#" 会跳到 #，不带 href 时 jsdom 也会把它当成空相对地址去 follow。
+    阅读页把地址栏当路由（#/a/<目录名>），这种导航会被判成「离开了这一篇」，整页收起来。
+    span 没有默认动作，点击完全交给页面上的委托监听；role/tabindex 是为了键盘也能用。
+    """
 
     def repl(m: re.Match) -> str:
         sec = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + int(m.group(3))
-        return (f'<a class="ts" data-sec="{sec}" title="跳到音频此处" '
-                f'href="#">{m.group(0)}</a>')
+        return (f'<span class="ts" data-sec="{sec}" role="button" tabindex="0" '
+                f'title="跳到音频此处">{m.group(0)}</span>')
 
     return _TS_RE.sub(repl, html)
 

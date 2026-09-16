@@ -34,12 +34,13 @@ function EventSourceShim(url, opts) {
   return new EventSourcePolyfill(abs, opts);
 }
 
-/** 起一个真实页面。opts.beforeParse 会在页面脚本执行前拿到 window，可继续打桩。 */
+/** 起一个真实页面。opts.beforeParse 会在页面脚本执行前拿到 window，可继续打桩。
+    opts.url 可以指定带 hash 的地址（测「刷新阅读页」这类深链接）。 */
 async function boot(opts = {}) {
   const html = await (await fetch(BASE + "/")).text();
   const scrolled = [];
   const dom = new JSDOM(html, {
-    url: BASE,
+    url: opts.url || BASE,
     runScripts: "dangerously",
     resources: "usable",
     pretendToBeVisual: true,
@@ -62,7 +63,9 @@ async function boot(opts = {}) {
     /** 派发一次 Esc（用于验证分层退出） */
     esc: () => doc.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true })),
     key: (k) => doc.dispatchEvent(new window.KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true })),
-    click: (el) => el.dispatchEvent(new window.MouseEvent("click", { bubbles: true })),
+    /** 真实点击是「可取消」的：不写 cancelable 的话 preventDefault 会被忽略，jsdom 照旧
+        执行链接的默认动作（跳到 href），测出来的行为会跟浏览器不一样。 */
+    click: (el) => el.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true })),
   };
 }
 
