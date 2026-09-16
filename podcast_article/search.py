@@ -40,6 +40,8 @@ import math
 import re
 from pathlib import Path
 
+from . import timestamps
+
 # --------------------------------------------------------------- 权重常量
 W_TITLE = 12.0        # meta.json 的 title 命中
 W_HEADING = 4.0       # article.md 的一级/二级（及更深）标题行
@@ -59,8 +61,8 @@ _WEIGHTS: dict[str, dict[str, float]] = {
     "transcript": {"": W_TRANSCRIPT},
 }
 
-# 文字稿行首时间戳，形如 [00:10:07]（小时 1~2 位）
-_TS_RE = re.compile(r"^\[(\d{1,2}):(\d{2}):(\d{2})\]")
+# 文字稿行首时间戳，形如 [00:10:07]；区间形态 [00:06:36-00:06:49] 取起点（见 timestamps）
+_TS_RE = timestamps.LINE_TS_RE
 
 
 # --------------------------------------------------------------- 查询解析
@@ -185,9 +187,12 @@ def _locate(starts: list[int], lines: list[str], offset: int) -> tuple[int, str]
 
 
 def _ts_of(line: str) -> str | None:
-    """从行首解析 `[hh:mm:ss]`；解析不出来给 None。"""
+    """从行首解析 `[hh:mm:ss]`；解析不出来给 None。
+
+    只回**起点**：前端拿它算秒数跳音频（`00:06:36-00:06:49` 这种区间要的是 00:06:36）。
+    """
     m = _TS_RE.match(line.lstrip())
-    return m.group(0)[1:-1] if m else None
+    return m.group(1) if m else None
 
 
 def _article_kind(line: str) -> str:

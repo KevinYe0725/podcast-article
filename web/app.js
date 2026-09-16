@@ -680,20 +680,37 @@ function closePlayer() {
     这种导航会被判成「离开了这一篇」，刚打开的文章整页收起来（UI 测试抓到过）。
     span 没有默认动作，点击交给文档上的委托监听（见 playFromTs）；键盘用 role/tabindex。
       dir:    点了跳哪一集（默认用当前打开的那篇）
+      range:  这是时间区间（[00:06:36-00:06:49]），说明里写清跳的是起点
+      from:   区间起点文本，用来写提示
       inline: 所在卡片整块可点（搜索结果）——要在自己身上挡住冒泡并自己播放，
               否则会顺带把文章打开。 */
 function TS_HTML(sec, label, opts) {
   const o = opts || {};
   const dir = o.dir ? ` data-dir="${esc(o.dir)}"` : "";
   const act = o.inline ? ` onclick="event.stopPropagation();playFromTs(this)"` : "";
+  const title = o.range ? `跳到音频此处（这一段的起点 ${esc(o.from || "")}）` : "跳到音频此处";
   return `<span class="ts" data-sec="${sec}"${dir} role="button" tabindex="0"` +
-         ` title="跳到音频此处"${act}>${label}</span>`;
+         ` title="${title}"${act}>${label}</span>`;
+}
+
+/* 时间戳的形态：单个 [00:06:36]、区间 [00:06:36-00:06:49]、以及模型偶尔漏写小时的 [09:24]。
+   只认第一种的话，整篇都是区间的文章（引用跨了十几秒时模型就这么写）一个可点的链接都没有。
+   区间按起点跳转；规则与 podcast_article/timestamps.py 一致。 */
+const TS_RE = /[\[［【]\s*(\d{1,2}:\d{2}(?::\d{2})?)(?:\s*[-–—−~～至到]\s*(\d{1,2}:\d{2}(?::\d{2})?))?\s*[\]］】]/g;
+
+/** `[时:分:秒]` / `[分:秒]` → 秒数 */
+const tsToSec = (ts) => (ts || "").split(":").reduce((a, b) => a * 60 + Number(b || 0), 0);
+
+/** 把已经转义过的 HTML 里的时间戳换成可点元素 */
+function linkifyTs(html, opts) {
+  const o = opts || {};
+  return String(html).replace(TS_RE, (all, start, end) =>
+    TS_HTML(tsToSec(start), all, { dir: o.dir, range: !!end, from: start }));
 }
 
 /** 文字稿里的时间戳也做成可点 */
 function renderTranscript(text) {
-  return esc(text).replace(/\[(\d{1,2}):(\d{2}):(\d{2})\]/g,
-    (_m, h, mi, s) => TS_HTML(+h * 3600 + +mi * 60 + +s, `[${h}:${mi}:${s}]`));
+  return linkifyTs(esc(text));
 }
 
 /* ---------------- 模态框（同风格弹窗）---------------- */
@@ -1873,8 +1890,6 @@ function clearSearch(keepFilter) {
   renderGrid();
 }
 
-const tsToSec = (ts) => (ts || "").split(":").reduce((a, b) => a * 60 + Number(b || 0), 0);
-
 function searchCardHTML(it) {
   const hits = (it.hits || []).map((h) => {
     const field = h.field === "transcript" ? "文字稿" : h.field === "title" ? "标题" : "正文";
@@ -2536,13 +2551,13 @@ function stopAssistStream() {
 /** 极简 markdown → HTML（会话里够用：段落 / 粗体 / 行内码 / 引用 / 列表 / 链接 / 时间戳） */
 function mdLite(md) {
   if (!md) return "";
-  const inline = (s) => esc(s)
-    .replace(/`([^`]+)`/g, "<code>$1</code>")
-    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-    .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g,
-      '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
-    .replace(/\[(\d{1,2}:\d{2}:\d{2})\]/g,
-      (_m, t) => TS_HTML(tsToSec(t), `[${t}]`, { dir: assistDir || curWorkdir || "" }));
+  const inline = (s) => linkifyTs(
+    esc(s)
+      .replace(/`([^`]+)`/g, "<code>$1</code>")
+      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+      .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g,
+        '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>'),
+    { dir: assistDir || curWorkdir || "" });
   const out = [];
   let para = [], list = [];
   const flushP = () => { if (para.length) { out.push(`<p>${inline(para.join(" "))}</p>`); para = []; } };

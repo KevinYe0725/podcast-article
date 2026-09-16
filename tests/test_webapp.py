@@ -45,6 +45,19 @@ def test_article_html_linkifies_timestamps(client):
     assert '<a class="ts"' not in html
 
 
+def test_article_html_linkifies_time_ranges(client):
+    """时间区间形态的时间戳也要能点，并且跳到区间**起点**。
+
+    模型引用一段跨了十几秒的话时会写 `[00:20:00-00:20:15]`；只认单个时间点的那个版本，
+    这类文章整篇一个可点的语音链接都没有（真实反馈）。
+    """
+    html = client.get("/api/file/20240101-测试台-测试单集/article.md").get_json()["html"]
+    assert "[00:20:00-00:20:15]" in html, "原始文案要保持不变"
+    assert 'data-sec="1200"' in html, "区间应跳到起点 20:00 = 1200 秒"
+    assert 'data-sec="1215"' not in html, "不应跳到区间终点"
+    assert html.count('class="ts"') == 2, f"单个与区间两种时间戳都要可点：{html.count('class="ts"')}"
+
+
 def test_file_whitelist_blocks_other_names(client):
     assert client.get("/api/file/20240101-测试台-测试单集/meta.json").status_code == 200
     assert client.get("/api/file/20240101-测试台-测试单集/audio.m4a").status_code == 400

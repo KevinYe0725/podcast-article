@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import re
 
+from . import timestamps
+
 FIXED_SECTIONS = ("读完你会带走什么", "编辑点评", "金句摘录", "提及的书影音")
 
 # 篇幅区间：按实测校准（模型实际产出约为指令字数的 1.5-2 倍，指令需相应收紧）
@@ -29,8 +31,10 @@ FILLER = [
     "毋庸置疑，", "众所周知，", "可以说，", "从某种意义上说，", "从某种意义上，",
 ]
 
-_ORPHAN_TS = re.compile(r"^\s*\[(\d{2}:\d{2}:\d{2})\]\s*$")
-_TS = re.compile(r"\[\d{2}:\d{2}:\d{2}\]")
+# 时间戳（单个 / 区间）统一来自 podcast_article.timestamps：
+# 「[00:06:36-00:06:49]」独占一行时也要能并回引文，否则会以一行孤零零的时间戳留在成稿里
+_ORPHAN_TS = timestamps.ONLY_TS_RE
+_TS = timestamps.TS_RE
 _SENT_END = re.compile(r"(?<=[。！？；])")
 _CJK = r"\u4e00-\u9fff"
 
@@ -81,7 +85,7 @@ def fix_orphan_timestamps(text: str) -> tuple[str, int]:
         if not m:
             out.append(line)
             continue
-        ts = m.group(1)
+        ts = m.group(0).strip()[1:-1]        # 去掉方括号：单个时间点或整段区间都原样搬过去
         # 往上找最近的非空行；若它像引文（或还不是引文），就把时间戳并上去
         for i in range(len(out) - 1, -1, -1):
             prev = out[i].strip()

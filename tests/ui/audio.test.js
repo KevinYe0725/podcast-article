@@ -68,6 +68,31 @@ const BASE = process.env.PA_BASE || "http://127.0.0.1:8787";
   out.文字稿内可点时间戳 = doc.querySelectorAll("#transcript .ts").length;
   if (!out.文字稿内可点时间戳) fails.push("文字稿里没有可点时间戳");
 
+  // 时间区间的时间戳也要能点：模型引用一段跨了十几秒的话时就写 [00:20:00-00:20:15]
+  // （真实反馈：这种时候链一个都点不动），点了要跳到区间起点
+  const rangeTs = [...doc.querySelectorAll("#article .ts")].find((el) => el.textContent.includes("-"));
+  out.区间时间戳_存在 = !!rangeTs;
+  if (!rangeTs) {
+    fails.push("区间形态的时间戳（[00:20:00-00:20:15]）没有变成可点元素");
+  } else {
+    out.区间时间戳_文案 = rangeTs.textContent.trim();
+    out.区间时间戳_秒数 = rangeTs.dataset.sec;
+    rangeTs.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    // jsdom 里 audio.readyState 始终是 0，playAt 会把跳转挂到 loadedmetadata 上再执行
+    // （上面第一次点击也是靠这招才真的跳到 607 秒）
+    a.dispatchEvent(new window.Event("loadedmetadata"));
+    await sleep(300);
+    out.区间时间戳_高亮 = rangeTs.classList.contains("active");
+    out.区间时间戳_跳转 = Math.round(a.currentTime);
+    if (out.区间时间戳_秒数 !== "1200") {
+      fails.push(`区间时间戳应指向起点 1200 秒，实际 data-sec=${out.区间时间戳_秒数}`);
+    }
+    if (out.区间时间戳_跳转 !== 1200) {
+      fails.push(`点区间时间戳应跳到 1200 秒，实际 ${out.区间时间戳_跳转}`);
+    }
+    if (!out.区间时间戳_高亮) fails.push("点过的区间时间戳没有高亮");
+  }
+
   // 关闭播放器
   window.closePlayer();
   await sleep(200);

@@ -17,6 +17,8 @@ fs.writeFileSync(path.join(dir, "article.md"),
   "## 第一节：他用一根针把名字缝在鱼身上\n\n" +
   "1906 年 4 月 18 日清晨，旧金山发生里氏 7.9 级地震。他把标签缝进鱼喉咙。\n\n" +
   "> 这是原话 [00:10:07]\n\n" +
+  // 区间形态：引用跨了十几秒时模型就是这么写的，以前这种整段都点不动
+  "> 这是跨了十几秒的一段原话 [00:20:00-00:20:15]\n\n" +
   "## 读完你会带走什么\n\n- 一条可检验的判断\n- 一条可试的做法\n");
 fs.writeFileSync(path.join(dir, "transcript.txt"), "[00:00:01] 开头\n[00:10:07] 这是原话\n");
 fs.writeFileSync(path.join(dir, "transcript.json"), "[]");

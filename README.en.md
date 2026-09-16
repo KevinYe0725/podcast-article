@@ -33,7 +33,7 @@ podcast-article hands that job to the machine: local speech-to-text plus LLM clo
 | 📝 **Deep writing** | No boring recap: logic-driven sections, facts vs. opinions, timestamped quotes, critical editorial notes |
 | 📊 **Live progress** | Web UI with SSE push: download percentage, ASR progress & ETA, LLM characters generated |
 | 📖 **Dedicated reading page** | Opening an article gives it a **full page of its own** (no sidebar, no composer), with a sticky header, a reading-progress line and a comfortable measure; the URL becomes `#/a/<folder>`, so refresh, bookmarks and shared links all reopen the same piece |
-| ⏱ **Timestamp playback** | Every `[00:44:03]` in the article and transcript is clickable and plays your **local audio** from that second — verify any claim on the spot |
+| ⏱ **Timestamp playback** | Both `[00:44:03]` and the quote-spanning `[00:06:36-00:06:49]` forms are clickable and play your **local audio** (ranges start at their beginning) — verify any claim on the spot |
 | 🔎 **Full-text search** | Searches article bodies *and* transcripts, with context snippets and highlighting; timestamps in hits are directly playable |
 | 🗂 **Library management** | Sidebar category folders with drag & drop filing; unread / reading / read / read-later states with one-click smart lists |
 | 🖼 **Card covers** | Fetches each episode's artwork (YouTube / Bilibili thumbnails, podcast show art) and **downloads it locally**, so cards render even offline |
@@ -192,7 +192,7 @@ Quick reference for the main interactions:
 
 | I want to… | How |
 |---|---|
-| Re-listen to a sentence | Click any `[00:44:03]` in the article or transcript (Enter / Space works too); a player slides up (draggable, ±15 s) |
+| Re-listen to a sentence | Click any `[00:44:03]` or `[00:06:36-00:06:49]` in the article or transcript (Enter / Space works too); a player slides up (draggable, ±15 s) |
 | Go back to the library | "←" in the reading header, `Esc`, or the browser back button |
 | Find something I heard before | Search box top-left: searches bodies *and* transcripts, hits are playable |
 | File an article | Press and drag a card onto a sidebar folder, or click its category label |

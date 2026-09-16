@@ -31,13 +31,13 @@ from urllib.parse import quote, urlparse
 
 import markdown
 
+from . import timestamps
 from .util import human_time
 
 # 文件名（含后缀）的字符数上限：中文按 1 个字符算；Windows 全路径上限之外还要留出空间
 MAX_FILENAME = 80
 
-# 正文里的 [hh:mm:ss]（与 webapp 的 _TS_RE 一致）
-_TS_RE = re.compile(r"\[(\d{1,2}):(\d{2}):(\d{2})\]")
+
 
 # 文件名里绝对不允许的字符：路径分隔符、Windows 保留字符、控制字符与换行
 _ILLEGAL_RE = re.compile(r'[\\/:*?"<>|\x00-\x1f\x7f]')
@@ -231,7 +231,7 @@ def _wrap_timestamps(html: str) -> str:
         elif depth:
             out.append(chunk)
         else:
-            out.append(_TS_RE.sub(lambda m: f'<span class="ts">{m.group(0)}</span>', chunk))
+            out.append(timestamps.mark(chunk))
     return "".join(out)
 
 

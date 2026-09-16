@@ -21,6 +21,23 @@ def test_fix_orphan_timestamp_merges_into_quote():
     assert out.splitlines()[0] == "> 他说了一句话。 [00:10:15]"
 
 
+def test_fix_orphan_range_timestamp_merges_into_quote():
+    """区间形态的孤儿时间戳也要并回引文。
+
+    模型引用一段跨十几秒的话时写的是 `[00:06:36-00:06:49]`；只认单个时间点的那个版本
+    会把它当成普通文本，于是成稿里留下一行孤零零的时间戳。
+    """
+    out, n = pp.fix_orphan_timestamps("> 他说了一句话。\n\n[00:06:36-00:06:49]\n\n下一段")
+    assert n == 1, f"应修掉 1 处，实际 {n}"
+    assert out.splitlines()[0] == "> 他说了一句话。 [00:06:36-00:06:49]", f"没并上去：{out.splitlines()[0]!r}"
+
+
+def test_fix_orphan_timestamp_drops_when_line_already_has_one():
+    """上一行已经有时间戳（含区间）时，孤儿行直接丢掉，不要叠两个。"""
+    out, n = pp.fix_orphan_timestamps("> 引文 [00:06:36-00:06:49]\n\n[00:20:00]\n\n尾")
+    assert n == 1 and out.count("[") == 1, f"孤儿时间戳应被丢掉：{out!r}"
+
+
 def test_normalize_punctuation_and_number_spacing():
     out, _ = pp.normalize_punctuation("他出生于1906年,那是一个数字:7.9级地震")
     assert "1906 年" in out and "，" in out and "：" in out
