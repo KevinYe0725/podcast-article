@@ -358,14 +358,34 @@ def test_finish_queue_item_does_not_block_queue_after_failure(pa, monkeypatch):
 
 
 def test_finish_queue_item_ignores_non_queue_jobs(pa):
+    """首页直接提交的任务不属于任何队列条目 —— 回写时必须原样跳过，别误伤队列。"""
+    from podcast_article import queue
+
+    queue.add("https://example.com/别人的任务")
+    pending_before = queue.snapshot()["items"][0]
+
     pa._finish_queue_item({"id": "job2", "status": "done", "queue_id": None, "workdir": "x"})
-    # 没有 queue_id 时不应抛异常（首页直接提交的任务不属于任何队列条目）
+
+    after = queue.snapshot()["items"]
+    assert len(after) == 1, f"队列不该被凭空改动，实际 {after}"
+    assert after[0]["state"] == "pending" and after[0]["id"] == pending_before["id"], \
+        f"没有 queue_id 的任务不该动到任何条目，实际 {after[0]}"
 
 
 def test_finish_queue_item_tolerates_deleted_item(pa):
-    """用户在任务跑的过程中把条目删了：不能因此让 worker 崩掉。"""
+    """用户在任务跑的过程中把条目删了：不能因此让 worker 崩掉，也不能动到别的条目。"""
+    from podcast_article import queue
+
+    queue.add("https://example.com/留下的那一条")
+    keep = queue.snapshot()["items"][0]["id"]
+
+    # 不应抛异常（这正是这个用例要守的行为）
     pa._finish_queue_item({"id": "job3", "status": "done", "queue_id": "qgone",
                            "workdir": "x", "error": None})
+
+    after = queue.snapshot()["items"]
+    assert [i["id"] for i in after] == [keep], f"不该动到其他条目，实际 {after}"
+    assert after[0]["state"] == "pending", f"留下的那条应保持 pending，实际 {after[0]['state']}"
 
 
 def test_run_queue_once_then_finish_leaves_consistent_state(pa, monkeypatch):
