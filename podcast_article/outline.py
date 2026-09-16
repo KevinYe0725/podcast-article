@@ -103,15 +103,113 @@ _OUTLINE_SYSTEM = f"""你是内容策划。你会收到一期播客或视频的�
 
 _OPENING_SYSTEM = f"""你在写一篇文章的开篇。只输出开篇正文（2-3 段，共约 {{chars}} 字），不要写标题、不要写小标题、不要写任何栏目名。
 
-要求：
-- 用一个具体场景、细节、数字或反直觉事实切入，让读者想读下一段
+## 第一句是整篇文章最重要的一句
+它决定读者读不读第二句。**必须是下面两种之一**：
+1. **一个画面**：某个人正在做一件具体的事（动作 + 场景），读者能"看见"它。
+   例：「凌晨两点，前台电话响了。」「他卷起袖子一阵翻找，最后捡起一根缝衣针。」
+2. **一句原话**：直接把节目里最有张力的一句引出来（用引号，可带时间戳）。
+   例：「'我没写一行代码。'他说这话时手里只有一个从后台顺来的手柄。」
+
+## 明确禁止的开头（违反任意一条即为不合格）
+- **简报式**：`某年某月，某某（机构/职位）在某场合说/表示/宣布/指出/发布……`
+  —— 这是新闻通稿，不是文章开头。时间、机构、职位、场合都不要出现在第一句里
+- 以时间、数据、百分比、股价、日期起句（`2025 年 11 月初，……`「周二尾盘，比特币跌 4.4%」）
+- 以这些词起句：随着、近年来、在当今、如今、众所周知、在……背景下、作为……
+- 以结论、定义、评价、概括起句（「这是一次关于……的对话」「他是一位……的人」）
+- 疑问句起句（悬念要靠画面制造，不是靠提问）
+
+## 其余要求
+- **第一句不超过 40 字**，整段不超过 120 字；开篇一共 2-3 段
 - **选一个后面章节不会专门展开的细节**：不要用第 1 节的场景开场，也不要引用
   与后面章节相同的那句原话（同一处细节被讲两遍，读者会觉得文章在绕圈）
 - **绝不罗列结论、绝不概括全文、绝不提前交出结局**；只暗示后面有转折
 - 只写散文段落，不要表格、不要清单
-- 段落不超过 200 字
 
 {_RULES}"""
+
+
+# ------------------------------------------------------------------ 开篇闸门
+#
+# 为什么要有这一道：提示词写了「要有一个好的开头」，实测**照样会产出简报式开头**
+# （「2025 年 11 月初，OpenAI 首席财务官 Sarah Fryer 在一场公开会议上说……」）——
+# 因为提示词给了「场景 / 细节 / 数字 / 反直觉事实」四个选项，模型挑最省事的那个。
+# 所以除了堵死逃生出口，还要有**确定性的检查**：不合格就带着具体问题重写一次。
+# 判定只收「明确是坏」的模式，宁可漏判也不误判（误判会把好开头也逼着重写）。
+
+# 以这些词起句：全是从背景/趋势/定义入手的铺垫
+_WEAK_OPENERS = ("随着", "近年来", "在当今", "如今", "众所周知", "作为", "当下", "目前",
+                 "近年来", "在这样一个", "说到", "提起")
+
+# 简报式：同句里既有时间、又有"发言类"动词
+_REPORT_VERBS = ("表示", "宣布", "指出", "发布", "称", "声明", "提出", "回应", "透露")
+_ORG_WORDS = ("公司", "集团", "大学", "学院", "研究院", "机构", "政府", "部门", "协会",
+              "首席", "总裁", "CEO", "创始人", "董事长", "教授", "博士", "部长", "主席",
+              "发言人", "副总裁", "负责人", "代表")
+
+_QUOTE_RE = re.compile(r"[「『“\"']")
+
+# 栏目式的空泛开头。**点名判定**：用「有没有数字/动作」这类模糊信号试过，
+# 被「这是一次…」里的"一"击穿了（中文里一二两这些字太常见）。
+_GENERIC_OPENERS = (
+    "这是一次", "这是一个", "这是一场", "这期节目", "本期节目", "这次对话", "这场对话",
+    "在这次", "这段对话", "在这期", "在本次", "让我们", "今天我们要", "接下来我们",
+)
+
+
+def _first_sentence(text: str) -> str:
+    """取开篇第一句（按中文句末标点切，切不出来就取前 120 字）。"""
+    cleaned = re.sub(r"^#+ .*$", "", text or "", flags=re.M).strip()
+    cleaned = re.sub(r"^> .*$", "", cleaned, flags=re.M).strip()
+    m = re.search(r"[^。！？!?]*[。！？!?]", cleaned)
+    return (m.group(0) if m else cleaned[:120]).strip()
+
+
+def opening_problems(opening: str) -> list[str]:
+    """检查开篇，返回问题清单（空列表 = 通过）。
+
+    只收「明确是坏」的模式：这些都是一读就知道没写好的开头。
+    不判断「写得好不好」—— 那需要人来判断；这里只挡形式上的失败。
+    """
+    problems: list[str] = []
+    first = _first_sentence(opening)
+    if not first:
+        return ["开篇是空的"]
+
+    # 1) 简报式：时间 + 发言动词 / 机构职位堆叠
+    has_time = bool(re.search(r"\d{4}\s*年|\d{1,2}\s*月|周[一二三四五六日]|当地时间", first))
+    has_verb = any(w in first for w in _REPORT_VERBS)
+    org_hits = [w for w in _ORG_WORDS if w in first]
+    if has_time and has_verb:
+        problems.append(f"第一句是简报式（时间 + 「{next(w for w in _REPORT_VERBS if w in first)}」），"
+                        f"像新闻通稿：{first[:40]}")
+    elif len(org_hits) >= 2:
+        problems.append(f"第一句堆了机构/职位（{'、'.join(org_hits[:3])}），"
+                        f"没有画面也没有原话：{first[:40]}")
+
+    # 2) 以背景/趋势/定义起句
+    for w in _WEAK_OPENERS:
+        if first.startswith(w):
+            problems.append(f"以「{w}」起句，是铺垫不是开头：{first[:40]}")
+            break
+
+    # 3) 第一句太短或太长：太短没有信息，太长是铺垫
+    if len(first) < 8:
+        problems.append(f"第一句只有 {len(first)} 字，太短、没有信息量：{first}")
+    if len(first) > 70:
+        problems.append(f"第一句 {len(first)} 字太长（要求 40 字以内），读者第一口气就读不完")
+
+    # 4) 疑问句起句：悬念要靠画面，不是靠提问
+    if first.rstrip().endswith(("？", "?")):
+        problems.append(f"以疑问句起句：{first[:40]}")
+
+    # 5) 空泛的"栏目式"开头：点名判定，绝不用「有没有数字」这类模糊信号——
+    #    试过用「既无原话又无数字」当判据，结果被「这是一次…」里的"一"击穿了。
+    for w in _GENERIC_OPENERS:
+        if first.startswith(w):
+            problems.append(f"以「{w}」这种栏目式的话起句，没有任何具体的东西：{first[:40]}")
+            break
+    return problems
+
 
 _SECTION_SYSTEM = f"""你在写一篇文章的其中一节。只输出这一节（`## 小标题` + 正文），不要写其他节，不要写结尾栏目。
 
@@ -279,13 +377,31 @@ def write_outlined(
     log(f"[llm] 大纲：{title}（{len(sections)} 节）")
 
     # 2) 开篇
-    opening = call(
-        _OPENING_SYSTEM.replace("{chars}", str(stated(plan["opening"]))),
+    opening_task = (
         f"文章标题：{title}\n引语：{deck}\n开篇切入方式：{outline.get('opening', '')}\n"
         f"全文将包含这些节（避免在开篇把它们的结论讲完）："
-        + "；".join(s["heading"] for s in sections),
-        plan["opening"], "开篇",
+        + "；".join(s["heading"] for s in sections)
     )
+    opening_system = _OPENING_SYSTEM.replace("{chars}", str(stated(plan["opening"])))
+    opening = call(opening_system, opening_task, plan["opening"], "开篇")
+
+    # 开篇闸门：不合格就**带着具体问题**重写一次（只重试一次，不再多花额度）。
+    # 为什么要机械检查：提示词里写「要有好的开头」实测挡不住简报式开头，见 opening_problems。
+    problems = opening_problems(opening)
+    if problems:
+        log("[llm] 开篇不合格：" + "；".join(p[:44] for p in problems))
+        log("[llm] 带着上面的问题重写开篇…")
+        retry_task = (
+            f"{opening_task}\n\n注意：上一次写的开篇不合格，具体问题：\n- "
+            + "\n- ".join(problems)
+            + "\n\n上一次的开篇（**不要**沿用它的写法和句式，重新想一个开头）：\n" + opening
+        )
+        retry = call(opening_system, retry_task, plan["opening"], "开篇（重写）")
+        still = opening_problems(retry)
+        if still:
+            log("[llm] 重写后仍不合格（" + "；".join(p[:30] for p in still) + "），"
+                "保留重写版不再重试（避免无限消耗额度）")
+        opening = retry
 
     # 3) 逐节
     heads = [s["heading"] for s in sections]
