@@ -13,6 +13,7 @@ import tempfile
 import threading
 import time
 import uuid
+from functools import wraps
 from pathlib import Path
 from urllib.parse import quote
 
@@ -40,6 +41,30 @@ OUTPUT_ROOT = Path(os.environ.get("PA_OUTPUT_DIR") or (PROJECT_ROOT / "output"))
 WEB_DIR = PROJECT_ROOT / "web"
 
 app = Flask(__name__, static_folder=str(WEB_DIR), static_url_path="/static")
+
+# ---------------------------------------------------------------- 只读镜像
+#
+# 部署到公网服务器时用 PA_READONLY=1：那台机器只负责「看」——文章、检索、
+# 时间戳回听、导出都能用，但生成 / 转写 / AI 助手 / 发布一律拦住。
+# 为什么需要它：流水线要转写（服务器没 GPU，2 核跑不动）与 DeepSeek 密钥，
+# 而这些都留在你自己的 Mac 上（算力在 Mac，服务器只做控制面 + 阅读面）。
+#
+# 这里刻意在**调用时**读全局 READONLY（而不是导入时定死），测试可以直接改它。
+READONLY = (os.environ.get("PA_READONLY") or "").strip().lower() in ("1", "true", "yes", "on")
+READONLY_HINT = ("这是一台只读镜像：生成文章、语音转写与 AI 助手都在你的 Mac 上跑。"
+                 "请在 Mac 上打开 http://127.0.0.1:8787 提交链接。")
+
+
+def _readonly_guard(fn):
+    """装饰器：只读镜像下拦住「跑活 / 要密钥 / 删文件」的动作，给可读的 503。"""
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        if READONLY:
+            return jsonify({"error": READONLY_HINT, "readonly": True}), 503
+        return fn(*args, **kwargs)
+
+    return wrapper
+
 
 _JOBS: dict[str, dict] = {}          # job_id -> 状态字典
 _JOBS_LOCK = threading.Lock()
@@ -231,6 +256,7 @@ def _running_job_id() -> str | None:
 # ---------------------------------------------------------------- API
 
 @app.post("/api/run")
+@_readonly_guard
 def api_run():
     data = request.get_json(force=True, silent=True) or {}
     # 粘贴过来的常常是「【标题】https://…」：任务里存的、界面上显示的都该是链接本身
@@ -249,6 +275,21 @@ def api_run():
         }), 409
     job_id = _new_job(url, data)
     return jsonify({"job_id": job_id})
+
+
+@app.get("/api/config")
+def api_config():
+    """前端启动时问一次：这台机器允许做什么。
+
+    只读镜像（PA_READONLY=1）下前端会收起输入框、悬浮球与发布入口，
+    并说明「算力在 Mac 上」——比让人点一个必然失败的按钮诚实。
+    """
+    return jsonify({
+        "readonly": READONLY,
+        "hint": READONLY_HINT if READONLY else "",
+        "assistant": not READONLY,      # 阅读助手要 DeepSeek 密钥
+        "publish": not READONLY,        # Notion / MCP 同理
+    })
 
 
 @app.get("/api/jobs/current")
@@ -332,6 +373,7 @@ def api_stream(job_id: str):
 
 
 @app.post("/api/notion")
+@_readonly_guard
 def api_notion():
     """把某一集的文章写入内置 Notion 集成。body: {"dir": "<输出目录名>"}"""
     return _publish_with({"target": "builtin"})
@@ -382,6 +424,7 @@ def _publish_with(extra: dict | None = None):
 
 
 @app.post("/api/publish")
+@_readonly_guard
 def api_publish():
     """发布文章。body: {"dir", "target": "builtin"|"mcp:<server>:<tool>", "template": {...}}"""
     return _publish_with()
@@ -402,6 +445,7 @@ def api_settings_get():
 
 
 @app.post("/api/settings")
+@_readonly_guard
 def api_settings_post():
     """保存设置。body: {profile, generation, subscriptions, secrets}
 
@@ -428,6 +472,7 @@ def api_settings_post():
 
 
 @app.post("/api/settings/verify")
+@_readonly_guard
 def api_settings_verify():
     """实测当前配置是否可用。body: {"what": "deepseek"|"notion"}"""
     what = (request.get_json(force=True, silent=True) or {}).get("what", "")
@@ -477,6 +522,7 @@ def api_mcp_servers():
 
 
 @app.post("/api/mcp/servers/preset")
+@_readonly_guard
 def api_mcp_preset():
     """按预设一键添加。body: {"preset": "notion", "secret": "ntn_…"（可选）}"""
     data = request.get_json(force=True, silent=True) or {}
@@ -488,6 +534,7 @@ def api_mcp_preset():
 
 
 @app.post("/api/mcp/servers")
+@_readonly_guard
 def api_mcp_save():
     """新增或更新一台 MCP 服务器。命令可整行传 command_line，env 支持 dict 或 "K=V\\nK2=V2"。"""
     data = request.get_json(force=True, silent=True) or {}
@@ -516,6 +563,7 @@ def api_mcp_save():
 
 
 @app.delete("/api/mcp/servers/<name>")
+@_readonly_guard
 def api_mcp_delete(name: str):
     if not mcp_config.delete_server(name):
         return jsonify({"error": f"未找到服务器：{name}"}), 404
@@ -545,6 +593,7 @@ def _resolve_entry(data: dict) -> dict | None:
 
 
 @app.post("/api/mcp/test")
+@_readonly_guard
 def api_mcp_test():
     """启动服务器并列出工具。body: {"name": "..."} 或 {"command","args","env"}"""
     data = request.get_json(force=True, silent=True) or {}
@@ -560,6 +609,7 @@ def api_mcp_test():
 
 
 @app.post("/api/mcp/call")
+@_readonly_guard
 def api_mcp_call():
     """试调用某个工具。body: {"name", "tool", "arguments"}"""
     data = request.get_json(force=True, silent=True) or {}
@@ -604,6 +654,7 @@ def api_categories():
 
 
 @app.post("/api/categories")
+@_readonly_guard
 def api_category_create():
     data = request.get_json(force=True, silent=True) or {}
     try:
@@ -624,6 +675,7 @@ def api_category_rename(cid: str):
 
 
 @app.delete("/api/categories/<cid>")
+@_readonly_guard
 def api_category_delete(cid: str):
     try:
         library_mod.delete(cid)
@@ -633,6 +685,7 @@ def api_category_delete(cid: str):
 
 
 @app.post("/api/assign")
+@_readonly_guard
 def api_assign():
     """把文章放进分类（category_id 为空 → 移出分类）。body: {"dir", "category_id"}"""
     data = request.get_json(force=True, silent=True) or {}
@@ -644,6 +697,7 @@ def api_assign():
 
 
 @app.delete("/api/episode/<job_dir>")
+@_readonly_guard
 def api_episode_delete(job_dir: str):
     """删除一条历史记录。
 
@@ -748,6 +802,7 @@ def _ask_query(selection: str, question: str) -> str:
 
 
 @app.post("/api/ask")
+@_readonly_guard
 def api_ask():
     """发起一次深挖提问。body: {"dir", "selection", "question", "web"}"""
     data = request.get_json(force=True, silent=True) or {}
@@ -903,6 +958,7 @@ def api_qa_list():
 
 
 @app.delete("/api/qa/<dir_name>/<item_id>")
+@_readonly_guard
 def api_qa_delete(dir_name: str, item_id: str):
     base = _safe_dir(dir_name)
     if not base:
@@ -913,6 +969,7 @@ def api_qa_delete(dir_name: str, item_id: str):
 
 
 @app.delete("/api/qa/<dir_name>")
+@_readonly_guard
 def api_qa_clear(dir_name: str):
     base = _safe_dir(dir_name)
     if not base:
@@ -929,6 +986,7 @@ def api_search_service():
 
 
 @app.post("/api/search-service/test")
+@_readonly_guard
 def api_search_service_test():
     """实测一次联网搜索。body: {"query": "..."}（可选）"""
     from podcast_article import websearch
@@ -957,6 +1015,7 @@ def api_cover(job_dir: str):
 
 
 @app.post("/api/covers/backfill")
+@_readonly_guard
 def api_covers_backfill():
     """给「元信息里有封面链接、但本地还没下载」的历史单集补下封面。
 
@@ -1068,6 +1127,7 @@ def api_search():
 # ---------------------------------------------------------------- 阅读状态
 
 @app.post("/api/status")
+@_readonly_guard
 def api_status():
     """设置阅读状态。body: {"dir": "...", "status": "unread|reading|read|later"}（空 = 清除）"""
     data = request.get_json(force=True, silent=True) or {}
@@ -1165,6 +1225,7 @@ def api_queue_get():
 
 
 @app.post("/api/queue")
+@_readonly_guard
 def api_queue_post():
     """入队。body: {"urls": "一行一条" 或 ["...", ...], "opts": {...}, "pick": 1}"""
     data = request.get_json(force=True, silent=True) or {}
@@ -1184,6 +1245,7 @@ def api_queue_post():
 
 
 @app.delete("/api/queue/<item_id>")
+@_readonly_guard
 def api_queue_delete(item_id: str):
     if not queue_mod.remove(item_id):
         return jsonify({"error": "队列里没有这一条"}), 404
@@ -1191,6 +1253,7 @@ def api_queue_delete(item_id: str):
 
 
 @app.post("/api/queue/<item_id>/move")
+@_readonly_guard
 def api_queue_move(item_id: str):
     data = request.get_json(force=True, silent=True) or {}
     try:
@@ -1201,6 +1264,7 @@ def api_queue_move(item_id: str):
 
 
 @app.post("/api/queue/clear")
+@_readonly_guard
 def api_queue_clear():
     data = request.get_json(force=True, silent=True) or {}
     removed = queue_mod.clear(keep_failed=bool(data.get("keep_failed")))
@@ -1208,12 +1272,14 @@ def api_queue_clear():
 
 
 @app.post("/api/queue/retry")
+@_readonly_guard
 def api_queue_retry():
     n = queue_mod.retry_failed()
     return jsonify({"retried": n, "queue": queue_mod.snapshot()})
 
 
 @app.post("/api/queue/run")
+@_readonly_guard
 def api_queue_run():
     """立刻跑一条排队中的任务（后台会自动接着跑剩下的）。"""
     job_id = run_queue_once()
@@ -1234,6 +1300,7 @@ def api_feeds_get():
 
 
 @app.post("/api/feeds")
+@_readonly_guard
 def api_feeds_add():
     """订阅一个 feed。body: {"url", "auto": true, "backfill": 0}"""
     data = request.get_json(force=True, silent=True) or {}
@@ -1253,6 +1320,7 @@ def api_feeds_add():
 
 
 @app.post("/api/feeds/discover")
+@_readonly_guard
 def api_feeds_discover():
     """订阅前预览 feed。body: {"url"}"""
     data = request.get_json(force=True, silent=True) or {}
@@ -1275,6 +1343,7 @@ def api_feeds_update(fid: str):
 
 
 @app.delete("/api/feeds/<fid>")
+@_readonly_guard
 def api_feeds_delete(fid: str):
     try:
         feeds_mod.remove(fid)
@@ -1284,6 +1353,7 @@ def api_feeds_delete(fid: str):
 
 
 @app.post("/api/feeds/check")
+@_readonly_guard
 def api_feeds_check():
     """立刻检查所有订阅。body: {"enqueue": true} 发现新单集时是否入队。"""
     data = request.get_json(force=True, silent=True) or {}
@@ -1294,6 +1364,7 @@ def api_feeds_check():
 
 
 @app.post("/api/feeds/settings")
+@_readonly_guard
 def api_feeds_settings():
     """保存订阅调度设置（存在 settings.json 的 subscriptions 段）。body: {...}"""
     data = request.get_json(force=True, silent=True) or {}

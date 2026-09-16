@@ -48,6 +48,41 @@ function toast(html) {
   clearTimeout(toastTimer); toastTimer = setTimeout(() => $("toast").classList.remove("show"), 6000);
 }
 
+/* ---------------- 只读镜像（公网部署）----------------
+   服务器上那台只负责「看」：生成 / 转写 / AI 助手都在 Mac 上跑（算力与密钥都留在家里）。
+   启动时问一次 /api/config，然后收起输入框、悬浮球与发布入口，并写清原因 ——
+   比让人点一个必然 503 的按钮诚实。 */
+let serverConfig = { readonly: false, hint: "", assistant: true, publish: true };
+
+function applyServerConfig(cfg) {
+  serverConfig = Object.assign({ readonly: false, hint: "", assistant: true, publish: true }, cfg || {});
+  const ro = serverConfig.readonly;
+  const note = serverConfig.hint || "这是一台只读镜像：请在 Mac 上生成文章。";
+  const url = $("url"), go = $("go");
+  if (url) {
+    url.disabled = ro;
+    url.placeholder = ro ? "只读镜像：请在 Mac 上提交链接"
+                         : "粘贴播客或视频链接…（一次可粘多条；连标题说明一起粘也没关系）";
+  }
+  if (go) { go.disabled = ro; go.textContent = ro ? "只读镜像" : "生成文章"; }
+  if (ro && $("hint")) $("hint").textContent = "📖 " + note;
+  if ($("nbtn")) { $("nbtn").disabled = ro; $("nbtn").title = ro ? note : ""; }
+  if (!serverConfig.assistant) {          // 这台机器没有密钥，助手入口直接不出现
+    $("fab").classList.remove("show");
+    $("selbtn").classList.remove("show");
+  }
+  syncFab();
+  return serverConfig;
+}
+
+async function loadServerConfig() {
+  try {
+    return applyServerConfig(await (await fetch("/api/config")).json());
+  } catch (e) {
+    return applyServerConfig(null);       // 拿不到就当普通本机模式，别把界面弄瘸
+  }
+}
+
 /* ---------------- 从粘贴的文本里抠链接 ----------------
    分享按钮复制出来的内容基本都带着说明文字：
 
@@ -166,6 +201,7 @@ function startBusyWatch() {
 }
 
 function updateComposerHint() {
+  if (serverConfig.readonly) { $("go").textContent = "只读镜像"; $("go").disabled = true; return; }
   const n = urlsIn($("url").value).length;
   const btn = $("go");
   if (n > 1) {
@@ -2170,7 +2206,8 @@ function fabShouldShow() {
   // 有文章在读、设置里没关掉助手、且抽屉没开着时才出现。
   // 把「抽屉开着时不显示」放在这里而不是只靠 CSS：一处判断，测试也好断言
   // （CSS 那句 body.assistopen .fab 保留，作为双保险）。
-  return $("result").classList.contains("show") && assistEnabled && !assistOpen;
+  return $("result").classList.contains("show") && assistEnabled && !assistOpen
+    && serverConfig.assistant !== false;
 }
 
 function syncFab() {
@@ -2662,6 +2699,7 @@ async function pollCurrentJob() {
   } catch (e) { /* 静默 */ }
 }
 
+loadServerConfig();                                          // 先问这台机器允许做什么（只读镜像？）
 loadLibrary().then(() => { if (routeDir()) applyRoute(); });   // 地址栏给了文章就先还原那一篇
 loadMcp();
 loadSettings();

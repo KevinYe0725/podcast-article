@@ -50,7 +50,7 @@ fi
 # 注：runview.test.js 需要真实下载/转写（依赖网络），不进 CI，需要时手动跑
 # 每个测试都套 timeout：jsdom 里某个 promise 挂住时，宁可红掉也不要让 CI 卡死
 # 调试时可以只跑其中一个：PA_UI_TESTS=assistant.test.js bash run.sh
-DEFAULT_TESTS="close.test.js reader.test.js mobile.test.js modal.test.js sidebar.test.js delete.test.js audio.test.js
+DEFAULT_TESTS="close.test.js reader.test.js readonly.test.js mobile.test.js modal.test.js sidebar.test.js delete.test.js audio.test.js
 search.test.js status.test.js queue.test.js feeds.test.js export.test.js nav.test.js
 assistant.test.js"
 FAILED=0

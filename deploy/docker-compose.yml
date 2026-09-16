@@ -1,0 +1,51 @@
+# 公网只读镜像：Caddy（HTTPS + 密码）+ 应用
+#
+# 目录约定（服务器上）：
+#   /srv/podcast-article/            仓库（git clone 或 rsync 上来的）
+#   /srv/podcast-article/data/       持久数据：output/、library.json、queue.json、订阅、Caddy 证书
+#
+# 用法：
+#   cd /srv/podcast-article/deploy
+#   docker compose up -d --build
+#   docker compose logs -f caddy        # 看证书有没有签下来
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: podcast-article:local
+    restart: unless-stopped
+    environment:
+      # 只读镜像：生成 / 转写 / 助手 / 发布 全部拦住（算力与密钥都在 Mac 上）
+      PA_READONLY: "1"
+      PA_SCHEDULER: "0"
+    # 上游在容器网络里是 app:8787（宿主安装则是 127.0.0.1:8788，见 Caddyfile 默认值）
+    volumes:
+      - ../data:/data
+    # 只绑本机，公网唯一的入口是 Caddy 的 443
+    ports:
+      - "127.0.0.1:8788:8787"
+    mem_limit: 512m
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      PA_APP_UPSTREAM: app:8787
+      PA_LOG_DIR: /data
+    ports:
+      - "80:80"       # 只用于 Let's Encrypt 的 HTTP-01 验证与跳转
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # 证书必须持久化，否则每次重启都重新签发（Let's Encrypt 有频率限制）
+      - ../data/caddy:/data
+      - ../data/caddy-config:/config
+    depends_on:
+      - app
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }

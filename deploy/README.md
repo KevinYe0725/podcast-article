@@ -1,0 +1,122 @@
+# 部署到服务器（公网只读镜像）
+
+这台机器**只负责看**：文章、检索、时间戳回听、导出。生成与语音转写在你自己的 Mac 上跑
+（mlx-whisper 走 Apple Silicon GPU，约 38x 实时；服务器的 2 核 CPU 转写要十几小时）。
+
+```
+手机 / 电脑浏览器 ──HTTPS + 密码──▶ Caddy ──▶ Flask（只读镜像）──▶ /srv/podcast-article/data/
+```
+
+实际部署的一台：阿里云 ECS，Alibaba Cloud Linux 4，2 vCPU / 1.8G / 40G，域名
+`120-27-128-11.sslip.io`（sslip.io 把 IP 的点写成横杠即可，不用买域名也不用配 DNS）。
+
+## 为什么是"只读"
+
+- **转写要算力**：2 核跑 `faster-whisper large-v3` 大约 0.1x 实时量级，100 分钟节目要十几小时。
+- **密钥要留在家里**：公网机器上不放 `DEEPSEEK_API_KEY` / `NOTION_TOKEN`。
+- `PA_READONLY=1` 会拦住所有「跑活 / 要密钥 / 写文件」的接口（31 个端点），前端也会收起
+  输入框、助手悬浮球与发布入口，并写明「请在 Mac 上操作」。
+
+## 服务器上的最终形态（宿主安装，不用 Docker）
+
+```
+/srv/podcast-article/                 代码（root 属主 + 全局可读，服务用户改不了）
+  .venv/                              Python 3.11 虚拟环境
+  deploy/                             Dockerfile / compose / Caddyfile（容器方案备用）
+  data/                               持久数据（podcast 用户可写）
+    output/<每集>/                     article.md、meta.json、transcript.*、cover.*、音频
+    library.json
+/usr/local/bin/caddy                  Caddy 静态二进制（v2.11.4）
+/etc/caddy/Caddyfile                  站点配置（HTTPS + basic auth）
+/etc/systemd/system/podcast-article.service
+/etc/systemd/system/caddy.service
+```
+
+两个服务都 `systemctl enable --now`，开机自启。
+
+## 首次部署的实际步骤
+
+```bash
+# ---------- 在 Mac 上 ----------
+# 0) 专用部署密钥（不动其他项目的密钥）
+ssh-keygen -t ed25519 -N "" -f ~/.ssh/podcast_server -C podcast-article-deploy
+# 把 ~/.ssh/podcast_server.pub 贴到服务器 /root/.ssh/authorized_keys
+
+# 1) 传代码（排除个人数据与密钥；注意 macOS 自带 rsync 没有 --chown）
+rsync -az --delete \
+  --exclude .git --exclude .venv --exclude output --exclude node_modules \
+  --exclude __pycache__ --exclude .env --exclude settings.json \
+  --exclude library.json --exclude queue.json --exclude feeds.json \
+  --exclude mcp_servers.json --exclude data \
+  -e "ssh -i ~/.ssh/podcast_server" ./ root@SERVER:/srv/podcast-article/
+
+# 2) 传文章数据（先不传音频，快）
+ssh root@SERVER 'mkdir -p /srv/podcast-article/data/output'
+rsync -az --exclude 'audio.*' -e "ssh -i ~/.ssh/podcast_server" \
+  output/ root@SERVER:/srv/podcast-article/data/output/
+rsync -az -e "ssh -i ~/.ssh/podcast_server" \
+  library.json root@SERVER:/srv/podcast-article/data/library.json
+
+# 3) Caddy：服务器直连 GitHub 只有 25KB/s（17MB 要 11 分钟），所以在 Mac 上下好再传
+curl -sL -o /tmp/caddy-linux.tar.gz \
+  https://github.com/caddyserver/caddy/releases/download/v2.11.4/caddy_2.11.4_linux_amd64.tar.gz
+scp -i ~/.ssh/podcast_server /tmp/caddy-linux.tar.gz root@SERVER:/tmp/
+
+# ---------- 在服务器上 ----------
+cd /tmp && tar xzf caddy-linux.tar.gz caddy && install -m 0755 caddy /usr/local/bin/caddy
+
+# 4) Python 依赖（走阿里云 PyPI 镜像，PyPI 直连很慢）
+python3 -m venv /srv/podcast-article/.venv
+/srv/podcast-article/.venv/bin/pip install -i https://mirrors.aliyun.com/pypi/simple/ /srv/podcast-article/
+
+# 5) 权限：rsync 保留了 macOS 上 600 的权限，服务用户会读不到（实测踩过）
+chown -R root:root /srv/podcast-article && chmod -R u+rwX,go+rX /srv/podcast-article
+chown -R podcast:podcast /srv/podcast-article/data
+
+# 6) Caddy 密码哈希（不要配 email，填 example.com 会被 Let's Encrypt 拒）
+caddy hash-password --plaintext '你的密码'
+cp /srv/podcast-article/deploy/Caddyfile /etc/caddy/Caddyfile   # 把哈希填进 basic_auth
+
+# 7) systemd（见下），然后
+systemctl enable --now podcast-article caddy
+```
+
+`podcast-article.service` 的要点：`User=podcast`、`PA_READONLY=1`、`PA_SCHEDULER=0`、
+`PA_*` 全部指向 `/srv/podcast-article/data/`、`ProtectSystem=full` + `ReadWritePaths=/srv/podcast-article/data`。
+
+## 日常更新
+
+```bash
+# 代码 + 数据一起推，然后重启应用（脚本见 scripts/deploy-server.sh）
+bash scripts/deploy-server.sh             # 默认 root@120.27.128.11
+```
+
+只改前端也要重启（前端是静态文件，但改的是仓库里的副本）：
+
+```bash
+ssh root@SERVER 'systemctl restart podcast-article'
+```
+
+## 音频保留策略
+
+音频每集约 40MB（8 集已 295MB），磁盘 40G。只保留最近 N 集的音频，文章与文字稿永久保留：
+
+```bash
+cd /srv/podcast-article/data/output
+ls -1dt */ | tail -n +21 | while read d; do rm -f "$d"/audio.*; done   # 保留最近 20 集
+```
+
+建议进 crontab 每周跑一次。删掉音频后文章照常阅读，只是时间戳点不开播放。
+
+## 排障（这几条都是实测踩到的）
+
+| 现象 | 原因与处理 |
+| --- | --- |
+| `certificate obtained successfully` 之后就通 | 443 必须是通的（Caddy 会用 TLS-ALPN-01）；80 只用于跳转 |
+| Let's Encrypt 报 `invalidContact` | Caddyfile 里配了 `email`，且域名是 example.com 之类的保留域；删掉 email 即可 |
+| 502 Bad Gateway | 上游地址不对：宿主安装是 `127.0.0.1:8788`，容器里是 `app:8787`（用 `{$PA_APP_UPSTREAM}` 占位） |
+| 应用起不来、日志 `Permission denied` | rsync 过来的文件是 600；`chmod -R u+rwX,go+rX /srv/podcast-article` |
+| `docker pull` 卡住 / timeout | 这台服务器的 Docker Hub 不通（`registry-1.docker.io` 超时），所以用宿主安装 |
+| 页面能开但进度条不动 | 反代没关 SSE 缓冲：确认 `flush_interval -1` |
+| 生成按钮点了报 503 | 正常 —— 只读镜像，请在 Mac 上生成 |
+| 音频 404 | 音频还没同步，或被保留策略清理 |
