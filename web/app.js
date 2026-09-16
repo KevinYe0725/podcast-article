@@ -289,6 +289,8 @@ function finishJob(d) {
     syncReadDone();
     loadLibrary();
     collapseRunview();
+    resetAssist();
+    syncFab();
   } else {
     setStage(-1, null);
     $("errline").textContent = "✕ " + (d.error || "任务失败");
@@ -356,6 +358,7 @@ async function pushArticle() {
 const SECRET_KEYS = ["DEEPSEEK_API_KEY", "DEEPSEEK_MODEL", "NOTION_TOKEN", "NOTION_DATABASE_ID", "NOTION_PARENT_PAGE_ID"];
 
 async function openSettings(tab) {
+  closeAssist();                 // 抽屉会盖住设置页
   $("main").style.display = "none";
   $("settings").style.display = "block";
   window.scrollTo({ top: 0 });
@@ -427,6 +430,16 @@ async function loadSettings() {
   $("sub_interval").value = sub.interval_minutes ?? 120;
   $("sub_auto").checked = sub.auto_generate !== false;
   renderDestOptions(sub.auto_dest || "");
+
+  // 阅读助手
+  const as = d.assistant || {};
+  assistEnabled = as.enabled !== false;
+  $("as_enabled").checked = assistEnabled;
+  $("as_web").checked = as.web_default !== false;
+  $("aweb_toggle").checked = as.web_default !== false;
+  syncFab();
+  loadSearchService();
+
   loadUsageBox();
 
   applyDefaultsToComposer(g);
@@ -505,6 +518,10 @@ async function saveSettings() {
       interval_minutes: parseInt($("sub_interval").value, 10) || 0,
       auto_generate: $("sub_auto").checked,
       auto_dest: $("sub_dest").value,
+    },
+    assistant: {
+      enabled: $("as_enabled").checked,
+      web_default: $("as_web").checked,
     },
     secrets: {},
   };
@@ -589,6 +606,7 @@ function playAt(sec, el, dir) {
   document.querySelectorAll(".ts.active").forEach((n) => n.classList.remove("active"));
   if (el) el.classList.add("active");
   $("player").classList.add("show");
+  syncFab();                 // 播放条升起，悬浮球要往上让位
 }
 
 function togglePlay() {
@@ -608,6 +626,7 @@ function closePlayer() {
   a.pause();
   $("player").classList.remove("show");
   document.querySelectorAll(".ts.active").forEach((n) => n.classList.remove("active"));
+  syncFab();
 }
 
 /** 文字稿里的时间戳也做成可点 */
@@ -875,9 +894,12 @@ function closeResult() {
   curWorkdir = null; curUrl = null; curUsage = null;
   hidePopmenus();
   renderCostPill();
+  if (assistOpen) closeAssist();
+  $("selbtn").classList.remove("show");
   audioDir = null;
   pa().pause();
   pa().removeAttribute("src");
+  syncFab();
   if (fromLib) $("lib").scrollIntoView({ behavior: "smooth", block: "start" });
   else $("url").focus();
 }
@@ -1468,6 +1490,22 @@ async function openEpisode(dirEnc) {
   syncReadButton();
   syncReadDone();
   autoMarkReading(dir);
+  // 换了一篇文章：助手里的上下文跟着换，历史问答也重新载入
+  if (assistOpen) { resetAssist(); loadAssistHistory(); }
+  syncFab();
+}
+
+/** 换文章时把助手里上一集的痕迹清掉（否则会拿旧片段回答新文章的问题） */
+function resetAssist() {
+  stopAssistStream();
+  assistAskId = null;
+  setAssistSelection("");
+  $("aq").value = "";
+  $("aanswerbox").style.display = "none";
+  $("asources").style.display = "none";
+  $("aintro").style.display = "block";
+  $("astatus").textContent = "";
+  $("agobtn").disabled = false;
 }
 
 // 注：输入框的 Enter / input 处理统一放在文件末尾的初始化段（见 autoGrow 的注释）
@@ -1476,14 +1514,24 @@ document.addEventListener("keydown", (e) => {
 });
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
-  // 分层退出：弹窗 > 下拉菜单 > 设置 > 文字稿 > 文章 > 侧边栏抽屉
+  // 分层退出：弹窗 > 下拉菜单 > 阅读助手 > 侧边栏抽屉 > 设置 > 文字稿 > 文章
   if ($("modal").classList.contains("show")) { closeModal(); return; }
   if (document.querySelector(".popmenu:not([hidden])")) { hidePopmenus(); return; }
+  if (assistOpen) { closeAssist(); return; }
   if ($("appside").classList.contains("open")) { closeSide(); return; }
   if ($("settings").style.display === "block") { closeSettings(); return; }
   if ($("result").classList.contains("withTranscript")) { toggleTranscript(); return; }
   if ($("result").classList.contains("show")) closeResult();
 });
+
+// 选中文字 → 浮出「深挖这段」。用 mouseup/keyup 而不是 selectionchange：
+// selectionchange 在拖动过程中会连续触发，按钮会跟着乱抖。
+document.addEventListener("mouseup", onArticleSelectionChange);
+document.addEventListener("keyup", (e) => { if (e.key.startsWith("Arrow") || e.key === "Shift") onArticleSelectionChange(); });
+document.addEventListener("mousedown", (e) => {
+  if (!e.target.closest("#selbtn")) $("selbtn").classList.remove("show");
+});
+window.addEventListener("scroll", () => $("selbtn").classList.remove("show"), { passive: true });
 // 时间戳回听（只绑定一次）：文章/文字稿里的时间戳靠这里冒泡上来处理。
 // 搜索结果里的时间戳不用这条路（它在 .sr 卡片内部，冒泡会顺带打开文章），
 // 而是内联调用 playFromTs()，见 searchCardHTML。
@@ -1510,8 +1558,7 @@ pa().addEventListener("timeupdate", () => {
 });
 pa().addEventListener("loadedmetadata", () => { $("ptotal").textContent = fmtClock(pa().duration); });
 pa().addEventListener("play", () => setPlayIcon(true));
-pa().addEventListener("pause", () => setPlayIcon(false));
-pa().addEventListener("error", () => {
+pa().addEventListener("pause", () => setPlayIcon(false));pa().addEventListener("error", () => {
   if (pa().src) toast("⚠ 这一集没有本地音频（可能已被删除）");
   closePlayer();
 });
@@ -1940,6 +1987,423 @@ async function checkFeeds(btn) {
   }
 }
 
+/* ================= AI 阅读助手（悬浮球 / 选中深挖 / 右侧抽屉） =================
+   设计意图：读文章时卡住的地方，不该切出去另开一个对话窗口。
+   选中 → 就地提问 → 依据（原文片段带时间戳，可点回听）+ 网络结果 + 流式解读。
+   原文片段的时间戳能点着回听是这个功能相对「通用聊天机器人」的核心差别。 */
+
+let assistOpen = false, assistES = null, assistAskId = null;
+let assistSelection = "", assistDir = null;
+
+function fabShouldShow() {
+  // 有文章在读、设置里没关掉助手、且抽屉没开着时才出现。
+  // 把「抽屉开着时不显示」放在这里而不是只靠 CSS：一处判断，测试也好断言
+  // （CSS 那句 body.assistopen .fab 保留，作为双保险）。
+  return $("result").classList.contains("show") && assistEnabled && !assistOpen;
+}
+let assistEnabled = true;
+
+function syncFab() {
+  $("fab").classList.toggle("show", fabShouldShow());
+  document.body.classList.toggle("assistopen", assistOpen);
+  document.body.classList.toggle("withplayer", $("player").classList.contains("show"));
+}
+
+function openAssist(preset) {
+  const ex = $("assist");
+  if (ex.classList.contains("show")) return;
+  assistOpen = true;
+  assistDir = curWorkdir;
+  ex.classList.add("show");
+  syncFab();
+  if (preset && preset.selection !== undefined) setAssistSelection(preset.selection || "");
+  loadAssistHistory();
+  setTimeout(() => $("aq").focus(), 60);
+}
+
+function closeAssist() {
+  assistOpen = false;
+  stopAssistStream();
+  $("assist").classList.remove("show");
+  syncFab();
+}
+
+function toggleAssist() {
+  if (assistOpen) closeAssist();
+  // 悬浮球兜底：拿不到选区（例如在别处点了鼠标）时用最近一次记住的选文
+  else openAssist({ selection: currentArticleSelection() || lastSelection });
+}
+
+/** 抽屉里当前展示的「选中原文」。传空串表示清掉（之后只按问题回答）。 */
+function setAssistSelection(text) {
+  assistSelection = (text || "").trim();
+  const box = $("aquote");
+  if (assistSelection) {
+    $("aqtext").textContent = assistSelection;
+    box.style.display = "block";
+  } else {
+    box.style.display = "none";
+    lastSelection = "";      // 一起清掉，否则点悬浮球又会把刚才那段捞回来
+  }
+}
+
+/** 用户在文章/文字稿里选中的文字（只认正文区域，避免把界面文字也带走） */
+function currentArticleSelection() {
+  const sel = window.getSelection ? window.getSelection() : null;
+  if (!sel || sel.isCollapsed || !sel.rangeCount) return "";
+  const text = String(sel.toString() || "").trim();
+  if (!text) return "";
+  const node = sel.getRangeAt(0).commonAncestorContainer;
+  const el = node.nodeType === 1 ? node : node.parentElement;
+  if (!el || !el.closest("#article, #transcript")) return "";
+  return text.slice(0, 3000);
+}
+
+/* ---- 选中后浮出「深挖这段」按钮 ---- */
+let selBtnTimer = null;
+let lastSelection = "";     // 浮出按钮时就把选中的文字存下来
+
+function positionSelBtn() {
+  const btn = $("selbtn");
+  const sel = window.getSelection ? window.getSelection() : null;
+  if (!sel || sel.isCollapsed || !sel.rangeCount) { btn.classList.remove("show"); return; }
+  const range = sel.getRangeAt(0);
+  const node = range.commonAncestorContainer;
+  const el = node.nodeType === 1 ? node : node.parentElement;
+  if (!el || !el.closest("#article, #transcript")) { btn.classList.remove("show"); return; }
+  const rect = range.getBoundingClientRect ? range.getBoundingClientRect() : null;
+  if (!rect || (!rect.width && !rect.height)) { btn.classList.remove("show"); return; }
+  // 在这里就把文本存下来：点按钮时浏览器可能已经把选区收掉了
+  // （mousedown 落在按钮上会折叠选区），到那时再读 getSelection() 会拿到空串。
+  lastSelection = String(sel.toString() || "").trim().slice(0, 3000);
+  if (!lastSelection) { btn.classList.remove("show"); return; }
+  btn.classList.add("show");
+  const top = rect.top + window.scrollY - btn.offsetHeight - 8;
+  const left = rect.left + window.scrollX + rect.width / 2 - btn.offsetWidth / 2;
+  btn.style.top = Math.max(8, top) + "px";
+  btn.style.left = Math.max(8, Math.min(left, window.innerWidth - btn.offsetWidth - 8)) + "px";
+}
+
+function onArticleSelectionChange() {
+  clearTimeout(selBtnTimer);
+  // 等选区稳定（拖动选取会连续触发）
+  selBtnTimer = setTimeout(positionSelBtn, 130);
+}
+
+/** 点浮出按钮：把选中的文字带进抽屉并直接开问 */
+function askSelection() {
+  const text = lastSelection || currentArticleSelection();
+  $("selbtn").classList.remove("show");
+  openAssist({ selection: text });
+  if (text) { setAssistSelection(text); askAI(); }
+}
+
+/* ---- 提问 ---- */
+function askAI() {
+  if (!curWorkdir) { toast("⚠ 先打开一篇文章"); return; }
+  const question = ($("aq").value || "").trim();
+  const selection = assistSelection || currentArticleSelection();
+  if (!selection && !question) {
+    toast("⚠ 先在文章里选一段文字，或者写一个问题");
+    $("aq").focus();
+    return;
+  }
+  assistDir = curWorkdir;
+  setAssistSelection(selection);
+  renderAssistAnswer("", true);
+  $("asources").style.display = "none";
+  $("agobtn").disabled = true;
+  $("astatus").textContent = "正在找原文依据…";
+
+  fetch("/api/ask", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      dir: curWorkdir, selection, question,
+      web: $("aweb_toggle").checked,
+    }),
+  }).then(async (resp) => {
+    const d = await resp.json();
+    if (!resp.ok) {
+      $("agobtn").disabled = false;
+      $("astatus").textContent = "";
+      renderAssistAnswer("", false);
+      renderAssistError(d.error || "提问失败");
+      return;
+    }
+    assistAskId = d.id;
+    connectAssistStream(d.id);
+  }).catch((e) => {
+    $("agobtn").disabled = false;
+    $("astatus").textContent = "";
+    renderAssistAnswer("", false);
+    renderAssistError(String(e));
+  });
+}
+
+function connectAssistStream(id) {
+  stopAssistStream();
+  let text = "";
+  const useSSE = typeof EventSource !== "undefined";
+  const onDelta = (t) => {
+    text += t;
+    renderAssistAnswer(text, true);
+  };
+  const finish = (d) => {
+    $("agobtn").disabled = false;
+    $("astatus").textContent = "";
+    renderAssistAnswer(text || d.answer || "", false);
+    if (d.error && !(text || d.answer)) renderAssistError(d.error);
+    if (d.sources) renderAssistSources(d.sources);
+    loadAssistHistory();
+  };
+
+  if (useSSE) {
+    assistES = new EventSource("/api/ask/" + encodeURIComponent(id) + "/stream");
+    assistES.addEventListener("sources", (e) => {
+      $("astatus").textContent = "正在写解读…";
+      renderAssistSources(JSON.parse(e.data));
+    });
+    assistES.addEventListener("delta", (e) => onDelta(JSON.parse(e.data).text || ""));
+    assistES.addEventListener("done", (e) => {
+      stopAssistStream();
+      finish(JSON.parse(e.data));
+    });
+    assistES.addEventListener("error", (e) => {
+      // 服务端的 error 事件带 data，连接层面的错误没有
+      if (e && e.data) { stopAssistStream(); finish(Object.assign({ error: "提问失败" }, JSON.parse(e.data))); }
+    });
+    assistES.onerror = () => {              // SSE 断了就退回轮询
+      if (!assistES) return;
+      stopAssistStream();
+      pollAssist(id, text, finish, onDelta);
+    };
+  } else {
+    pollAssist(id, text, finish, onDelta);
+  }
+}
+
+/** SSE 不可用时的兜底：轮询同一个提问任务，增量靠已渲染文本的长度推算 */
+function pollAssist(id, text, finish, onDelta) {
+  let seen = text.length;
+  const timer = setInterval(async () => {
+    try {
+      const d = await (await fetch("/api/ask/" + encodeURIComponent(id))).json();
+      const full = d.answer || "";
+      if (full.length > seen) { onDelta(full.slice(seen)); seen = full.length; }
+      if (d.sources) renderAssistSources(d.sources);
+      if (d.status !== "running") {
+        clearInterval(timer);
+        finish({ answer: full, error: d.error || "", sources: d.sources });
+      }
+    } catch (e) {
+      clearInterval(timer);
+      finish({ answer: text, error: String(e) });
+    }
+  }, 900);
+}
+
+function stopAssistStream() {
+  if (assistES) { assistES.close(); assistES = null; }
+}
+
+/* ---- 渲染 ---- */
+function renderAssistAnswer(md, streaming) {
+  const box = $("aanswer");
+  $("aanswerbox").style.display = "block";
+  $("aintro").style.display = "none";
+  box.classList.toggle("streaming", !!streaming);
+  box.innerHTML = mdLite(md);
+  if (streaming) $("abody").scrollTop = $("abody").scrollHeight;
+}
+
+function renderAssistError(msg) {
+  const box = $("aanswer");
+  $("aanswerbox").style.display = "block";
+  $("aintro").style.display = "none";
+  box.classList.remove("streaming");
+  box.innerHTML = `<p class="aerr">✕ ${esc(msg)}</p>`;
+}
+
+function renderAssistSources(src) {
+  const passages = (src && src.passages) || [];
+  const web = src && src.web;
+  const wrap = $("asources");
+
+  if (passages.length) {
+    $("apcount").textContent = `${passages.length} 段`;
+    $("apassages").innerHTML = passages.map((p) => `
+      <div class="apass">
+        ${p.ts ? `<a class="ts" data-sec="${tsToSec(p.ts)}" data-dir="${esc(assistDir || curWorkdir || "")}"
+              title="跳到音频此处" onclick="event.preventDefault();playFromTs(this)">[${esc(p.ts)}]</a>` : ""}
+        <span class="aptext">${esc(p.text || "")}</span>
+      </div>`).join("");
+  } else {
+    $("apcount").textContent = "没找到相关段落";
+    $("apassages").innerHTML = `<div class="anoweb">这一集的文字稿里没有和这段明显相关的段落，下面的解读只能是背景补充。</div>`;
+  }
+
+  if (web) {
+    $("aweblabel").style.display = "flex";
+    if (web.ok && (web.results || []).length) {
+      $("awebcount").textContent = `${web.results.length} 条 · ${web.provider || ""}`;
+      $("aweb").innerHTML = web.results.map((r) => `
+        <a class="aweb" href="${esc(r.url)}" target="_blank" rel="noopener noreferrer">
+          <span class="awt">${esc(r.title || r.url)}</span>
+          <span class="awu">${esc(r.url)}</span>
+          ${r.snippet ? `<span class="aws">${esc(r.snippet)}</span>` : ""}
+        </a>`).join("");
+    } else {
+      $("awebcount").textContent = "未取到";
+      $("aweb").innerHTML = `<div class="anoweb">这次没联网成功（${esc(web.error || "原因未知")}）——
+        解读只基于播客原文。可以在设置里换一个搜索服务。</div>`;
+    }
+  }
+  wrap.style.display = "block";
+}
+
+/** 极简 markdown → HTML（抽屉里够用：段落 / 粗体 / 行内码 / 引用 / 列表 / 链接 / 时间戳） */
+function mdLite(md) {
+  if (!md) return "";
+  const inline = (s) => esc(s)
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g,
+      '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
+    .replace(/\[(\d{1,2}:\d{2}:\d{2})\]/g,
+      (_m, t) => `<a class="ts" data-sec="${tsToSec(t)}" data-dir="${esc(assistDir || curWorkdir || "")}"
+        title="跳到音频此处" onclick="event.preventDefault();playFromTs(this)">[${t}]</a>`);
+  const out = [];
+  let para = [], list = [];
+  const flushP = () => { if (para.length) { out.push(`<p>${inline(para.join(" "))}</p>`); para = []; } };
+  const flushL = () => { if (list.length) { out.push(`<ul>${list.map((li) => `<li>${inline(li)}</li>`).join("")}</ul>`); list = []; } };
+  for (const raw of md.split("\n")) {
+    const line = raw.replace(/\s+$/, "");
+    if (!line.trim()) { flushP(); flushL(); continue; }
+    if (/^>\s?/.test(line)) { flushP(); flushL(); out.push(`<blockquote>${inline(line.replace(/^>\s?/, ""))}</blockquote>`); continue; }
+    if (/^\s*[-*]\s+/.test(line)) { flushP(); list.push(line.replace(/^\s*[-*]\s+/, "")); continue; }
+    if (/^#{1,6}\s+/.test(line)) { flushP(); flushL(); out.push(`<p><strong>${inline(line.replace(/^#{1,6}\s+/, ""))}</strong></p>`); continue; }
+    flushL(); para.push(line.trim());
+  }
+  flushP(); flushL();
+  return out.join("");
+}
+
+/* ---- 历史问答 ---- */
+function toggleAssistHistory() {
+  const box = $("ahistory");
+  const show = box.style.display === "none";
+  box.style.display = show ? "block" : "none";
+  if (show) loadAssistHistory();
+}
+
+async function loadAssistHistory() {
+  if (!curWorkdir) return;
+  try {
+    const d = await (await fetch("/api/qa?dir=" + encodeURIComponent(curWorkdir))).json();
+    const items = d.items || [];
+    $("ahcount").textContent = items.length ? `${items.length} 条（最多留 ${d.max} 条）` : "还没有";
+    $("ahlist").innerHTML = items.length
+      ? items.map((it) => `
+        <div class="ahitem" data-id="${esc(it.id)}">
+          <div class="ahq" onclick="toggleAhItem(this)">${esc(it.question || it.selection || "(无标题)")}</div>
+          <div class="ahs">${esc((it.answer || "").slice(0, 300))}</div>
+          <div class="ahacts">
+            <button onclick="restoreAssistItem('${esc(it.id)}')">重新查看</button>
+            <button onclick="deleteAssistItem('${esc(it.id)}')">删除</button>
+          </div>
+        </div>`).join("")
+      : `<div class="anoweb">这一集还没有问答记录。</div>`;
+  } catch (e) { /* 服务不可用时静默 */ }
+}
+
+function toggleAhItem(el) { el.parentElement.classList.toggle("open"); }
+
+async function restoreAssistItem(id) {
+  if (!curWorkdir) return;
+  const d = await (await fetch("/api/qa?dir=" + encodeURIComponent(curWorkdir))).json();
+  const it = (d.items || []).find((x) => x.id === id);
+  if (!it) return;
+  setAssistSelection(it.selection || "");
+  $("aq").value = it.question || "";
+  $("aanswerbox").style.display = "block";
+  $("aintro").style.display = "none";
+  renderAssistAnswer(it.answer || "", false);
+  renderAssistSources({ passages: it.passages || [], web: it.web });
+  $("abody").scrollTop = 0;
+}
+
+async function deleteAssistItem(id) {
+  if (!curWorkdir) return;
+  await fetch(`/api/qa/${encodeURIComponent(curWorkdir)}/${encodeURIComponent(id)}`, { method: "DELETE" });
+  loadAssistHistory();
+}
+
+function clearAssistHistory() {
+  if (!curWorkdir) return;
+  showModal({
+    title: "清空这一集的问答记录？",
+    desc: "只是删掉阅读助手里的问答，文章和文字稿不受影响。",
+    withInput: false, danger: true, okText: "清空",
+    onOk: async () => {
+      await fetch("/api/qa/" + encodeURIComponent(curWorkdir), { method: "DELETE" });
+      loadAssistHistory();
+      toast("✦ 已清空");
+    },
+  });
+}
+
+/** 设置页的联网搜索服务状态 */
+async function loadSearchService() {
+  const box = $("as_providers");
+  if (!box) return;
+  try {
+    const d = await (await fetch("/api/search-service")).json();
+    const provs = d.providers || {};
+    box.innerHTML = Object.entries(provs).map(([name, p]) => `
+      <div class="inforow">
+        <span class="k">${esc(p.label || name)}${p.needs_key ? "（需密钥）" : "（免密钥）"}</span>
+        <span class="v">${p.configured ? (name === d.default ? "✓ 当前使用" : "可用") : "未配置"}</span>
+      </div>`).join("");
+    $("as_state").textContent = d.enabled ? `当前：${d.default}` : "已彻底关闭";
+    $("as_state").className = "fstate" + (d.enabled ? " ok" : "");
+  } catch (e) {
+    box.innerHTML = `<div class="inforow"><span class="k">读取失败</span><span class="v">${esc(String(e))}</span></div>`;
+  }
+}
+
+async function testSearchService(btn) {
+  const out = $("as_testres");
+  btn.disabled = true;
+  out.className = "vres"; out.textContent = "搜索中…";
+  try {
+    const typed = { TAVILY_API_KEY: ($("as_tavily").value || "").trim(),
+                    SERPER_API_KEY: ($("as_serper").value || "").trim() };
+    const secrets = Object.fromEntries(Object.entries(typed).filter(([, v]) => v));
+    if (Object.keys(secrets).length) {
+      await fetch("/api/settings", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ secrets }),
+      });
+      await loadSearchService();
+    }
+    const d = await (await fetch("/api/search-service/test", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query: "DeepSeek" }),
+    })).json();
+    if (d.ok) {
+      out.className = "vres ok";
+      out.textContent = `✓ ${d.provider} 返回 ${d.results.length} 条：` +
+        (d.results[0] ? d.results[0].title.slice(0, 40) : "");
+    } else {
+      out.className = "vres bad";
+      out.textContent = "✕ " + (d.error || "没有结果");
+    }
+  } catch (e) {
+    out.className = "vres bad"; out.textContent = "✕ " + String(e);
+  }
+  btn.disabled = false;
+}
+
 /* ---------------- 初始化 ---------------- */
 // 首页输入框是 textarea：<input type="text"> 按规范会**丢掉换行**，
 // 一次粘多条链接会被粘成一条（实测被 UI 测试抓到），所以必须用多行控件。
@@ -1971,6 +2435,16 @@ loadFeeds();
 pollCurrentJob();
 updateComposerHint();
 autoGrow();
+syncFab();
+// 抽屉里的输入框也随内容长高
+$("aq").addEventListener("input", () => {
+  const el = $("aq");
+  el.style.height = "auto";
+  el.style.height = Math.min(el.scrollHeight, 110) + "px";
+});
+$("aq").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); askAI(); }
+});
 
 // 队列页开着时轻量刷新；侧边栏计数也顺带更新
 setInterval(async () => {

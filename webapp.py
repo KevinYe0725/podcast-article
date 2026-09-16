@@ -22,6 +22,7 @@ from flask import Flask, Response, jsonify, request, send_file, send_from_direct
 from podcast_article import library as library_mod
 from podcast_article import mcp_client, mcp_config, notion
 from podcast_article import publish as publish_mod
+from podcast_article import qa_store
 from podcast_article import settings as settings_mod
 from podcast_article import usage as usage_mod
 from podcast_article import export as export_mod
@@ -40,7 +41,7 @@ app = Flask(__name__, static_folder=str(WEB_DIR), static_url_path="/static")
 _JOBS: dict[str, dict] = {}          # job_id -> 状态字典
 _JOBS_LOCK = threading.Lock()
 _ALLOWED_FILES = {"article.md", "transcript.txt", "transcript.json", "meta.json",
-                  "usage.json", "outline.json"}
+                  "usage.json", "outline.json", "qa.json"}
 
 
 def _new_job(url: str, opts: dict, *, source: str = "manual",
@@ -387,6 +388,7 @@ def api_settings_get():
         "profile": current["profile"],
         "generation": current["generation"],
         "subscriptions": current["subscriptions"],
+        "assistant": current["assistant"],
         "secrets": settings_mod.secret_status(),
         "storage": settings_mod.storage_info(),
     })
@@ -401,7 +403,8 @@ def api_settings_post():
     data = request.get_json(force=True, silent=True) or {}
     saved = settings_mod.save(profile=data.get("profile"),
                               generation=data.get("generation"),
-                              subscriptions=data.get("subscriptions"))
+                              subscriptions=data.get("subscriptions"),
+                              assistant=data.get("assistant"))
     changed = settings_mod.update_env(data.get("secrets") or {})
     if changed:
         # 让当前进程立即用上新值
@@ -411,6 +414,7 @@ def api_settings_post():
         "profile": saved["profile"],
         "generation": saved["generation"],
         "subscriptions": saved["subscriptions"],
+        "assistant": saved["assistant"],
         "secrets": settings_mod.secret_status(),
         "env_changed": changed,
     })
@@ -672,6 +676,216 @@ def api_audio(job_dir: str):
     if not path:
         return jsonify({"error": "这一集没有本地音频"}), 404
     return send_file(path, conditional=True, mimetype="audio/mp4")
+
+
+# ---------------------------------------------------------------- AI 阅读助手
+#
+# 与「生成文章」的任务分开管理：提问是**秒级**的交互，不该被单个任务锁挡住，
+# 也不该出现在批量队列里。所以另开一套 _ASKS，允许多个提问并行（都是小请求）。
+
+_ASKS: dict[str, dict] = {}
+_ASKS_LOCK = threading.Lock()
+_MAX_ASKS = 50                     # 只留最近这些提问的内存状态
+
+
+def _slim_ask(job: dict) -> dict:
+    return {
+        "id": job["id"],
+        "status": job["status"],           # running / done / error
+        "stage": job.get("stage") or "",   # retrieve（找原文）/ search（联网）/ write（写解读）
+        "answer": job.get("answer") or "",
+        "sources": job.get("sources"),
+        "error": job.get("error") or "",
+    }
+
+
+def _ask_query(selection: str, question: str) -> str:
+    """**文字稿检索**用的查询串：以选中文字为主，带上追问。
+
+    直接把两者拼起来交给检索器：选中文字往往已经是最有信息量的短语，
+    追问通常是「这是什么意思」这类没有检索价值的句子，所以追问只在选文很短时才起主导作用。
+    注意这与**联网检索**分开：联网要的是短关键词（deepdive.search_query），
+    文字稿检索要的是原句（子串命中越长越准）。
+    """
+    sel = (selection or "").strip()
+    q = (question or "").strip()
+    if len(sel) >= 8:
+        return sel if len(sel) <= 400 else sel[:400]
+    return (sel + " " + q).strip()[:400]
+
+
+@app.post("/api/ask")
+def api_ask():
+    """发起一次深挖提问。body: {"dir", "selection", "question", "web"}"""
+    data = request.get_json(force=True, silent=True) or {}
+    dir_name = (data.get("dir") or "").strip()
+    base = _safe_dir(dir_name)
+    if not base:
+        return jsonify({"error": "目录不存在"}), 404
+    selection = (data.get("selection") or "").strip()[:3000]
+    question = (data.get("question") or "").strip()[:600]
+    if not selection and not question:
+        return jsonify({"error": "先选中一段文字，或者写一个问题"}), 400
+
+    subs = settings_mod.load().get("assistant") or {}
+    use_web = data.get("web")
+    use_web = bool(subs.get("web_default", True)) if use_web is None else bool(use_web)
+
+    ask_id = uuid.uuid4().hex[:12]
+    job = {
+        "id": ask_id, "dir": dir_name, "status": "running", "stage": "retrieve",
+        "selection": selection, "question": question, "web": use_web,
+        "answer": "", "deltas": [], "sources": None, "error": "", "at": time.time(),
+    }
+    with _ASKS_LOCK:
+        _ASKS[ask_id] = job
+        if len(_ASKS) > _MAX_ASKS:                      # 丢掉最老的已结束项
+            for old in sorted((j for j in _ASKS.values() if j["status"] != "running"),
+                              key=lambda j: j["at"])[: max(0, len(_ASKS) - _MAX_ASKS)]:
+                _ASKS.pop(old["id"], None)
+
+    def log(msg: str) -> None:
+        job.setdefault("logs", []).append(msg)
+
+    def worker() -> None:
+        try:
+            # 1) 先把「依据」准备好并立刻发给界面：原文片段（可点回听）与网络结果
+            from podcast_article import deepdive, websearch
+
+            passages = deepdive.retrieve(base, _ask_query(selection, question), limit=6)
+            web = None
+            if use_web:
+                job["stage"] = "search"
+                # 联网用短关键词（并把**实际发出的那几个词**交给搜索层做相关性过滤：
+                # 拿不到相关结果时宁可退化成「这次没联网」，也不要把无关网页喂给模型）
+                terms = deepdive.query_terms(selection, question)
+                web = websearch.search(" ".join(terms), limit=5, terms=terms)
+            job["sources"] = {"passages": passages, "web": web}
+            job["stage"] = "write"
+
+            meta = {}
+            try:
+                meta = json.loads((base / "meta.json").read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                meta = {}
+
+            result = deepdive.stream_answer(
+                workdir=base,
+                selection=selection,
+                question=question,
+                title=meta.get("title") or dir_name,
+                podcast=meta.get("podcast") or "",
+                use_web=use_web,
+                log=log,
+                on_delta=lambda t: job["deltas"].append(t),
+            )
+            job["answer"] = result.get("answer") or ""
+            if result.get("error"):
+                job["error"] = result["error"]
+            if not job["answer"] and not job["error"]:
+                job["error"] = "模型没有返回内容"
+            job["sources"] = {
+                "passages": result.get("passages") or passages,
+                "web": result.get("web") if result.get("web") is not None else web,
+            }
+            if job["answer"]:
+                qa_store.append(base, selection=selection, question=question,
+                                answer=job["answer"],
+                                passages=job["sources"]["passages"],
+                                web=job["sources"]["web"], error=job["error"])
+            job["status"] = "error" if (job["error"] and not job["answer"]) else "done"
+        except Exception as exc:                        # 任何意外都要变成一句话给用户
+            job["status"] = "error"
+            job["error"] = f"{type(exc).__name__}: {exc}"[:300]
+            job.setdefault("logs", []).append(f"[error] {exc}")
+
+    threading.Thread(target=worker, daemon=True).start()
+    return jsonify({"id": ask_id, "web": use_web})
+
+
+@app.get("/api/ask/<ask_id>/stream")
+def api_ask_stream(ask_id: str):
+    """SSE：sources（依据就绪）→ delta（逐段正文）→ done/error。"""
+    def gen():
+        sent = 0
+        sent_sources = False
+        while True:
+            job = _ASKS.get(ask_id)
+            if not job:
+                yield _sse("error", {"error": "提问不存在或已过期"})
+                return
+            if job.get("sources") and not sent_sources:
+                sent_sources = True
+                yield _sse("sources", job["sources"])
+            deltas = job.get("deltas") or []
+            while sent < len(deltas):
+                yield _sse("delta", {"text": deltas[sent]})
+                sent += 1
+            if job["status"] != "running":
+                yield _sse("done", {"status": job["status"], "answer": job.get("answer") or "",
+                                    "error": job.get("error") or "",
+                                    "sources": job.get("sources")})
+                return
+            time.sleep(0.15)
+
+    return Response(gen(), mimetype="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.get("/api/ask/<ask_id>")
+def api_ask_get(ask_id: str):
+    """轮询兜底（SSE 不可用时）。"""
+    job = _ASKS.get(ask_id)
+    if not job:
+        return jsonify({"error": "提问不存在或已过期"}), 404
+    return jsonify(_slim_ask(job))
+
+
+@app.get("/api/qa")
+def api_qa_list():
+    """某一集的历史问答。GET /api/qa?dir=..."""
+    dir_name = (request.args.get("dir") or "").strip()
+    base = _safe_dir(dir_name)
+    if not base:
+        return jsonify({"error": "目录不存在"}), 404
+    return jsonify({"items": qa_store.load(base), "max": qa_store.MAX_ITEMS})
+
+
+@app.delete("/api/qa/<dir_name>/<item_id>")
+def api_qa_delete(dir_name: str, item_id: str):
+    base = _safe_dir(dir_name)
+    if not base:
+        return jsonify({"error": "目录不存在"}), 404
+    if not qa_store.remove(base, item_id):
+        return jsonify({"error": "没有这条记录"}), 404
+    return jsonify({"ok": True, "items": qa_store.load(base)})
+
+
+@app.delete("/api/qa/<dir_name>")
+def api_qa_clear(dir_name: str):
+    base = _safe_dir(dir_name)
+    if not base:
+        return jsonify({"error": "目录不存在"}), 404
+    return jsonify({"removed": qa_store.clear(base)})
+
+
+@app.get("/api/search-service")
+def api_search_service():
+    """联网搜索服务的状态（给设置页用）。"""
+    from podcast_article import websearch
+
+    return jsonify(websearch.available())
+
+
+@app.post("/api/search-service/test")
+def api_search_service_test():
+    """实测一次联网搜索。body: {"query": "..."}（可选）"""
+    from podcast_article import websearch
+
+    data = request.get_json(force=True, silent=True) or {}
+    query = (data.get("query") or "").strip() or "DeepSeek"
+    result = websearch.search(query, limit=3)
+    return jsonify(result)
 
 
 @app.get("/api/file/<job_dir>/<name>")

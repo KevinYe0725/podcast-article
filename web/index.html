@@ -235,6 +235,7 @@
     <button class="tab" data-tab="dest" onclick="switchTab('dest')">发布目标</button>
     <button class="tab" data-tab="gen" onclick="switchTab('gen')">生成默认值</button>
     <button class="tab" data-tab="subs" onclick="switchTab('subs')">订阅调度</button>
+    <button class="tab" data-tab="assist" onclick="switchTab('assist')">阅读助手</button>
     <button class="tab" data-tab="mcp" onclick="switchTab('mcp')">MCP 服务器</button>
     <button class="tab" data-tab="storage" onclick="switchTab('storage')">存储与用量</button>
   </div>
@@ -380,8 +381,52 @@
     </div>
   </section>
 
-  <section class="pane" id="pane-mcp" style="display:none">
+  <section class="pane" id="pane-assist" style="display:none">
     <div class="field" style="border-top:none">
+      <div class="fhead"><label class="flabel">阅读助手悬浮球</label></div>
+      <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text)">
+        <input type="checkbox" id="as_enabled" style="width:auto" onchange="markDirty()"> 在文章阅读页显示悬浮球
+      </label>
+      <p class="fhint">选中文章里的文字即可让 AI 结合播客原文（带时间戳、可点回听）与网络信息做进一步解读。</p>
+    </div>
+    <div class="field">
+      <div class="fhead"><label class="flabel">提问时默认联网补充</label></div>
+      <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text)">
+        <input type="checkbox" id="as_web" style="width:auto" onchange="markDirty()"> 默认勾选「联网补充」
+      </label>
+      <p class="fhint">关掉后只基于播客原文回答（更快、更省，也更不容易被网上的错误信息带偏）。每次提问时抽屉里都能临时切换。</p>
+    </div>
+    <div class="field">
+      <div class="fhead"><label class="flabel">联网搜索服务</label><span class="fstate" id="as_state"></span></div>
+      <p class="fhint">
+        <b>DeepSeek 官方 API 没有内置联网能力</b>（官方文档把 <code>web_search</code> 内置工具列为「忽略」），
+        所以搜索由本工具自己完成。默认走<b>免密钥</b>的 Bing / Brave 网页搜索，够用且开箱可用；
+        如果你有搜索服务的 key，填在下面质量会更好。
+      </p>
+      <div id="as_providers" style="margin-top:10px"></div>
+      <div class="field" style="border-top:none;padding-top:0">
+        <div class="fhead"><label class="flabel" for="as_tavily">Tavily API Key</label>
+          <span class="fstate" id="as_tavily_state"></span></div>
+        <input id="as_tavily" type="password" autocomplete="off" placeholder="留空表示不修改（tvly-…）" oninput="markDirty()">
+        <div class="fhead" style="margin-top:12px"><label class="flabel" for="as_serper">Serper API Key</label>
+          <span class="fstate" id="as_serper_state"></span></div>
+        <input id="as_serper" type="password" autocomplete="off" placeholder="留空表示不修改" oninput="markDirty()">
+        <p class="fhint">
+          <button class="linkbtn" onclick="testSearchService(this)">测试联网搜索</button>
+          <span class="vres" id="as_testres"></span>
+        </p>
+      </div>
+    </div>
+    <div class="field">
+      <div class="fhead"><label class="flabel">彻底关闭联网</label></div>
+      <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text)">
+        <input type="checkbox" id="as_off" style="width:auto" onchange="markDirty()"> 设 PA_SEARCH=0，助手只读原文
+      </label>
+      <p class="fhint">写回 .env。适合完全不想让任何内容外发的场景。</p>
+    </div>
+  </section>
+
+  <section class="pane" id="pane-mcp" style="display:none">    <div class="field" style="border-top:none">
       <div class="fhead"><label class="flabel">已连接的服务器</label></div>
       <p class="fhint">添加后会自动检测连接状态；文章上方的发布下拉框里会出现它们的工具。</p>
     </div>
@@ -472,6 +517,73 @@
 </div>
 
 <div id="toast"></div>
+
+<!-- AI 阅读助手：悬浮球 + 选中文字后的浮出按钮 + 右侧抽屉 -->
+<button id="fab" class="fab" onclick="toggleAssist()" title="阅读助手：选中文章里不懂的地方，让 AI 结合原文与网络讲透">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 3l1.9 4.6L18.5 9l-4.6 1.9L12 15.5l-1.9-4.6L5.5 9l4.6-1.4z"></path>
+    <path d="M18 15.5l.9 2.1 2.1.9-2.1.9-.9 2.1-.9-2.1-2.1-.9 2.1-.9z"></path>
+  </svg>
+  <span class="fablbl">问 AI</span>
+</button>
+
+<button id="selbtn" class="selbtn" onclick="askSelection()">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 3l1.9 4.6L18.5 9l-4.6 1.9L12 15.5l-1.9-4.6L5.5 9l4.6-1.4z"></path>
+  </svg>深挖这段
+</button>
+
+<aside id="assist" class="assist" aria-label="阅读助手">
+  <div class="ahead">
+    <span class="atitle">✦ 阅读助手</span>
+    <span class="astatus" id="astatus"></span>
+    <span style="flex:1"></span>
+    <button class="iconbtn small" id="ahistbtn" onclick="toggleAssistHistory()" title="历史问答">☰</button>
+    <button class="iconbtn small" onclick="closeAssist()" title="关闭（Esc）" aria-label="关闭">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"></path></svg>
+    </button>
+  </div>
+
+  <div class="abody" id="abody">
+    <div class="aintro" id="aintro">
+      <p>在文章里<b>选中一段</b>有疑问的文字，点「深挖这段」—— 我会先回到播客原文找依据（带时间戳，可以点着回听），再按需联网补充背景。</p>
+      <p class="adim">也可以直接在下面提问，比如「他说的 SGLang 是什么」「这段结论有什么反例」。</p>
+    </div>
+
+    <div class="ablock" id="aquote" style="display:none">
+      <div class="alabel">选中的原文
+        <button class="linkbtn" onclick="setAssistSelection('')" title="不针对选文，只按下面的问题提问">清除</button>
+      </div>
+      <div class="aqtext" id="aqtext"></div>
+    </div>
+
+    <div class="ablock" id="asources" style="display:none">
+      <div class="alabel">原文依据<span class="alabel2" id="apcount"></span></div>
+      <div id="apassages"></div>
+      <div class="alabel" id="aweblabel" style="display:none">网络信息<span class="alabel2" id="awebcount"></span></div>
+      <div id="aweb"></div>
+    </div>
+
+    <div class="ablock" id="aanswerbox" style="display:none">
+      <div class="alabel">解读</div>
+      <div class="aanswer" id="aanswer"></div>
+    </div>
+
+    <div class="ablock" id="ahistory" style="display:none">
+      <div class="alabel">历史问答<span class="alabel2" id="ahcount"></span>
+        <button class="linkbtn" onclick="clearAssistHistory()">清空</button></div>
+      <div id="ahlist"></div>
+    </div>
+  </div>
+
+  <div class="afoot">
+    <textarea id="aq" rows="1" placeholder="还想问什么？（留空就只解读选中的这段）" spellcheck="false"></textarea>
+    <div class="arow">
+      <label class="achip"><input type="checkbox" id="aweb_toggle" checked> 联网补充</label>
+      <button class="btn primary mini" id="agobtn" onclick="askAI()">深挖</button>
+    </div>
+  </div>
+</aside>
 
 <script src="/static/app.js"></script>
 </body>

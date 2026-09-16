@@ -38,6 +38,7 @@ podcast-article hands that job to the machine: local speech-to-text plus LLM clo
 | 📦 **Export** | Per article: Markdown (with YAML front matter) / self-contained single-file HTML / plain transcript. Whole library: one-click zip |
 | 🚚 **Batch queue** | Paste 20 links at once into a persistent queue; the daemon works through them. Closing the browser or restarting loses nothing |
 | 🔔 **Feed subscriptions** | Subscribe to RSS / Apple Podcasts; new episodes are discovered on a schedule and queued automatically |
+| 🤖 **Reading assistant** | Select any passage → a drawer explains it using the episode transcript (timestamped, click to replay) plus web results |
 | 💰 **Visible cost** | Tokens, exact cost (official peak/off-peak price table) and cache hit rate per article |
 | ☁️ **One-click Notion** | Markdown → native blocks (tables/quotes/inline styles), metadata auto-filled into database properties |
 | 🔌 **MCP support** | Runs as an MCP server for Claude Desktop & friends — conversational access to everything |
@@ -355,6 +356,57 @@ Library                        ＋
 
 There's one non-obvious design point for feed stability: enqueuing captures a **full snapshot of that episode** rather than "the 3rd episode in the feed". Feeds shift every time they update, so relative positions would silently redirect a queued job to a different episode.
 
+## 🤖 Reading assistant: select what you don't understand, get it explained against the source
+
+The place you get stuck while reading **shouldn't require opening a separate chat window** — that chat wouldn't know which episode or paragraph you're in. So the article view has a floating button:
+
+```
+① Select a passage you're unsure about
+        ↓  a "✦ Dig into this" button appears
+② Click it → a drawer slides in from the right: evidence first, then the explanation
+        ↓
+③ Timestamps in the evidence play the audio — click one, then keep asking
+```
+
+The drawer has three parts, **evidence before explanation**, so you don't wait for it to finish:
+
+| Block | Contents |
+|---|---|
+| **Transcript evidence** | Passages retrieved from this episode's transcript, **each with a timestamp** — click to jump to that second in the audio and check the claim against the source |
+| **Web results** | Real results from the built-in search layer (title / link / snippet), opening in a new tab |
+| **Explanation** | 400-900 characters, streamed: what the passage means in this episode, where you might be stuck, and **what to chase next** (1-2 concrete directions you can search or re-listen to) |
+
+Also: ask directly without selecting anything, a per-episode Q&A history (stored in `qa.json` next to the article, so it is backed up and deleted with it), and a per-question toggle for web access.
+
+### Why it ships its own search layer
+
+**The DeepSeek API has no web search.** The official docs are explicit ([Responses API compatibility](https://api-docs.deepseek.com/guides/responses_api)):
+
+| Tool type | Support |
+|---|---|
+| `function` (tool calls) | **Supported** |
+| `custom` | `apply_patch` only |
+| **`web_search` / `file_search` / `code_interpreter` / `computer_use` / `mcp`** | **Ignored** |
+
+Even its own Responses API explicitly **ignores** the built-in `web_search` tool. So search has to be built here and fed back to the model:
+
+- **Keyless by default**: Bing web search (via its RSS output, which is cleanly structured and needs no redirect decoding), falling back to Brave
+- **Optional keys**: Tavily / Serper for better long-tail Chinese retrieval (Settings → Reading assistant, or `.env`)
+- **Disable entirely**: `PA_SEARCH=0` — the assistant reads only the transcript and touches no network
+
+### An honest limitation: irrelevant results are dropped, not fed to the model
+
+Search engines index **long-tail Chinese proper nouns** poorly and degrade to matching a single character:
+
+| Query | Bing's top results |
+|---|---|
+| `SGLang` | ✓ GitHub / docs / papers |
+| `SGLang 朱邦华` | ✓ same (a **Latin term anchors the query**) |
+| `朱邦华` | ✗ the dictionary entry for the character 朱 |
+| `月球大叔 播客` | ✗ the encyclopedia entry for the Moon |
+
+So two things follow: **the web query is short keywords, not the raw sentence** (Latin terms first, plus short intact CJK fragments — feeding the full sentence to a search engine returns exactly the garbage above); and **results are relevance-filtered**. When nothing survives, it reports "no web results this time" instead of handing "the dictionary entry for 朱" to the model. Better to say less than to let the AI weave an unrelated web page into an answer. The prompt likewise insists: anything the transcript didn't cover must be marked "**the transcript doesn't mention this — the following is background**", and no number that isn't in the provided passages may be invented.
+
 ## 💰 Cost
 
 | Stage | How | Cost |
@@ -384,6 +436,9 @@ Cost isn't estimated, it's **recorded**: every call reads `prompt_tokens` / `pro
 | `PA_SCHEDULER=0` | Disable the background scheduler (feed checks + queue execution) |
 | `PA_DOWNLOAD_RETRIES` | Download retry count (default 3) |
 | `PA_DOWNLOAD_BACKOFF` | Retry backoff seconds (default `2,5`) |
+| `PA_SEARCH=0` | Disable the reading assistant's web search (transcript only) |
+| `PA_SEARCH_PROVIDER` | Force a provider: `bing` / `brave` / `tavily` / `serper` |
+| `TAVILY_API_KEY` / `SERPER_API_KEY` | Optional keyed providers (better long-tail Chinese retrieval) |
 | `DEEPSEEK_API_KEY` / `DEEPSEEK_MODEL` | Credentials and model for article writing |
 
 ## 📱 LAN access & autostart
@@ -496,6 +551,9 @@ podcast_article/
 ├── outline.py        # Outline + per-section writing (length-controlled)
 ├── postprocess.py    # Deterministic formatting pass (paragraphs/punctuation/filler)
 ├── usage.py          # Token & cost accounting (peak/off-peak pricing, cache hit rate)
+├── deepdive.py       # Reading assistant: transcript retrieval (IDF) + prompt + streaming
+├── websearch.py      # Self-built web search (keyless Bing/Brave + optional Tavily/Serper + relevance filter)
+├── qa_store.py       # Per-episode Q&A history (lives next to the article)
 ├── search.py         # Full-text search (articles + transcripts, no index file)
 ├── library.py        # Categories and reading status
 ├── export.py         # Markdown / self-contained HTML / library zip export

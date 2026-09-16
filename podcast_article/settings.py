@@ -51,10 +51,17 @@ SUBSCRIPTION_DEFAULTS: dict = {
     "auto_dest": "",           # 自动生成的文章归到哪个分类（空 = 未分类）
 }
 
+# AI 阅读助手（悬浮球）的默认值
+ASSISTANT_DEFAULTS: dict = {
+    "enabled": True,           # 是否显示助手悬浮球
+    "web_default": True,       # 提问时默认是否联网补充信息
+}
+
 DEFAULTS: dict = {
     "profile": PROFILE_DEFAULTS,
     "generation": GENERATION_DEFAULTS,
     "subscriptions": SUBSCRIPTION_DEFAULTS,
+    "assistant": ASSISTANT_DEFAULTS,
 }
 
 
@@ -69,12 +76,13 @@ def load() -> dict:
         "profile": {**PROFILE_DEFAULTS, **(data.get("profile") or {})},
         "generation": {**GENERATION_DEFAULTS, **(data.get("generation") or {})},
         "subscriptions": {**SUBSCRIPTION_DEFAULTS, **(data.get("subscriptions") or {})},
+        "assistant": {**ASSISTANT_DEFAULTS, **(data.get("assistant") or {})},
     }
     return merged
 
 
 def save(profile: dict | None = None, generation: dict | None = None,
-         subscriptions: dict | None = None) -> dict:
+         subscriptions: dict | None = None, assistant: dict | None = None) -> dict:
     current = load()
     if profile:
         current["profile"].update({k: v for k, v in profile.items() if k in PROFILE_DEFAULTS})
@@ -86,6 +94,10 @@ def save(profile: dict | None = None, generation: dict | None = None,
         for k, v in subscriptions.items():
             if k in SUBSCRIPTION_DEFAULTS:
                 current["subscriptions"][k] = v
+    if assistant:
+        for k, v in assistant.items():
+            if k in ASSISTANT_DEFAULTS:
+                current["assistant"][k] = v
     if isinstance(current["generation"].get("max_chars"), str):
         try:
             current["generation"]["max_chars"] = int(current["generation"]["max_chars"])
