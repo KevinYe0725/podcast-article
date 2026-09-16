@@ -137,7 +137,7 @@ const DIR = "__UI测试单集";        // seed.js 造的那一集
   await sleep(180);
   out.流式_中途1 = doc.querySelector(".amsg.ai .aanswer").textContent.trim();
   out.流式_光标 = doc.querySelector(".amsg.ai .aanswer").classList.contains("streaming");
-  stream.emit("delta", { text: "\n\n第二段，引用原话：\n> 这是原话 [00:10:07]\n\n**还可以往哪追**\n- 一个具体方向" });
+  stream.emit("delta", { text: "\n\n第二段（据网络资料），引用原话：\n> 这是原话 [00:10:07]\n\n第三段。（原文未提及）\n\n**还可以往哪追**\n- 一个具体方向" });
   await sleep(180);
   out.流式_中途2长度 = doc.querySelector(".amsg.ai .aanswer").textContent.trim().length;
   if (!/第一段解读。/.test(out.流式_中途1)) fails.push(`第一次 delta 应立即渲染，实际「${out.流式_中途1}」`);
@@ -165,6 +165,9 @@ const DIR = "__UI测试单集";        // seed.js 造的那一集
   if (!/2 段原文/.test(out.依据_摘要文案) || !/1 条网络结果/.test(out.依据_摘要文案)) {
     fails.push(`依据摘要应写清有几段原文/几条网络结果，实际「${out.依据_摘要文案}」`);
   }
+  if (!/模型标注非原文内容 2 处/.test(out.依据_摘要文案)) {
+    fails.push(`被剥掉的出处标签应计入依据摘要，实际「${out.依据_摘要文案}」`);
+  }
   if (out.依据_片段数 !== 2) fails.push(`原文依据应渲染 2 段，实际 ${out.依据_片段数}`);
   if (out.依据_时间戳.join() !== "[00:10:07],[00:12:30]") fails.push(`时间戳渲染不对：${out.依据_时间戳}`);
   if (out.依据_时间戳秒数.join() !== "607,750") fails.push(`时间戳秒数不对：${out.依据_时间戳秒数}`);
@@ -180,6 +183,13 @@ const DIR = "__UI测试单集";        // seed.js 造的那一集
   out.完成后_按钮恢复 = !$("agobtn").disabled;
   // 过程状态文字已按用户要求去掉，改成气泡里的「正在输入」指示 —— 断言它同时消失
   out.完成后_无输入指示 = !doc.querySelector(".amsg.ai .aanswer.pending");
+  // 出处标签必须**不在正文里**（用户要求像搜索数据一样收起来），计数挪进依据那一行
+  const answerText = doc.querySelector(".amsg.ai .aanswer").textContent;
+  out.正文里无出处标签 = !/原文未提及|据网络资料/.test(answerText);
+  out.正文末尾 = answerText.trim().slice(-24);
+  if (!out.正文里无出处标签) {
+    fails.push(`正文里不该出现出处标签：${answerText.slice(0, 80)}`);
+  }
   if (!out.完成后_光标消失) fails.push("结束后应去掉流式光标");
   if (out.完成后_引用块 !== 1) fails.push(`解读里的 > 引用应渲染成 blockquote，实际 ${out.完成后_引用块}`);
   if (out.完成后_粗体 < 1) fails.push("解读里的 **粗体** 应渲染成 strong");

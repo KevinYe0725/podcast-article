@@ -382,7 +382,9 @@ The place you get stuck while reading **shouldn't require opening a separate cha
 
 **Length is a choice**, and the default is concise — that came from real use: the original 400-900 character version produced 914 characters across 7 blocks, of which **only one block answered the question asked**; the rest were points the model found interesting ("another thing worth noting is…", "this phrasing also deserves a pause"). So the problem wasn't just length, it was **answering the wrong question** — shrinking the word count alone doesn't fix it, the prompt has to forbid unprompted expansion. Tick "detailed" in the drawer to expand, or change the default in Settings.
 
-**It answers — it doesn't narrate its sources**: no "the transcript doesn't cover this" or "the passages only mention A, B, C" (that's a waste of reading time). When a sentence isn't from this episode, it's marked with a four-character tag at the end, `（原文未提及）`, with no explanation. (Changed after user feedback: the old prompt actually *instructed* it to announce the absence first, so an entire paragraph went to inventorying the material.)
+**It answers — it doesn't narrate its sources**: no "the transcript doesn't cover this" or "the passages only mention A, B, C" (that's a waste of reading time). (Changed after user feedback: the old prompt actually *instructed* it to announce the absence first, so an entire paragraph went to inventorying the material.)
+
+**The provenance tags are hidden too**: the model tags sentences with `（原文未提及）` / `（据网络资料）`, but those never appear in the answer — they're stripped and counted into the collapsed evidence line instead ("6 passages · 5 web results · 2 sentences flagged as non-transcript"). The wording is deliberately "model flagged": it's the model's own annotation, not an exhaustive check, so an absent count must not be read as "everything came from the transcript".
 
 Also: ask directly without selecting anything, a per-episode Q&A history (stored in `qa.json` next to the article, so it is backed up and deleted with it), and a per-question toggle for web access.
 

@@ -2159,10 +2159,30 @@ function appendUserBubble(selection, question) {
   return wrap;
 }
 
+/* 出处标签：模型会在句末标「（原文未提及）」「（据网络资料）」。
+   用户要求**不要在正文里看到它们**（和搜索数据一样收起来），所以：
+   渲染前剥掉，计数放进折叠的「依据」那一行。 */
+const TAG_RE = /[（(](原文未提及|据网络资料)[）)]/g;
+
+function splitTags(md) {
+  const counts = { untagged: 0, web: 0 };
+  const text = String(md || "").replace(TAG_RE, (_m, kind) => {
+    if (kind === "据网络资料") counts.web += 1; else counts.untagged += 1;
+    return "";
+  })
+    // 标签多在句末，剥掉后可能留下多余空格或空格贴标点
+    .replace(/[ \t]+([。，、；：！？])/g, "$1")
+    .replace(/[ \t]{2,}/g, " ");
+  return { text, counts };
+}
+
 function appendAiBubble(md, sources) {
   const wrap = doc_el("div", "amsg ai");
   const body = doc_el("div", "aanswer");
-  body.innerHTML = mdLite(md || "");
+  const split = splitTags(md);
+  body.dataset.untagged = split.counts.untagged;
+  body.dataset.webtag = split.counts.web;
+  body.innerHTML = mdLite(split.text);
   wrap.appendChild(body);
   $("amessages").appendChild(wrap);
   $("aintro").style.display = "none";
@@ -2180,6 +2200,18 @@ function attachSources(bubble, src) {
   const bits = [];
   if (passages.length) bits.push(`${passages.length} 段原文`);
   if (web && web.ok && (web.results || []).length) bits.push(`${web.results.length} 条网络结果`);
+  // 正文里那些出处标签被剥掉了，计数挪到这里 —— 正文保持干净，核对时再展开
+  const answerEl = bubble.querySelector(".aanswer") || { dataset: {} };
+  const untagged = Number(answerEl.dataset.untagged || 0);
+  const webTag = Number(answerEl.dataset.webtag || 0);
+  if (untagged + webTag > 0) {
+    const detail = [];
+    if (untagged) detail.push(`原文未提及 ${untagged}`);
+    if (webTag) detail.push(`据网络资料 ${webTag}`);
+    // 措辞刻意写成「模型标注」：这是模型的自我标注、不是穷尽核对，
+    // 所以「没显示」不能被读成「全都来自本集原文」
+    bits.push(`模型标注非原文内容 ${untagged + webTag} 处（${detail.join(" · ")}）`);
+  }
   if (!bits.length) return;
 
   const box = doc_el("details", "asrc");
@@ -2280,13 +2312,24 @@ function connectAssistStream(id, bubble, question, selection) {
   const view = bubble.querySelector(".aanswer");
   let text = "";
   let sources = null;
-  const seen = (t) => { text += t; view.classList.remove("pending"); view.innerHTML = mdLite(text); scrollAssist(); };
+  const seen = (t) => {
+    text += t;
+    view.classList.remove("pending");
+    const split = splitTags(text);
+    view.dataset.untagged = split.counts.untagged;
+    view.dataset.webtag = split.counts.web;
+    view.innerHTML = mdLite(split.text);
+    scrollAssist();
+  };
   const finish = (d) => {
     assistBusy = false;
     $("agobtn").disabled = false;
     view.classList.remove("streaming", "pending");
     const answer = text || d.answer || "";
-    view.innerHTML = mdLite(answer);
+    const split = splitTags(answer);
+    view.dataset.untagged = split.counts.untagged;
+    view.dataset.webtag = split.counts.web;
+    view.innerHTML = mdLite(split.text);
     if (!answer && d.error) view.innerHTML = `<p class="aerr">✕ ${esc(d.error)}</p>`;
     if (d.sources) sources = d.sources;
     if (sources) attachSources(bubble, sources);
