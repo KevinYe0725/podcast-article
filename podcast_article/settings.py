@@ -55,6 +55,7 @@ SUBSCRIPTION_DEFAULTS: dict = {
 ASSISTANT_DEFAULTS: dict = {
     "enabled": True,           # 是否显示助手悬浮球
     "web_default": True,       # 提问时默认是否联网补充信息
+    "length_mode": "concise",  # 回答篇幅：concise（只答所问）/ detail（展开相关要点）
 }
 
 DEFAULTS: dict = {

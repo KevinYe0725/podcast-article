@@ -437,6 +437,7 @@ async function loadSettings() {
   $("as_enabled").checked = assistEnabled;
   $("as_web").checked = as.web_default !== false;
   $("aweb_toggle").checked = as.web_default !== false;
+  $("as_mode").value = as.length_mode || "concise";
   syncFab();
   loadSearchService();
 
@@ -522,6 +523,7 @@ async function saveSettings() {
     assistant: {
       enabled: $("as_enabled").checked,
       web_default: $("as_web").checked,
+      length_mode: $("as_mode").value,
     },
     secrets: {},
   };
@@ -2120,6 +2122,7 @@ function askAI() {
     body: JSON.stringify({
       dir: curWorkdir, selection, question,
       web: $("aweb_toggle").checked,
+      mode: $("adetail").checked ? "detail" : "concise",
     }),
   }).then(async (resp) => {
     const d = await resp.json();

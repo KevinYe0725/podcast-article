@@ -103,7 +103,20 @@ const DIR = "__UI测试单集";        // seed.js 造的那一集
   await until(() => asked.length > 0, 4000);
   out.提问请求数 = asked.length;
   const body = asked[0] ? asked[0].body : {};
-  out.提问参数 = { dir: body.dir, 有选文: !!body.selection, web: body.web };
+  out.提问参数 = { dir: body.dir, 有选文: !!body.selection, web: body.web, mode: body.mode };
+  // 篇幅默认必须是简洁档（用户反馈：旧默认 914 字里只有一段是回答所问的）
+  if (body.mode !== "concise") fails.push(`默认篇幅应为 concise，实际 ${body.mode}`);
+  out.篇幅开关_存在 = !!$("adetail");
+  if (!out.篇幅开关_存在) fails.push("抽屉里应有「详细」开关");
+  // 勾上「详细」后再问，要带上 detail
+  $("adetail").checked = true;
+  window.askAI();
+  await sleep(600);
+  out.勾选详细后的mode = asked[asked.length - 1]["body"] && asked[asked.length - 1].body.mode;
+  $("adetail").checked = false;
+  if (out.勾选详细后的mode !== "detail") {
+    fails.push(`勾选「详细」后应传 detail，实际 ${out.勾选详细后的mode}`);
+  }
   if (!asked.length) fails.push("点「深挖这段」应发出 /api/ask 请求");
   if (body.dir !== DIR) fails.push(`提问请求的 dir 应为 ${DIR}，实际 ${body.dir}`);
   if (!body.selection) fails.push("提问请求应带上选中的文字");

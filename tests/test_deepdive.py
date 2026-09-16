@@ -321,11 +321,42 @@ def test_build_prompt_system_states_the_hard_rules():
     system, _ = build_prompt(selection="选中", question="疑问", title="T", podcast="P",
                              passages=[], web="")
     for needle in ("绝不编造", "原文没有提到", "仅供参考", "[时:分:秒]",
-                   "还可以往哪追", "150 字", "逐字"):
+                   "还可以往哪追", "逐字"):
         assert needle in system, needle
     assert "值得注意的是" in system, "要给出禁用套话清单"
-    assert str(deepdive.ANSWER_ASK_CHARS) in system
-    assert f"{deepdive.ANSWER_MIN_CHARS}-{deepdive.ANSWER_MAX_CHARS}" in system
+    plan = deepdive.answer_mode("concise")
+    assert f"{plan['lo']}-{plan['hi']}" in system, "字数区间要按档位填进去"
+    assert str(deepdive.answer_limits("concise")[0]) in system, "报价字数要按档位填进去"
+
+
+def test_system_forbids_answering_unasked_questions():
+    """**这条是用户反馈的核心**：原来的回答 914 字 / 7 段，只有一段是回答所问的，
+    其余是模型自己觉得「也很有意思」的点（「另一个容易误读的点是…」「…也值得停一下」）。
+    所以提示词必须明确禁止主动扩展，而不只是把字数调小。
+    """
+    system, _ = build_prompt(selection="选中", question="疑问", title="T", podcast="P",
+                             passages=[], web="")
+    assert "只回答被问的那一点" in system, "必须有这条硬约束"
+    for banned in ("也值得说", "顺带提一下", "还有一个容易误读的点", "也值得停一下"):
+        assert banned in system, f"要把这类句式点名禁掉（{banned}）"
+    assert "宁可少讲一个点，也不要答非所问" in system
+    assert "第一句直接给答案" in system, "禁止绕圈开场"
+
+
+def test_build_prompt_follows_mode():
+    """档位不同，字数区间/段数/引用条数都要跟着变。"""
+    concise, _ = build_prompt(selection="s", question="q", title="T", podcast="P",
+                              passages=[], web="", mode="concise")
+    detail, _ = build_prompt(selection="s", question="q", title="T", podcast="P",
+                             passages=[], web="", mode="detail")
+    assert concise != detail, "两个档位的提示词必须不同"
+    c, d = deepdive.answer_mode("concise"), deepdive.answer_mode("detail")
+    assert f"{c['lo']}-{c['hi']}" in concise and f"{d['lo']}-{d['hi']}" in detail
+    assert str(c["quotes"]) in concise and str(d["quotes"]) in detail
+    # 未知档位回退到默认（简洁），不能炸
+    fallback, _ = build_prompt(selection="s", question="q", title="T", podcast="P",
+                               passages=[], web="", mode="乱写的")
+    assert f"{c['lo']}-{c['hi']}" in fallback
 
 
 def test_build_prompt_user_carries_everything():
@@ -384,7 +415,8 @@ def test_stream_answer_structure_and_deltas(tmp_output, llm):
     assert fake.calls[0]["stream"] is True
     assert fake.calls[0]["stream_options"] == {"include_usage": True}
     assert fake.calls[0]["extra_body"] == {"thinking": {"type": "disabled"}}
-    assert fake.calls[0]["max_tokens"] == deepdive.ANSWER_MAX_TOKENS
+    assert fake.calls[0]["max_tokens"] == deepdive.answer_limits("concise")[1], \
+        "不传 mode 时应按默认（简洁）档给 token 上限"
 
 
 def test_stream_answer_skips_web_when_disabled(tmp_output, llm, fake_search):
@@ -786,6 +818,14 @@ def test_query_terms_matches_what_is_actually_sent():
 
 
 def test_answer_token_cap_is_bounded():
-    """机械上限：够 900 字自然收尾，又不会让侧边抽屉跑成几千字。"""
-    assert 600 <= deepdive.ANSWER_MAX_TOKENS <= 1200
-    assert 400 <= deepdive.ANSWER_ASK_CHARS <= deepdive.ANSWER_MAX_CHARS
+    """机械上限：够本档字数自然收尾，又不会让侧边抽屉跑成几千字。
+
+    默认档是**简洁**（用户反馈：原来的 400-900 字里只有一段是回答所问的）。
+    """
+    assert deepdive.DEFAULT_ANSWER_MODE == "concise", "默认必须是简洁档"
+    for mode, (cap_lo, cap_hi) in (("concise", (200, 420)), ("detail", (600, 1200))):
+        ask, cap = deepdive.answer_limits(mode)
+        assert cap_lo <= cap <= cap_hi, f"{mode} 的 token 上限应在合理区间，实际 {cap}"
+        plan = deepdive.answer_mode(mode)
+        assert plan["lo"] <= ask <= plan["hi"], f"{mode} 的报价字数应落在区间内，实际 {ask}"
+        assert plan["lo"] < plan["hi"]

@@ -730,11 +730,13 @@ def api_ask():
     subs = settings_mod.load().get("assistant") or {}
     use_web = data.get("web")
     use_web = bool(subs.get("web_default", True)) if use_web is None else bool(use_web)
+    # 篇幅档位：默认简洁（用户反馈：原来的 400-900 字里只有一段是回答所问的）
+    mode = (data.get("mode") or subs.get("length_mode") or "concise").strip()
 
     ask_id = uuid.uuid4().hex[:12]
     job = {
         "id": ask_id, "dir": dir_name, "status": "running", "stage": "retrieve",
-        "selection": selection, "question": question, "web": use_web,
+        "selection": selection, "question": question, "web": use_web, "mode": mode,
         "answer": "", "deltas": [], "sources": None, "error": "", "at": time.time(),
     }
     with _ASKS_LOCK:
@@ -776,6 +778,7 @@ def api_ask():
                 title=meta.get("title") or dir_name,
                 podcast=meta.get("podcast") or "",
                 use_web=use_web,
+                mode=mode,
                 log=log,
                 on_delta=lambda t: job["deltas"].append(t),
             )

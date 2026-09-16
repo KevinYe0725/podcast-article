@@ -397,6 +397,14 @@
       <p class="fhint">关掉后只基于播客原文回答（更快、更省，也更不容易被网上的错误信息带偏）。每次提问时抽屉里都能临时切换。</p>
     </div>
     <div class="field">
+      <div class="fhead"><label class="flabel" for="as_mode">回答篇幅</label></div>
+      <select id="as_mode" onchange="markDirty()">
+        <option value="concise">简洁：只回答你问的那一点（120-320 字，默认）</option>
+        <option value="detail">详细：会展开相关的其他要点（400-900 字）</option>
+      </select>
+      <p class="fhint">抽屉里每次提问还能用「详细」临时切换。默认简洁是有意的：重点是别答非所问。</p>
+    </div>
+    <div class="field">
       <div class="fhead"><label class="flabel">联网搜索服务</label><span class="fstate" id="as_state"></span></div>
       <p class="fhint">
         <b>DeepSeek 官方 API 没有内置联网能力</b>（官方文档把 <code>web_search</code> 内置工具列为「忽略」），
@@ -579,7 +587,8 @@
   <div class="afoot">
     <textarea id="aq" rows="1" placeholder="还想问什么？（留空就只解读选中的这段）" spellcheck="false"></textarea>
     <div class="arow">
-      <label class="achip"><input type="checkbox" id="aweb_toggle" checked> 联网补充</label>
+      <label class="achip"><input type="checkbox" id="aweb_toggle" checked> 联网</label>
+      <label class="achip" title="默认只回答你问的那一点；勾上才展开讲"><input type="checkbox" id="adetail"> 详细</label>
       <button class="btn primary mini" id="agobtn" onclick="askAI()">深挖</button>
     </div>
   </div>

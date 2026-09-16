@@ -374,7 +374,9 @@ The drawer has three parts, **evidence before explanation**, so you don't wait f
 |---|---|
 | **Transcript evidence** | Passages retrieved from this episode's transcript, **each with a timestamp** — click to jump to that second in the audio and check the claim against the source |
 | **Web results** | Real results from the built-in search layer (title / link / snippet), opening in a new tab |
-| **Explanation** | 400-900 characters, streamed: what the passage means in this episode, where you might be stuck, and **what to chase next** (1-2 concrete directions you can search or re-listen to) |
+| **Explanation** | Streamed, and **only answers what you asked** by default (120-320 characters, 1-3 paragraphs): what the passage means, where you might be stuck, and **what to chase next** |
+
+**Length is a choice**, and the default is concise — that came from real use: the original 400-900 character version produced 914 characters across 7 blocks, of which **only one block answered the question asked**; the rest were points the model found interesting ("another thing worth noting is…", "this phrasing also deserves a pause"). So the problem wasn't just length, it was **answering the wrong question** — shrinking the word count alone doesn't fix it, the prompt has to forbid unprompted expansion. Tick "detailed" in the drawer to expand, or change the default in Settings.
 
 Also: ask directly without selecting anything, a per-episode Q&A history (stored in `qa.json` next to the article, so it is backed up and deleted with it), and a per-question toggle for web access.
 

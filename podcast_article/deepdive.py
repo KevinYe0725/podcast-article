@@ -39,16 +39,37 @@ KEYWORD_LIMIT = 24    # 交给检索的候选词上限（长词优先，见 keyw
 TF_LOG = 0.25         # 同一片段里词频的次线性加成（与 search.COUNT_LOG 同量级）
 POS_BONUS = 0.25      # 位置偏置上限：最前段 1.25 倍，末尾段 1.0 倍
 
-# 回答篇幅：侧边抽屉，400-900 字。指令里报的数用 outline.stated() 的口径
-# （outline.py 实测：模型对字数的响应稳定超目标 1.5-2 倍），报 495 字最稳。
-ANSWER_MIN_CHARS = 400
-ANSWER_MAX_CHARS = 900
-ANSWER_ASK_CHARS = outline.stated(ANSWER_MAX_CHARS)
+# 回答篇幅档位。默认 concise —— 这是用户反馈改的：
+# 原来的 400-900 字实际产出 914 字 / 7 段，但**只有 1 段是回答他问的那个问题的**，
+# 其余是模型自己觉得「也很有意思」的点（「另一个容易误读的点是…」「…也值得停一下」）。
+# 所以问题不只是长，而是**答非所问**：只把字数调小仍会跑偏，必须在提示词里禁止主动扩展。
+ANSWER_MODES: dict[str, dict] = {
+    # lo/hi 是给模型看的字数区间；ask 是按 outline.stated() 打折后的报价
+    # （outline 的实测结论：模型对字数稳定写到报价的 1.5-2 倍）
+    "concise": {"lo": 120, "hi": 320, "para_lo": 1, "para_hi": 3,
+                "quotes": 2, "followups": 1, "label": "简洁"},
+    "detail": {"lo": 400, "hi": 900, "para_lo": 3, "para_hi": 6,
+               "quotes": 4, "followups": 2, "label": "详细"},
+}
+DEFAULT_ANSWER_MODE = "concise"
 
-# token 上限：机械兜底，不承担篇幅控制。900 字 × 0.58 token/字 × 1.6 余量 ≈ 835。
-# 为什么留 1.6 倍：撞上限会在半句话处截断（读者看到半句更糟），而只靠提示词压字数
-# 是压不住的（outline.py 的实测结论）。这里只挡住「跑飞成几千字」这一种情况。
-ANSWER_MAX_TOKENS = max(200, int(ANSWER_MAX_CHARS * outline.TOKENS_PER_CHAR * 1.6))
+
+def answer_mode(mode: str | None) -> dict:
+    """取档位配置（未知值回退到默认档）。"""
+    return ANSWER_MODES.get((mode or "").strip() or DEFAULT_ANSWER_MODE,
+                            ANSWER_MODES[DEFAULT_ANSWER_MODE])
+
+
+def answer_limits(mode: str | None = None) -> tuple[int, int]:
+    """返回 (报价字数, token 机械上限)。"""
+    plan = answer_mode(mode)
+    ask = outline.stated(plan["hi"])
+    # 上限只挡「跑飞成几千字」，不承担篇幅控制（靠它压字数会在半句话处截断）
+    cap = max(200, int(plan["hi"] * outline.TOKENS_PER_CHAR * 1.6))
+    return ask, cap
+
+
+ANSWER_TEMPERATURE = 0.4
 # 这是「讲清楚 + 不许编」的任务，不是散文创作：thinking 关闭时 temperature 才生效，
 # 取 0.4 让它贴住材料（写文章那条链路用的是 0.9，那是要它发挥）。
 ANSWER_TEMPERATURE = 0.4
@@ -454,12 +475,27 @@ _SYSTEM = """你是这位读者的**阅读助手**。他在一篇由播客（或
 - 不要把某个小站、某条自媒体的说法当成定论；有分歧就写「说法不一」
 - 涉及价格、政策、软件版本、任职这类会变的信息，要说明可能是较旧的信息，建议他自己再核对一次
 
+## 只回答被问的那一点（最容易违反的一条）
+- 你的任务是讲清楚**他选中的这一段、他问的这一个问题**。**不是**把这期节目里所有
+  「也很有意思」「也值得说」的点讲一遍。他没有问的，就**不要主动展开**
+- 具体禁止这些句式（用户没问就删掉）：
+  「另外……也值得说」「顺带提一下」「还有一个容易误读的点是……」
+  「……这个说法也值得停一下」「至于……」「值得一提的是」
+- 如果他没写疑问（只选了文字），**只解释这段话本身最可能卡住的那一处**，
+  不要做通篇赏析、不要逐句点评
+- 如果这段里显然有多个可疑点，只讲**最要紧的那一个**；其余的宁可不说
+- 宁可少讲一个点，也不要答非所问。用户要的是重点，不是全面
+
 ## 输出格式（严格遵守）
-- 直接开始解读。**不要**写「根据您提供的…」「你提到的那段话…」这类开场白，不要重复他的疑问，不要写标题
-- 3-6 个自然段，每个自然段不超过 150 字；全文 {lo}-{hi} 字，按约 {ask} 字写（侧边抽屉，超过 {hi} 字没人读）
-- 说人话：句子长短交替，可以口语，可以用一个具体例子；不堆术语，不写没有信息量的过渡句
-- 引原话单独成行，写成 `> 原话 [00:10:07]`；全文引用不超过 4 条，每条只出现一次
-- 结尾用一行 `**还可以往哪追**`，下面 1-2 条**具体**的追问方向：能直接拿去搜、去听、去问的那种（例如「第 42 分钟他把它说成趋势，和这里的说法对不上，可以回听 [00:42:10] 前后」）。禁止「可以继续深入了解」「值得进一步思考」这类废话
+- **第一句直接给答案**。不要铺垫、不要写「这段话最容易被卡住的地方是……」这种绕圈开场，
+  不要写「根据您提供的…」「你提到的那段话…」，不要重复他的疑问，不要写标题
+- {para_lo}-{para_hi} 个自然段，每个自然段不超过 120 字；全文 {lo}-{hi} 字，按约 {ask} 字写
+  （这是侧边抽屉，不是文章；超过 {hi} 字就是在浪费他的时间）
+- 说人话：句子长短交替，可以口语；不堆术语，不写没有信息量的过渡句
+- 引原话单独成行，写成 `> 原话 [00:10:07]`；全文引用**不超过 {quotes} 条**，每条只出现一次
+- 结尾用一行 `**还可以往哪追**`，最多 {followups} 条**具体**方向（能直接拿去搜、去听、
+  去问的那种）。**如果这条问题本身已经答完、没有真正值得追的方向，就整块省略**，
+  不要为了凑格式写「可以继续深入了解」这类废话
 - 禁用这些套话：值得注意的是、总的来说、综上所述、不难看出、毫无疑问、毋庸置疑、发人深省、引人深思、深刻的、让我们、众所周知、可以说、从某种意义上
 - 简体中文；人名、作品名、机构名、术语保留原文写法，不要硬翻成中文
 - 如果下面给了【读者画像】，解读要照顾他关注的方向，但绝不能因此偏离原文"""
@@ -485,19 +521,27 @@ _WEB_EMPTY = (
 
 
 def build_prompt(*, selection: str, question: str, title: str, podcast: str,
-                 passages: list[dict], web: str, profile: str = "") -> tuple[str, str]:
+                 passages: list[dict], web: str, profile: str = "",
+                 mode: str | None = None) -> tuple[str, str]:
     """拼出 (system, user)。
 
-    system：角色 + 依据优先级 + 「绝不编造」+ 网络信息标注 + 输出格式（见 `_SYSTEM`）
+    system：角色 + 依据优先级 + 「绝不编造」+ 「只回答被问的那一点」+ 输出格式（见 `_SYSTEM`）
     user：元信息、读者画像、选中的文字、他的疑问、原文片段（带时间戳）、网络资料
+    mode：篇幅档位（concise 默认 / detail），决定字数区间、段数与引用条数
 
     没有原文片段、没有网络资料时，user 里都有一句**明确的说明**（不是留空段落）：
     模型缺什么都看得见，才不会拿记忆里的东西冒充这一期的内容。
     """
+    plan = answer_mode(mode)
+    ask = outline.stated(plan["hi"])
     system = (
-        _SYSTEM.replace("{ask}", str(ANSWER_ASK_CHARS))
-        .replace("{lo}", str(ANSWER_MIN_CHARS))
-        .replace("{hi}", str(ANSWER_MAX_CHARS))
+        _SYSTEM.replace("{ask}", str(ask))
+        .replace("{lo}", str(plan["lo"]))
+        .replace("{hi}", str(plan["hi"]))
+        .replace("{para_lo}", str(plan["para_lo"]))
+        .replace("{para_hi}", str(plan["para_hi"]))
+        .replace("{quotes}", str(plan["quotes"]))
+        .replace("{followups}", str(plan["followups"]))
     )
 
     blocks = [f"文章标题：{title or '（未知）'}\n播客/频道：{podcast or '（未知）'}"]
@@ -573,13 +617,14 @@ def _tee_client(client, on_delta, log=print):
     )
 
 
-def _call_model(*, system: str, user: str, model: str, log=print, on_delta=None) -> str:
+def _call_model(*, system: str, user: str, model: str, log=print, on_delta=None,
+                max_tokens: int | None = None) -> str:
     """流式调用，返回正文全文（复用 summarize._chat 的全部既有约定）。"""
     client = _client()
     return _chat(
         _tee_client(client, on_delta, log) if on_delta else client,
         model, system, user,
-        log=log, max_tokens=ANSWER_MAX_TOKENS, temperature=ANSWER_TEMPERATURE,
+        log=log, max_tokens=max_tokens or answer_limits()[1], temperature=ANSWER_TEMPERATURE,
         thinking=False,   # 关思考：抽屉场景要的是快而稳，且关掉后 temperature 才生效
     )
 
@@ -790,7 +835,7 @@ def _stop_usage(started: bool, log=print) -> None:
 
 def stream_answer(*, workdir: Path | None, selection: str, question: str, title: str,
                   podcast: str, model: str | None = None, use_web: bool = True,
-                  log=print, on_delta=None, search=None) -> dict:
+                  mode: str | None = None, log=print, on_delta=None, search=None) -> dict:
     """主入口（流式）。返回 `{"answer", "passages", "web", "error"}`。
 
     - 先 `retrieve()` 拿原文片段（query = 选中文字 + 疑问，两者都可能在讲他关心的词）；
@@ -819,7 +864,7 @@ def stream_answer(*, workdir: Path | None, selection: str, question: str, title:
 
     system, user = build_prompt(
         selection=selection, question=question, title=title or "", podcast=podcast or "",
-        passages=passages, web=web_text, profile=_profile(),
+        passages=passages, web=web_text, profile=_profile(), mode=mode,
     )
 
     started = _start_usage(workdir, model, log)
@@ -835,7 +880,8 @@ def stream_answer(*, workdir: Path | None, selection: str, question: str, title:
                 log(f"[deepdive] on_delta 回调异常（已忽略）：{type(exc).__name__}: {exc}")
 
     try:
-        text = _call_model(system=system, user=user, model=model, log=log, on_delta=emit)
+        text = _call_model(system=system, user=user, model=model, log=log, on_delta=emit,
+                           max_tokens=answer_limits(mode)[1])
         if not pieces and text:
             # 兜底：万一流里没有 content（例如上游换了实现），整段补发一次，
             # 保证「on_delta 收到的拼接」永远等于 answer
