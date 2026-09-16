@@ -118,7 +118,7 @@ def _needs_word_boundary(term: str) -> bool:
 
     原因很实际：搜 `AI` 时按子串匹配会把 `Fails`、`derail` 也算命中（实测搜 "AI" 时
     一篇讲 Clarity Act 的文章排进了结果，命中的是 "F**ai**ls"）。而中文本来就靠子串
-    检索（"鱼" 要能命中 "鱼不存在"），加 \\b 反而会失效。
+    检索（"鱼" 要能命中 "鱼不存在"），加边界反而会失效。
     """
     return bool(term) and all(ch.isascii() and (ch.isalnum() or ch in "-_") for ch in term)
 
@@ -129,11 +129,11 @@ def _compile(groups: list[list[str]]) -> list[tuple[int, str, re.Pattern]]:
     for gi, alts in enumerate(groups):
         for alt in alts:
             body = re.escape(alt)
-            # (?<![\\w-]) / (?![\\w-]) 而不是 \\b：术语里常带连字符（gpt-4、tcp-ip），
-            # \\b 在连字符处也成立，会把 "gpt-4" 切成两半。
-            pattern = (
-                rf"(?<![\w-]){body}(?![\w-])" if _needs_word_boundary(alt) else body
-            )
+            # 边界用 (?<!\w) / (?!\w)：**不能**把连字符也算成「词内」——
+            # 那样搜 AI 会漏掉 "AI-infra"、"AI-driven" 这类连字复合词（英文里极常见），
+            # 而本想挡住的 "Fails"/"derail" 是字母直接相连，照样被挡住。
+            # 查询词自身带连字符不受影响：gpt-4o 被 re.escape 成字面量整体匹配。
+            pattern = rf"(?<!\w){body}(?!\w)" if _needs_word_boundary(alt) else body
             patterns.append((gi, alt, re.compile(pattern, re.IGNORECASE)))
     return patterns
 

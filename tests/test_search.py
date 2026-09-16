@@ -348,3 +348,23 @@ def test_chinese_query_ignores_word_boundary_rule(tmp_output):
     assert hits, "中文词应能命中"
     hits2 = search(tmp_output, "RL")
     assert hits2, "英文缩写 RL 应能作为整词命中"
+
+
+def test_ascii_query_matches_hyphenated_compounds(tmp_output):
+    """回归：边界规则一度把连字符也算成「词内」，于是搜 AI 漏掉 AI-infra / AI-driven。
+
+    连字复合词在英文里极常见，必须能命中；而字母直接相连的 Fails/derail 仍要挡住。
+    """
+    _episode_with(tmp_output, "连字", "# AI-infra 与 AI-driven 的产品\n\nAI-driven 的设计，AI-infra 的底座。")
+    _episode_with(tmp_output, "噪音", "# Fails and derail\n\nThe plan fails and will derail.")
+
+    hits = search(tmp_output, "AI")
+    dirs = [h["dir"] for h in hits]
+    assert dirs == ["连字"], f"AI 应命中 AI-infra / AI-driven，且不该命中 Fails / derail，实际 {dirs}"
+    assert hits[0]["match_count"] >= 4, f"四个连字写法都该算命中，实际 {hits[0]['match_count']}"
+
+
+def test_ascii_term_with_underscore_is_exact(tmp_output):
+    """下划线连接的标识符整体匹配（claude_opus 不应被查 opus 命中）。"""
+    _episode_with(tmp_output, "标识符", "# claude_opus\n\n这里说的是 claude_opus 模型。")
+    assert search(tmp_output, "claude_opus"), "带下划线的标识符应能整体命中"
