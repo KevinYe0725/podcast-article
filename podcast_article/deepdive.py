@@ -75,6 +75,9 @@ ANSWER_TEMPERATURE = 0.4
 ANSWER_TEMPERATURE = 0.4
 
 WEB_SNIPPETS = 5      # 给模型看的网络结果条数上限
+# 「清点材料」的闸门先攒多少字再检查。实测那几句废话都出现在前 260 字内
+# （第一段或第二段开头），攒到这个长度足够判断，又不会让首字延迟太久。
+GATE_CHARS = 260
 # 单条片段最多保留多少行原文。实测（3528 段的长访谈）命中区域可能连着几十句都在讲同一个词，
 # 那种片段不是更好的证据，只会把其他片段挤掉、把 token 和注意力都吃掉。
 MAX_PASSAGE_SEGMENTS = 24
@@ -462,13 +465,27 @@ _SYSTEM = """你是这位读者的**阅读助手**。他在一篇由播客（或
 1. **这一期的原文片段**（下面给了若干条，逐字来自转写文字稿；它是自动语音识别的结果，可能有错别字、漏字和口语碎片）：这是最可信的依据
 2. **网络搜索结果**（如果下面给了）：**仅供参考**，可信度明显低于原文，而且可能已经过时
 
-## 绝不编造（违反任意一条即为不合格）
+## 直接给答案，不要交代「材料里有什么」（用户明确要求过的）
+- **读者要的是答案，不是你对材料的清点。** 直接回答，不要复述片段讲了什么、没讲什么
+- 绝对不要写这类句子（一条都不许出现）：
+  - 「这一期的原文里没有覆盖这一点」「原文里没有覆盖」
+  - 「原文没有提到，以下是背景补充」「以下是背景补充」
+  - 「凭我已有的知识」「建议你自己再核一次」
+  - 「片段只讲到 A、B、C，没有一句说 D」——**清点材料本身就是在浪费他的时间**
+- 需要说明「这句不是本集原文」时，只用一个**极短的括号标记**，贴在**那句话的末尾**：
+  `（原文未提及）` —— 四个字，不解释、不展开、不写第二句
+- 引用网络资料时同样只标 `（据网络资料）`，不要说来源性质、不要提示可能过时
+- 有本集原文支撑的内容，正常引用原话并带时间戳，**不需要任何标记**
+- **回答里不要出现这些词**：这期节目、这一期、本期、节目里、原文、片段、素材、文字稿、转写。
+  一个直接回答问题的回答**不需要提到材料**：引用原文靠引号 + 时间戳就够了，
+  说「原文里他说…」「这期节目没讲…」本身就是废话（实测：禁掉一种说法后模型会换一种继续清点，
+  所以这里直接禁用这批词）
+
+## 绝不编造（这部分比上面更硬，违反任意一条即为不合格）
 - 不许虚构原话、时间戳、数字、人名、作品名。引用原话必须**逐字**来自上面给的片段，并在同一行标出它行首那个 `[时:分:秒]`
 - 时间戳只能用片段里给出的那些，不许自己估算或推算；片段里没有的细节，一个数字都不要编
-- 原文讲过的必须照着原文讲；原文没讲、你想补充的，必须先写明「**原文没有提到，以下是背景补充**」再说
-- 片段不足以回答他的疑问时，第一句就直接写「**这一期的原文里没有覆盖这一点**」，然后给能给的补充（同样标明是补充）
-- 不确定就写不确定。宁可少说一句，也不要为了显得完整而编
-- 转写常把人名、术语听错：片段之间说法互相矛盾时，把矛盾指出来，不要替它圆场
+- 不确定就写不确定（一句话，例如「这一点我不确定」），但**不要用解释代替回答**
+- 转写常把人名、术语听错：片段之间说法互相矛盾时，用一两句指出矛盾，不要替它圆场
 
 ## 引用网络信息时
 - 写明「据网络资料」，并说清来源性质（官方文档 / 主流媒体 / 个人博客或自媒体）
@@ -508,16 +525,69 @@ _PASSAGE_EMPTY = (
     "（本次没有检索到与选中文字相关的原文片段：可能这一集还没有文字稿、转写没跑完，"
     "或者这段话在文字稿里找不到对应内容。）"
     "因此这一条回答里**不要引用任何原话、也不要给任何时间戳**；"
-    "他的疑问若超出本期范围，第一句就写「这一期的原文里没有覆盖这一点」，"
-    "再给背景补充（必须写明「原文没有提到，以下是背景补充」）。"
+    "**直接用你自己的知识回答他的疑问**，不要交代「原文里没有」、不要写「以下是背景补充」，"
+    "只在相关的句子末尾标一次 `（原文未提及）`。"
 )
 
 _WEB_HEADER = "【网络搜索结果（仅供参考）】"
 _WEB_EMPTY = (
     "（本次没有联网检索结果：可能联网检索被关闭、检索失败，或者没有找到有用的资料。）"
-    "因此不要写「据网络资料」；需要补充背景时写「原文没有提到，以下是背景补充」，"
-    "并说明这是你已有的背景知识、可能不准或已经过时。"
+    "因此不要写「据网络资料」；需要补充背景时**直接用你已有的知识回答**，"
+    "不要交代「没联网」，也不要解释来源性质或提示可能过时。"
 )
+
+
+
+# 回答里**不该出现**的「交代出处」句式。用户明确反馈过：
+# 「直接给出回答就好，不要解释原文有没有，很浪费观看时间」。
+# 曾经提示词是反着写的（要求「第一句就写这一期的原文里没有覆盖这一点」），
+# 于是模型真的这么写，占掉了整个第一段。现在改成正向要求 + 这道检查兜底。
+_META_PHRASES = (
+    "这一期的原文里没有覆盖", "原文里没有覆盖", "原文没有覆盖", "原文里没有提到",
+    "原文没有提到", "以下是背景补充", "以下为背景补充", "以下是背景信息",
+    "凭我已有的知识", "凭我的已有知识", "建议你自己再核", "建议你再核一次",
+    "片段只讲到", "片段只提到", "片段里只讲", "素材里没有提到", "材料里没有提到",
+    "文字稿里没有提到", "转写里没有提到",
+)
+
+
+# 回答里不该出现的**材料名词**。
+# 为什么用「句子级 + 材料名词」而不是只列短语：实测列短语挡不住 ——
+# 禁掉「片段只讲到」之后，模型换成「这期节目里没讲…只从…切入，讲的是 A、B、C」照样清点。
+# 而一个直接给答案的回答**根本不需要提到材料**：引用原文靠引号 + 时间戳就够，
+# 说「原文里他说」本身就是废话。
+_MATERIAL_WORDS = (
+    "这期节目", "这一期", "本期节目", "本期", "节目里", "播客里",
+    "原文", "片段", "素材", "文字稿", "转写",
+)
+
+_SENTENCE_RE = re.compile(r"[^。！？!?\n]*[。！？!?]")
+# 允许的极短标记：检查前先剥掉，否则「（原文未提及）」里的「原文」会被误判成清点材料
+_ALLOWED_TAGS_RE = re.compile(r"[（(](?:原文未提及|据网络资料|原文未提|网络资料)[）)]")
+
+
+def answer_problems(text: str) -> list[str]:
+    """检查回答里有没有「清点材料」的废话，返回问题清单（空 = 通过）。
+
+    两层判定：
+    1. **句子级**：任何提到「这期节目 / 原文 / 片段 / 素材 / 文字稿 / 转写」的句子都算 —— 
+       一个直接回答问题的回答不需要提到材料。
+    2. 兜底短语表：收一些不说材料名词、但同样是交代出处的说法。
+
+    这一条只做**记录与告警**，不触发重写：回答是流式的，文字已经推给用户了，
+    中途换掉会让界面上的内容突然被替换，比留一句废话更糟。
+    所以这里先量、先暴露，用数据判断提示词够不够硬（实测见 README）。
+    """
+    body = _ALLOWED_TAGS_RE.sub("", text or "")
+    problems: list[str] = []
+    for sentence in _SENTENCE_RE.findall(body):
+        hit = next((w for w in _MATERIAL_WORDS if w in sentence), "")
+        if hit:
+            problems.append(f"这句话在讲材料而不是回答：「{hit}」→ {sentence.strip()[:38]}")
+    for w in _META_PHRASES:
+        if w in body and not any(w in p for p in problems):
+            problems.append(f"出现交代出处的句子「{w}」")
+    return problems
 
 
 def build_prompt(*, selection: str, question: str, title: str, podcast: str,
@@ -883,31 +953,111 @@ def stream_answer(*, workdir: Path | None, selection: str, question: str, title:
     )
 
     started = _start_usage(workdir, model, log)
-    pieces: list[str] = []
+    pushed: list[str] = []          # 真正推给界面的文本（= 最终 answer）
+    body = ""                       # 生成结果；generate() 抛异常时也要有值
     error = ""
 
-    def emit(chunk: str) -> None:
-        pieces.append(chunk)
+    def push(text: str) -> None:
+        if not text:
+            return
+        pushed.append(text)
         if on_delta:
             try:
-                on_delta(chunk)
+                on_delta(text)
             except Exception as exc:   # SSE 连接断了不该让生成失败（正文仍会留着）
                 log(f"[deepdive] on_delta 回调异常（已忽略）：{type(exc).__name__}: {exc}")
 
-    try:
-        text = _call_model(system=system, user=user, model=model, log=log, on_delta=emit,
+    tracker: dict = {"buf": []}
+
+    def generate(*, gate: bool, system_override: str | None = None) -> tuple[str, bool]:
+        """跑一次生成，返回 (正文, 是否因闸门拦下而没放行)。
+
+        gate=True 时先攒住开头不推给界面，攒到 GATE_CHARS 做一次检查：
+        - 通过 → 把攒下的放行，之后边收边推（流式体验保留）
+        - 不通过 → 一个字都不推，交给调用方重写（用户看不到中间过程，也就不会看到内容被替换）
+
+        为什么要机械闸门：提示词里点名禁掉「片段只讲到」之后，模型会**换一种说法**
+        继续清点材料（「这期节目里没讲…只从…切入，讲的是 A、B、C」）—— 实测 3 次里还有 2 次。
+        闸门判定见 answer_problems()，用的是「句子级 + 材料名词」，挡得住换说法。
+        """
+        buf: list[str] = []
+        tracker["buf"] = buf          # 暴露给调用方：中途出错时用它保住已生成的部分
+        live = [False]
+        verdict = {"blocked": False}
+
+        def emit(chunk: str) -> None:
+            buf.append(chunk)
+            if live[0]:
+                push(chunk)
+                return
+            text = "".join(buf)
+            if gate and len(text) < GATE_CHARS:
+                return                       # 还没攒够，继续攒
+            live[0] = True
+            if gate:
+                problems = answer_problems(text)
+                if problems:
+                    # 一个字都不推，也不会再推后续内容；本次生成作废，调用方会重写
+                    live[0] = False
+                    verdict["blocked"] = True
+                    log(f"[deepdive] 回答开头在清点材料：{problems[0][:60]}")
+                    return
+            push(text)
+
+        body = _call_model(system=system_override or system, user=user, model=model,
+                           log=log, on_delta=emit,
                            max_tokens=answer_limits(mode)[1], history=history)
-        if not pieces and text:
+        if not buf and body:
             # 兜底：万一流里没有 content（例如上游换了实现），整段补发一次，
             # 保证「on_delta 收到的拼接」永远等于 answer
-            emit(text)
+            emit(body)
+        if gate and not live[0] and buf:
+            # 正文比 GATE_CHARS 还短：流结束时缓冲里还攒着，这里补做一次检查再放行。
+            # （漏了这一步的话，短回答会一个字都推不出去 —— 踩过。）
+            text = "".join(buf)
+            problems = answer_problems(text)
+            if problems:
+                verdict["blocked"] = True
+                log(f"[deepdive] 回答在清点材料：{problems[0][:60]}")
+            else:
+                push(text)
+        return "".join(buf), verdict["blocked"]
+
+    try:
+        body, blocked = generate(gate=True)
+        if blocked:
+            log("[deepdive] 带着问题重写一次（只重写一次，不再多花额度）…")
+            retry_system = system + (
+                "\n\n【重写要求】上一次的回答在**清点材料**（说明哪部分讲了、哪部分没讲），"
+                "那是用户明确说过的废话，必须删掉。这次只回答他的问题："
+                "不要提到这期节目/原文/片段/素材/文字稿；需要标注出处时只在句末写一个"
+                "`（原文未提及）` 或 `（据网络资料）`。"
+            )
+            # 被拦时第一次一个字都没推出去，所以界面是干净的，直接拿重写版即可
+            assert not pushed, "被闸门拦下时不该已经推过内容"
+            body, _ = generate(gate=False, system_override=retry_system)
+        if answer_problems(body):
+            log("[deepdive] 重写后仍在清点材料，保留这一版（不再重试）")
     except Exception as exc:
         error = _friendly_error(exc)
         log(f"[deepdive] {error}")
+        # 中途失败时，攒在闸门缓冲里、还没放行的正文不能丢 —— 有半篇也比一片空白强
+        partial = "".join(tracker.get("buf") or [])
+        if partial and not pushed:
+            # 走到这里说明不会再有第二次生成了，那就把已生成的部分交出去：
+            # 哪怕开头有一句清点材料的废话，也比让用户面对一片空白强
+            push(partial)
+            log(f"[deepdive] 已把中途生成的 {len(partial)} 字先交给界面")
     finally:
         _stop_usage(started, log)
 
-    answer = "".join(pieces)
+    answer = "".join(pushed) or body
     if not answer and not error:
         error = "模型没有返回内容，请重试。"
+    # 记录（不重写）：回答里还在「清点材料」的话，日志里应当看得见 —— 用这个数据判断
+    # 提示词够不够硬。不触发重写的原因见 answer_problems 的注释（流式内容会突然被替换）。
+    if answer:
+        meta = answer_problems(answer)
+        if meta:
+            log(f"[deepdive] ⚠ 回答里有 {len(meta)} 处交代出处的话：" + "；".join(m[:30] for m in meta))
     return {"answer": answer, "passages": passages, "web": web, "error": error}

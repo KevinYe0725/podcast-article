@@ -382,6 +382,8 @@ The place you get stuck while reading **shouldn't require opening a separate cha
 
 **Length is a choice**, and the default is concise — that came from real use: the original 400-900 character version produced 914 characters across 7 blocks, of which **only one block answered the question asked**; the rest were points the model found interesting ("another thing worth noting is…", "this phrasing also deserves a pause"). So the problem wasn't just length, it was **answering the wrong question** — shrinking the word count alone doesn't fix it, the prompt has to forbid unprompted expansion. Tick "detailed" in the drawer to expand, or change the default in Settings.
 
+**It answers — it doesn't narrate its sources**: no "the transcript doesn't cover this" or "the passages only mention A, B, C" (that's a waste of reading time). When a sentence isn't from this episode, it's marked with a four-character tag at the end, `（原文未提及）`, with no explanation. (Changed after user feedback: the old prompt actually *instructed* it to announce the absence first, so an entire paragraph went to inventorying the material.)
+
 Also: ask directly without selecting anything, a per-episode Q&A history (stored in `qa.json` next to the article, so it is backed up and deleted with it), and a per-question toggle for web access.
 
 ### Why it ships its own search layer

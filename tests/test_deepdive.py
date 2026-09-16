@@ -378,10 +378,22 @@ def test_build_prompt_user_carries_everything():
 
 
 def test_build_prompt_explains_missing_passages_and_web():
+    """片段/联网为空时仍要有**明确说明**（不能留空段落），但说明的方式变了：
+
+    以前是「告诉他去写『这一期的原文里没有覆盖这一点』」，用户反馈那是浪费阅读时间；
+    现在改成「直接回答 + 只在句末标一次（原文未提及）」。
+    """
     _, user = build_prompt(selection="选中", question="疑问", title="T", podcast="P",
                            passages=[], web="")
-    assert "没有检索到" in user and "原文里没有覆盖" in user
-    assert "没有联网" in user and "据网络资料" in user
+    assert "没有检索到" in user, "空片段必须给模型一个明确说明"
+    assert "原文未提及" in user, "要教它用极短标记而不是宣告没有覆盖"
+    assert "不要交代" in user, "要明确要求不要交代材料"
+    assert "原文里没有覆盖这一点" not in user, "不能再教它去宣告「没有覆盖」"
+    assert "没有联网" in user and "据网络资料" in user, "没联网时也要说明不许写「据网络资料」"
+    # 这个短语只允许以**禁令**的形式出现（「不要写『以下是背景补充』」），
+    # 不能再作为「先写这句再补充」的教法
+    assert "不要写「以下是背景补充」" in user, "要把它列进禁令"
+    assert "必须先写明" not in user and "先说" not in user, f"不该再有'先说再补'的教法：{user[-200:]}"
     assert re.search(r"【这一期的原文片段[^\n]*】\n（[^）]+）", user), "空片段必须是明确说明，不能留空段落"
     assert re.search(r"【网络搜索结果[^\n]*】\n（[^）]+）", user), "没有网络资料也要明确说明"
     assert "【读者画像】" not in user, "没填画像时不该出现空段落"
@@ -408,7 +420,10 @@ def test_stream_answer_structure_and_deltas(tmp_output, llm):
     assert set(got) == {"answer", "passages", "web", "error"}
     assert got["error"] == ""
     assert got["answer"] == "第一段。第二段。还可以往哪追"
-    assert len(seen) == 3, "每个 chunk 回调一次"
+    # 注意：回答比 GATE_CHARS 短时，闸门会先攒住、末尾一次性放行 —— 所以回调次数
+    # 不再是「每个 chunk 一次」，而是 1 次（这正是不让「清点材料」流到界面上的代价）。
+    # 关键不变量是「拼起来严格等于 answer」，而不是回调次数。
+    assert len(seen) >= 1, "至少要推一次给界面"
     assert "".join(seen) == got["answer"], "on_delta 拼起来必须等于 answer"
     assert got["passages"] and "强化学习第一句" in got["passages"][0]["text"]
     assert got["web"] is None
@@ -829,3 +844,64 @@ def test_answer_token_cap_is_bounded():
         plan = deepdive.answer_mode(mode)
         assert plan["lo"] <= ask <= plan["hi"], f"{mode} 的报价字数应落在区间内，实际 {ask}"
         assert plan["lo"] < plan["hi"]
+
+
+# ---------------------------------------------------------------- 直接回答，别清点材料
+#
+# 用户反馈：「直接给出回答就好，不要解释原文有没有，很浪费观看时间」。
+# 旧提示词是**反着写的**（要求「第一句就写这一期的原文里没有覆盖这一点」），
+# 于是模型真的把整个第一段用来清点材料。这组用例守住新契约。
+
+
+def test_answer_gate_flags_material_narration():
+    """用户贴的那条真实回答，7 处交代出处的句子都要被抓出来。"""
+    real = (
+        "这一期的原文里没有覆盖这一点。片段只讲到孙正义的祖父母偷渡到日本、他后来投阿里巴巴、"
+        "软银市值一度冲到 2000 亿美元，没有一句说他起家做什么。\n\n"
+        "原文没有提到，以下是背景补充（凭我已有的知识，可能不准或过时，建议你自己再核一次）："
+        "软银最早是孙正义 1981 年在日本创立的软件流通与出版公司。"
+    )
+    got = deepdive.answer_problems(real)
+    # 判定是**句子级**的：这条回答里有 3 句在讲材料，就报 3 处
+    assert len(got) >= 3, f"应当抓出多处交代出处的话，实际 {got}"
+    joined = " ".join(got)
+    for phrase in ("这一期的原文里没有覆盖", "片段只讲到", "原文没有提到", "凭我已有的知识"):
+        assert phrase in joined, f"「{phrase}」应当被抓出来：{got}"
+
+
+def test_answer_gate_passes_direct_answers():
+    """直接给答案 + 四字标记，要能通过。"""
+    good = (
+        "软银最早是孙正义 1981 年在日本创立的软件流通与出版公司，靠代理软件、出软件目录起家，"
+        "后来才转向电信、宽带和投资。「软银」这个名字本身就是「软件银行」的意思。"
+        "跟银行业务没直接关系。（原文未提及）\n\n"
+        "> 他后来投阿里巴巴，软银市值一度冲到 2000 亿美元 [00:01:54]"
+    )
+    assert deepdive.answer_problems(good) == [], f"改后的理想回答不该被判问题：{deepdive.answer_problems(good)}"
+
+
+def test_answer_gate_allows_minimal_inline_tag():
+    """四字标记（原文未提及）/（据网络资料）是允许的，不算清点材料。"""
+    for text in ("这件事发生在 1995 年（原文未提及）。",
+                 "该公司估值约 40 亿美元（据网络资料）。"):
+        assert deepdive.answer_problems(text) == [], f"极短标记不该被判违规：{text}"
+
+
+def test_prompt_forbids_material_narration():
+    """提示词本身不能再要求「第一句就写原文里没有覆盖」。"""
+    system, user = build_prompt(selection="选中", question="疑问", title="T", podcast="P",
+                                passages=[], web="")
+    assert "不要交代" in system, "必须有「不要交代材料里有什么」这条"
+    assert "原文未提及" in system, "要给出极短标记的写法"
+    for banned in ("这一期的原文里没有覆盖", "以下是背景补充", "片段只讲到"):
+        assert banned in system, f"要点名禁掉「{banned}」（写在禁令里）"
+    # user 侧的「没有片段」提示也不能再教它去宣告
+    assert "第一句就写" not in user, f"user 侧不该还教它宣告：{user[-300:]}"
+
+
+def test_web_empty_hint_does_not_teach_narration():
+    """没有联网结果时，user 侧也不能教它写「没有联网」。"""
+    _, user = build_prompt(selection="s", question="q", title="T", podcast="P",
+                           passages=[{"text": "片段", "ts": "00:00:01"}], web="")
+    assert "不要交代" in user or "直接" in user, f"应当要求直接回答：{user[-260:]}"
+    assert "以下是背景补充" not in user, "不该再出现「以下是背景补充」这种教法"
