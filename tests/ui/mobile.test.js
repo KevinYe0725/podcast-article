@@ -146,7 +146,19 @@ function pickBlock(css, header, marker) {
     fails.push(`贴底元素的安全区处理太少（${out.CSS_安全区出现次数} 处）`);
   }
 
-  // 3f. 宽内容（表格 / 代码块）在手机上要自己横滚，不许把整页撑宽
+  // 3f. 输入类控件的聚焦提示不能用绿色（用户反馈：点一下粘贴框就套一个绿框）。
+  //     原因记在这：textarea / input 点击也会命中 :focus-visible，所以绿色描边必须只留给按钮。
+  const bare = css.replace(/\/\*[\s\S]*?\*\//g, "");   // 先去掉注释，否则说明文字会被当成规则
+  const focusRules = (bare.match(/[^{}]*:focus[^{}]*\{[^}]*\}/g) || []);
+  const greenInputFocus = focusRules.filter((r) =>
+    /var\(--green\)/.test(r) && /(input|textarea|searchbox|#url|\.field|modaltarea)/.test(r));
+  out.CSS_输入框聚焦不用绿色 = greenInputFocus.length === 0;
+  if (!out.CSS_输入框聚焦不用绿色) {
+    fails.push("输入框的聚焦样式还是绿色：" +
+      greenInputFocus.map((r) => r.split("{")[0].trim()).join(" / "));
+  }
+
+  // 3g. 宽内容（表格 / 代码块）在手机上要自己横滚，不许把整页撑宽
   out.CSS_表格可横滚 = rule(mobile, /#article table \{ display: block; overflow-x: auto/);
   if (!out.CSS_表格可横滚) fails.push("文章里的表格在窄屏没有横滚处理，会把整页撑出横向滚动");
 

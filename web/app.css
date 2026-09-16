@@ -225,7 +225,10 @@
   .btn.primary { background: var(--black); color: #fff; border-color: var(--black); }
   .btn.primary:hover { background: #2c2c2c; }
   .btn:disabled { opacity: .5; cursor: not-allowed; }
-  .btn:focus-visible, #go:focus-visible, #url:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
+  /* 焦点提示：按钮用绿色描边（按钮不会因为「点一下」就命中 :focus-visible，只有 Tab 会），
+     输入框交给容器自己的边框变化 —— textarea/input 点击也会命中 :focus-visible，
+     所以那条规则里**不要**放 #url，否则点一下输入框就套一个绿框。 */
+  .btn:focus-visible, #go:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
   .btn .k { color: var(--dim); font-size: 11px; }
   .btn.mini { padding: 5px 12px; font-size: 12.5px; }
 
@@ -427,7 +430,10 @@
     font-size: 13.5px; font-family: var(--font); background: #fff; color: var(--text);
   }
   .field textarea { min-height: 66px; resize: vertical; line-height: 1.6; }
-  .field input:focus, .field textarea:focus, .field select:focus { outline: none; border-color: var(--green); }
+  /* 输入类控件的聚焦一律走中性色（原来是绿色，点一下就是一个绿框） */
+  .field input:focus, .field textarea:focus, .field select:focus {
+    outline: none; border-color: var(--border2); box-shadow: 0 0 0 3px rgba(13, 13, 13, .04);
+  }
   .linkbtn { border: 0; background: none; padding: 0; font: inherit; font-size: 12px; color: var(--green); cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
   .vres { margin-left: 8px; font-size: 12px; color: var(--dim); }
   .vres.ok { color: var(--green); }
@@ -502,7 +508,7 @@
     width: 100%; border: 1px solid var(--border2); border-radius: 10px; padding: 10px 13px;
     font-size: 14px; font-family: var(--font); background: #fff; color: var(--text); margin-top: 15px;
   }
-  .modalcard input:focus { outline: none; border-color: var(--green); }
+  .modalcard input:focus { outline: none; border-color: var(--border2); box-shadow: 0 0 0 3px rgba(13, 13, 13, .04); }
   .modalbtns { display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px; }
   .opt { display: flex; gap: 10px; padding: 11px 12px; border: 1px solid var(--border2); border-radius: 11px; cursor: pointer; margin-top: 10px; transition: .13s; }
   .opt:hover { border-color: var(--border2); background: var(--bg2); }
@@ -535,7 +541,7 @@
     background: var(--bg2); border: 1px solid transparent; border-radius: 10px;
     transition: border-color .15s, box-shadow .15s, background .15s;
   }
-  .searchbox:focus-within { background: #fff; border-color: var(--green); box-shadow: 0 0 0 3px rgba(16, 163, 127, .1); }
+  .searchbox:focus-within { background: #fff; border-color: var(--border2); box-shadow: 0 0 0 3px rgba(13, 13, 13, .04); }
   .searchbox .sicon { width: 16px; height: 16px; flex: 0 0 auto; color: var(--dim); }
   .searchbox input {
     flex: 1; min-width: 0; padding: 0; border: 0; outline: none; background: transparent;
@@ -755,7 +761,7 @@
     border: 1px solid var(--border); border-radius: 10px; background: #fff; color: var(--text);
     font-family: var(--mono); font-size: 13px; line-height: 1.6; resize: vertical;
   }
-  .modaltarea:focus { outline: none; border-color: var(--green); }
+  .modaltarea:focus { outline: none; border-color: var(--border2); box-shadow: 0 0 0 3px rgba(13, 13, 13, .04); }
   /* 提示段落：同时覆盖 .modalcard p 的字号/颜色，保证在弹窗里也一致 */
   .modalhint, .modalcard .modalhint { margin-top: 8px; font-size: 12.5px; color: var(--dim); line-height: 1.6; }
 
@@ -972,7 +978,7 @@ body.assistopen .fab { display: none; }
   font-family: var(--font); font-size: 13px; line-height: 1.6; resize: none;
   outline: none; background: #fff; max-height: 110px; transition: .13s;
 }
-.afoot textarea:focus { border-color: var(--green); }
+.afoot textarea:focus { border-color: var(--border2); box-shadow: 0 0 0 3px rgba(13, 13, 13, .04); }
 .arow { display: flex; align-items: center; gap: 10px; margin-top: 9px; }
 .achip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--dim); cursor: pointer; }
 .achip input { width: auto; margin: 0; }
