@@ -544,52 +544,28 @@
 <aside id="assist" class="assist" aria-label="阅读助手">
   <div class="ahead">
     <span class="atitle">✦ 阅读助手</span>
-    <span class="astatus" id="astatus"></span>
     <span style="flex:1"></span>
-    <button class="iconbtn small" id="ahistbtn" onclick="toggleAssistHistory()" title="历史问答">☰</button>
+    <button class="iconbtn small" id="anewbtn" onclick="newAssistThread()" title="针对新的选段开一段新对话">＋ 新对话</button>
     <button class="iconbtn small" onclick="closeAssist()" title="关闭（Esc）" aria-label="关闭">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"></path></svg>
     </button>
   </div>
 
+  <!-- 消息流：像普通 AI 会话一样，一轮一轮往下接 -->
   <div class="abody" id="abody">
     <div class="aintro" id="aintro">
-      <p>在文章里<b>选中一段</b>有疑问的文字，点「深挖这段」—— 我会先回到播客原文找依据（带时间戳，可以点着回听），再按需联网补充背景。</p>
-      <p class="adim">也可以直接在下面提问，比如「他说的 SGLang 是什么」「这段结论有什么反例」。</p>
+      <p>在文章里<b>选中一段</b>有疑问的文字，点「深挖这段」—— 我会先回到播客原文找依据，再按需联网补充背景。</p>
+      <p class="adim">之后可以<b>一直追问</b>下去，上下文会接着上一轮。依据（原文片段 / 网络结果）默认收在每条回答下面，需要核对时再展开。</p>
     </div>
-
-    <div class="ablock" id="aquote" style="display:none">
-      <div class="alabel">选中的原文
-        <button class="linkbtn" onclick="setAssistSelection('')" title="不针对选文，只按下面的问题提问">清除</button>
-      </div>
-      <div class="aqtext" id="aqtext"></div>
-    </div>
-
-    <div class="ablock" id="asources" style="display:none">
-      <div class="alabel">原文依据<span class="alabel2" id="apcount"></span></div>
-      <div id="apassages"></div>
-      <div class="alabel" id="aweblabel" style="display:none">网络信息<span class="alabel2" id="awebcount"></span></div>
-      <div id="aweb"></div>
-    </div>
-
-    <div class="ablock" id="aanswerbox" style="display:none">
-      <div class="alabel">解读</div>
-      <div class="aanswer" id="aanswer"></div>
-    </div>
-
-    <div class="ablock" id="ahistory" style="display:none">
-      <div class="alabel">历史问答<span class="alabel2" id="ahcount"></span>
-        <button class="linkbtn" onclick="clearAssistHistory()">清空</button></div>
-      <div id="ahlist"></div>
-    </div>
+    <div id="amessages"></div>
   </div>
 
   <div class="afoot">
-    <textarea id="aq" rows="1" placeholder="还想问什么？（留空就只解读选中的这段）" spellcheck="false"></textarea>
+    <textarea id="aq" rows="1" placeholder="继续追问…（Enter 发送，Shift+Enter 换行）" spellcheck="false"></textarea>
     <div class="arow">
       <label class="achip"><input type="checkbox" id="aweb_toggle" checked> 联网</label>
       <label class="achip" title="默认只回答你问的那一点；勾上才展开讲"><input type="checkbox" id="adetail"> 详细</label>
-      <button class="btn primary mini" id="agobtn" onclick="askAI()">深挖</button>
+      <button class="btn primary mini" id="agobtn" onclick="askAI()">发送</button>
     </div>
   </div>
 </aside>

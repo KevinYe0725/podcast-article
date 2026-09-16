@@ -91,12 +91,11 @@ const DIR = "__UI测试单集";        // seed.js 造的那一集
   await sleep(300);
 
   out.抽屉出现 = drawer().classList.contains("show");
-  out.抽屉里_选中原文 = $("aqtext").textContent.trim().slice(0, 40);
-  out.抽屉里_有选中块 = $("aquote").style.display !== "none";
+  out.抽屉里_选文出现在消息里 = (doc.querySelector(".amsg.user .aqtext") || { textContent: "" }).textContent.trim().slice(0, 40);
   out.悬浮球在抽屉打开时隐藏 = !fab().classList.contains("show");
   out.浮出按钮已收起 = !selbtn().classList.contains("show");
   if (!out.抽屉出现) fails.push("点「深挖这段」应打开右侧抽屉");
-  if (!out.抽屉里_选中原文) fails.push("抽屉里应展示选中的原文");
+  if (!out.抽屉里_选文出现在消息里) fails.push("抽屉里应把选中的原文显示为第一条消息");
   if (!out.悬浮球在抽屉打开时隐藏) fails.push("抽屉打开时悬浮球应让位");
 
   // ---------- 4) 提问请求带上了正确的参数
@@ -108,15 +107,7 @@ const DIR = "__UI测试单集";        // seed.js 造的那一集
   if (body.mode !== "concise") fails.push(`默认篇幅应为 concise，实际 ${body.mode}`);
   out.篇幅开关_存在 = !!$("adetail");
   if (!out.篇幅开关_存在) fails.push("抽屉里应有「详细」开关");
-  // 勾上「详细」后再问，要带上 detail
-  $("adetail").checked = true;
-  window.askAI();
-  await sleep(600);
-  out.勾选详细后的mode = asked[asked.length - 1]["body"] && asked[asked.length - 1].body.mode;
-  $("adetail").checked = false;
-  if (out.勾选详细后的mode !== "detail") {
-    fails.push(`勾选「详细」后应传 detail，实际 ${out.勾选详细后的mode}`);
-  }
+
   if (!asked.length) fails.push("点「深挖这段」应发出 /api/ask 请求");
   if (body.dir !== DIR) fails.push(`提问请求的 dir 应为 ${DIR}，实际 ${body.dir}`);
   if (!body.selection) fails.push("提问请求应带上选中的文字");
@@ -126,7 +117,7 @@ const DIR = "__UI测试单集";        // seed.js 造的那一集
   out.已建立SSE = !!stream && /\/api\/ask\/fakeask1\/stream/.test(stream.url);
   if (!out.已建立SSE) fails.push("应建立 SSE 连接订阅解读流");
 
-  stream.emit("sources", {
+  const sources = {
     passages: [
       { ts: "00:10:07", start: 607, text: "这是原文里的第一段。" },
       { ts: "00:12:30", start: 750, text: "这是原文里的第二段。" },
@@ -134,19 +125,46 @@ const DIR = "__UI测试单集";        // seed.js 造的那一集
     web: { ok: true, provider: "bing", results: [
       { title: "参考文章标题", url: "https://example.com/a", snippet: "这是摘要" },
     ]},
-  });
+  };
+  stream.emit("sources", sources);
   await sleep(300);
 
-  out.依据_可见 = $("asources").style.display !== "none";
-  out.依据_片段数 = doc.querySelectorAll("#apassages .apass").length;
-  out.依据_标签 = $("apcount").textContent.trim();
-  out.依据_时间戳 = [...doc.querySelectorAll("#apassages .ts")].map((a) => a.textContent.trim());
-  out.依据_时间戳秒数 = [...doc.querySelectorAll("#apassages .ts")].map((a) => a.dataset.sec);
-  out.网络_条数 = doc.querySelectorAll("#aweb .aweb").length;
-  out.网络_标题 = doc.querySelector("#aweb .awt") ? doc.querySelector("#aweb .awt").textContent.trim() : "";
-  out.网络_链接 = doc.querySelector("#aweb .aweb") ? doc.querySelector("#aweb .aweb").getAttribute("href") : "";
-  out.网络_新窗口打开 = doc.querySelector("#aweb .aweb") ? doc.querySelector("#aweb .aweb").getAttribute("target") : "";
-  if (!out.依据_可见) fails.push("收到 sources 后应显示「原文依据」区块");
+  // 依据在流式过程中**不该**占视野（用户要求隐藏），要等回答结束才挂上去
+  out.流式中_依据未渲染 = doc.querySelectorAll("#amessages .asrc").length === 0;
+  if (!out.流式中_依据未渲染) fails.push("依据不该在流式过程中就铺开占视野");
+  // ---------- 6) 逐段推 delta → 正文流式追加
+  stream.emit("delta", { text: "第一段解读。" });
+  await sleep(180);
+  out.流式_中途1 = doc.querySelector(".amsg.ai .aanswer").textContent.trim();
+  out.流式_光标 = doc.querySelector(".amsg.ai .aanswer").classList.contains("streaming");
+  stream.emit("delta", { text: "\n\n第二段，引用原话：\n> 这是原话 [00:10:07]\n\n**还可以往哪追**\n- 一个具体方向" });
+  await sleep(180);
+  out.流式_中途2长度 = doc.querySelector(".amsg.ai .aanswer").textContent.trim().length;
+  if (!/第一段解读。/.test(out.流式_中途1)) fails.push(`第一次 delta 应立即渲染，实际「${out.流式_中途1}」`);
+  if (!out.流式_光标) fails.push("流式过程中应有 streaming 光标");
+  if (!(out.流式_中途2长度 > out.流式_中途1.length)) fails.push("后续 delta 应追加而不是覆盖");
+
+  stream.emit("done", {
+    status: "done", answer: doc.querySelector(".amsg.ai .aanswer").textContent, error: "",
+    sources, thread: "t123",
+  });
+  await sleep(400);
+
+  const aiBubble = doc.querySelector(".amsg.ai");
+  out.依据_收在details里 = !!aiBubble.querySelector("details.asrc");
+  out.依据_默认收起 = aiBubble.querySelector("details.asrc") && !aiBubble.querySelector("details.asrc").open;
+  out.依据_摘要文案 = (aiBubble.querySelector("details.asrc > summary") || { textContent: "" }).textContent.trim();
+  out.依据_片段数 = aiBubble.querySelectorAll(".asrc .apass").length;
+  out.依据_时间戳 = [...aiBubble.querySelectorAll(".asrc .ts")].map((a) => a.textContent.trim());
+  out.依据_时间戳秒数 = [...aiBubble.querySelectorAll(".asrc .ts")].map((a) => a.dataset.sec);
+  out.网络_条数 = aiBubble.querySelectorAll(".asrc .aweb").length;
+  out.网络_链接 = aiBubble.querySelector(".asrc .aweb") ? aiBubble.querySelector(".asrc .aweb").getAttribute("href") : "";
+  out.网络_新窗口打开 = aiBubble.querySelector(".asrc .aweb") ? aiBubble.querySelector(".asrc .aweb").getAttribute("target") : "";
+  if (!out.依据_收在details里) fails.push("回答结束后依据应挂在 details 里");
+  if (!out.依据_默认收起) fails.push("依据默认必须收起（用户要求隐藏）");
+  if (!/2 段原文/.test(out.依据_摘要文案) || !/1 条网络结果/.test(out.依据_摘要文案)) {
+    fails.push(`依据摘要应写清有几段原文/几条网络结果，实际「${out.依据_摘要文案}」`);
+  }
   if (out.依据_片段数 !== 2) fails.push(`原文依据应渲染 2 段，实际 ${out.依据_片段数}`);
   if (out.依据_时间戳.join() !== "[00:10:07],[00:12:30]") fails.push(`时间戳渲染不对：${out.依据_时间戳}`);
   if (out.依据_时间戳秒数.join() !== "607,750") fails.push(`时间戳秒数不对：${out.依据_时间戳秒数}`);
@@ -154,40 +172,24 @@ const DIR = "__UI测试单集";        // seed.js 造的那一集
   if (out.网络_链接 !== "https://example.com/a") fails.push(`网络结果链接不对：${out.网络_链接}`);
   if (out.网络_新窗口打开 !== "_blank") fails.push("网络结果应在新窗口打开");
 
-  // ---------- 6) 逐段推 delta → 正文流式追加
-  stream.emit("delta", { text: "第一段解读。" });
-  await sleep(180);
-  out.流式_中途1 = $("aanswer").textContent.trim();
-  out.流式_光标 = $("aanswer").classList.contains("streaming");
-  stream.emit("delta", { text: "\n\n第二段，引用原话：\n> 这是原话 [00:10:07]\n\n**还可以往哪追**\n- 一个具体方向" });
-  await sleep(180);
-  out.流式_中途2长度 = $("aanswer").textContent.trim().length;
-  if (!/第一段解读。/.test(out.流式_中途1)) fails.push(`第一次 delta 应立即渲染，实际「${out.流式_中途1}」`);
-  if (!out.流式_光标) fails.push("流式过程中应有 streaming 光标");
-  if (!(out.流式_中途2长度 > out.流式_中途1.length)) fails.push("后续 delta 应追加而不是覆盖");
-
-  stream.emit("done", {
-    status: "done", answer: $("aanswer").textContent, error: "",
-    sources: { passages: [], web: null },
-  });
-  await sleep(400);
-
-  out.完成后_光标消失 = !$("aanswer").classList.contains("streaming");
-  out.完成后_引用块 = doc.querySelectorAll("#aanswer blockquote").length;
-  out.完成后_粗体 = doc.querySelectorAll("#aanswer strong").length;
-  out.完成后_列表项 = doc.querySelectorAll("#aanswer li").length;
-  out.完成后_解读里的时间戳 = [...doc.querySelectorAll("#aanswer .ts")].map((a) => a.textContent.trim());
+  out.完成后_光标消失 = !doc.querySelector(".amsg.ai .aanswer").classList.contains("streaming");
+  out.完成后_引用块 = doc.querySelectorAll(".amsg.ai .aanswer blockquote").length;
+  out.完成后_粗体 = doc.querySelectorAll(".amsg.ai .aanswer strong").length;
+  out.完成后_列表项 = doc.querySelectorAll(".amsg.ai .aanswer li").length;
+  out.完成后_解读里的时间戳 = [...doc.querySelectorAll(".amsg.ai .aanswer .ts")].map((a) => a.textContent.trim());
   out.完成后_按钮恢复 = !$("agobtn").disabled;
-  out.完成后_状态文案 = $("astatus").textContent.trim();
+  // 过程状态文字已按用户要求去掉，改成气泡里的「正在输入」指示 —— 断言它同时消失
+  out.完成后_无输入指示 = !doc.querySelector(".amsg.ai .aanswer.pending");
   if (!out.完成后_光标消失) fails.push("结束后应去掉流式光标");
   if (out.完成后_引用块 !== 1) fails.push(`解读里的 > 引用应渲染成 blockquote，实际 ${out.完成后_引用块}`);
   if (out.完成后_粗体 < 1) fails.push("解读里的 **粗体** 应渲染成 strong");
   if (out.完成后_列表项 !== 1) fails.push(`解读里的 - 列表应渲染成 li，实际 ${out.完成后_列表项}`);
   if (out.完成后_解读里的时间戳.join() !== "[00:10:07]") fails.push(`解读里的时间戳应被识别，实际 ${out.完成后_解读里的时间戳}`);
-  if (!out.完成后_按钮恢复) fails.push("结束后「深挖」按钮应恢复可用");
+  if (!out.完成后_按钮恢复) fails.push("结束后发送按钮应恢复可用");
+  if (!out.完成后_无输入指示) fails.push("结束后「正在输入」指示应消失");
 
   // ---------- 7) 解读里的时间戳点了能回听（复用文章那套播放器）
-  const ts = doc.querySelector("#aanswer .ts");
+  const ts = doc.querySelector(".amsg.ai .aanswer .ts");
   ts.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
   await sleep(400);
   out.解读时间戳_播放条出现 = $("player").classList.contains("show");
@@ -198,12 +200,37 @@ const DIR = "__UI测试单集";        // seed.js 造的那一集
   if (!out.解读时间戳_悬浮球上移) fails.push("播放条升起时悬浮球应上移（body.withplayer）");
   window.closePlayer();
 
-  // ---------- 8) 历史问答面板
-  click($("ahistbtn"));
-  await sleep(600);
-  out.历史面板可见 = $("ahistory").style.display !== "none";
-  out.历史文案 = $("ahcount").textContent.trim();
-  if (!out.历史面板可见) fails.push("点历史按钮应展开历史问答面板");
+  // ---------- 8) 会话：连续追问 + 新对话
+  out.消息数_第一轮后 = doc.querySelectorAll("#amessages .amsg").length;
+  if (out.消息数_第一轮后 !== 2) fails.push(`一轮问答应有 2 条消息，实际 ${out.消息数_第一轮后}`);
+
+  // 追问：应当接着上文（带上 history），并且选文只作为第一条消息出现一次
+  asked.length = 0;
+  $("aq").value = "那他自己怎么解释这个选择？";
+  click($("agobtn"));
+  await until(() => asked.length > 0, 4000);
+  await sleep(400);
+  const follow = asked.length ? asked[0].body : {};
+  out.追问_history轮数 = (follow.history || []).length;
+  out.追问_thread = follow.thread;
+  out.追问_带上了上次的回答 = (follow.history || []).some(
+    (h) => h.role === "assistant" && /第一段解读/.test(h.content || ""));
+  if (!out.追问_history轮数) fails.push("追问必须带上之前的轮次（否则不叫会话说）");
+  if (!out.追问_带上了上次的回答) fails.push("history 里应包含上一次的回答");
+  if (out.追问_thread !== "t123") fails.push(`追问应沿用同一会话 id，实际 ${out.追问_thread}`);
+
+  // 新对话：清空消息流
+  window.newAssistThread();
+  await sleep(300);
+  out.新对话_消息已清空 = doc.querySelectorAll("#amessages .amsg").length === 0;
+  out.新对话_提示回来了 = $("aintro").style.display !== "none";
+  if (!out.新对话_消息已清空) fails.push("「＋ 新对话」应清空消息流");
+  if (!out.新对话_提示回来了) fails.push("新对话时应重新显示使用提示");
+
+  // 把一轮对话补回来，后面的用例还能继续
+  $("aq").value = "再问一个";
+  click($("agobtn"));
+  await sleep(500);
 
   // ---------- 9) Esc 关闭抽屉（且不影响文章）
   esc();
@@ -219,23 +246,49 @@ const DIR = "__UI测试单集";        // seed.js 造的那一集
   click(fab());
   await sleep(400);
   out.直接提问_抽屉打开 = drawer().classList.contains("show");
-  out.直接提问_无选文时隐藏引用块 = $("aquote").style.display === "none";
+  out.直接提问_消息数 = doc.querySelectorAll("#amessages .amsg").length;
   asked.length = 0;
+  const before = window.__streams.length;
   $("aq").value = "他提到的 SGLang 是什么？";
   click($("agobtn"));
   await until(() => asked.length > 0, 4000);
+  // 等这条提问真的连上 SSE（POST 是异步的，刚才那一刻还可能是上一轮的 stream）
+  await until(() => window.__streams.length > before, 4000);
   const body2 = asked.length ? asked[0].body : {};
   out.直接提问_参数 = { question: body2.question, 无选文: !body2.selection };
   if (!asked.length) fails.push("抽屉里直接提问也应发出请求");
   if (body2.question !== "他提到的 SGLang 是什么？") fails.push("提问内容应原样带上");
+
+  // 上一轮的 SSE 由测试驱动，得手动收尾，助手才会回到空闲
+  // （askAI 有防重复提交的忙判断，不收尾就点不动）
+  const prev = window.__streams[window.__streams.length - 1];
+  if (prev && !prev.closed && window.__streams.length > before) {
+    prev.emit("delta", { text: "直接提问的回答。" });
+    prev.emit("done", { status: "done", answer: "直接提问的回答。", error: "", sources: null, thread: "t123" });
+  }
+  await until(() => !$("agobtn").disabled, 6000);
+  out.收尾后_按钮已恢复 = !$("agobtn").disabled;
+  if (!out.收尾后_按钮已恢复) fails.push("上一轮结束后发送按钮应恢复可用");
+  asked.length = 0;
+  $("adetail").checked = true;
+  $("aq").value = "详细讲讲";
+  click($("agobtn"));
+  await until(() => asked.length > 0, 4000);
+  out.勾选详细后的mode = asked.length ? asked[0].body.mode : "(没发出请求)";
+  $("adetail").checked = false;
+  if (out.勾选详细后的mode !== "detail") {
+    fails.push(`勾选「详细」后应传 detail，实际 ${out.勾选详细后的mode}`);
+  }
 
   // 空提问 + 空选文时应给出提示而不是发请求
   // 注意：先把抽屉里显示的选文清掉（界面上就是引用块右上角那个「清除」），
   // 否则「深挖」会针对仍然显示着的选文再问一次 —— 那是设计行为，不是这次的用例。
   window.setAssistSelection("");
   await sleep(150);
-  out.清除选文_引用块已隐藏 = $("aquote").style.display === "none";
-  if (!out.清除选文_引用块已隐藏) fails.push("清除选文后引用块应隐藏");
+  window.newAssistThread();
+  await sleep(200);
+  out.清空会话_消息数 = doc.querySelectorAll("#amessages .amsg").length;
+  if (out.清空会话_消息数 !== 0) fails.push("清空后不该还有消息");
   window.__streams.length = 0;
   asked.length = 0;
   $("aq").value = "";

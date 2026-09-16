@@ -23,6 +23,7 @@ def _chat(
     client: OpenAI, model: str, system: str, user: str,
     log=print, max_tokens: int = 8192, on_chars=None, temperature: float = 1.0,
     thinking: bool = False, reasoning_effort: str = "low",
+    history: list[dict] | None = None,
 ) -> str:
     """流式调用。按 DeepSeek 思考模式文档区分两种模式：
 
@@ -33,13 +34,22 @@ def _chat(
 
     实测教训：思考模式默认是打开的，若只读 delta.content 且 token 上限偏小，
     思考会把预算吃光、正文返回空字符串（曾整篇产出 0 字）。
+
+    history：多轮对话里**之前的轮次**，形如 `[{"role": "user"/"assistant", "content": ...}]`。
+    会插在 system 与本次 user 之间。默认 None = 单轮（文章流水线全是单轮，行为不变）。
+    阅读助手的连续追问靠它把上下文带上去。
     """
+    messages: list[dict] = [{"role": "system", "content": system}]
+    for turn in history or []:
+        role = str(turn.get("role") or "").strip()
+        content = turn.get("content")
+        if role in ("user", "assistant") and isinstance(content, str) and content.strip():
+            messages.append({"role": role, "content": content})
+    messages.append({"role": "user", "content": user})
+
     kwargs: dict = {
         "model": model,
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
+        "messages": messages,
         "max_tokens": max_tokens,
         "stream": True,
         # 流式响应默认不带 usage，必须显式索要：最后一个 chunk 会带完整用量

@@ -1492,22 +1492,10 @@ async function openEpisode(dirEnc) {
   syncReadButton();
   syncReadDone();
   autoMarkReading(dir);
-  // 换了一篇文章：助手里的上下文跟着换，历史问答也重新载入
-  if (assistOpen) { resetAssist(); loadAssistHistory(); }
+  // 换了一篇文章：助手里的上下文跟着换，并恢复这一篇上次的对话
+  resetAssist();
+  if (assistOpen) restoreAssistThread();
   syncFab();
-}
-
-/** 换文章时把助手里上一集的痕迹清掉（否则会拿旧片段回答新文章的问题） */
-function resetAssist() {
-  stopAssistStream();
-  assistAskId = null;
-  setAssistSelection("");
-  $("aq").value = "";
-  $("aanswerbox").style.display = "none";
-  $("asources").style.display = "none";
-  $("aintro").style.display = "block";
-  $("astatus").textContent = "";
-  $("agobtn").disabled = false;
 }
 
 // 注：输入框的 Enter / input 处理统一放在文件末尾的初始化段（见 autoGrow 的注释）
@@ -1990,12 +1978,16 @@ async function checkFeeds(btn) {
 }
 
 /* ================= AI 阅读助手（悬浮球 / 选中深挖 / 右侧抽屉） =================
-   设计意图：读文章时卡住的地方，不该切出去另开一个对话窗口。
-   选中 → 就地提问 → 依据（原文片段带时间戳，可点回听）+ 网络结果 + 流式解读。
-   原文片段的时间戳能点着回听是这个功能相对「通用聊天机器人」的核心差别。 */
+   形态是**会话**：一次提问之后可以一直追问，上下文接着上一轮。
+   依据（原文片段 + 网络结果）默认收在每条回答下方，不占视野；需要核对时展开。
+   时间戳依然可点回听 —— 那是这个功能相对通用聊天机器人的核心差别。 */
 
 let assistOpen = false, assistES = null, assistAskId = null;
 let assistSelection = "", assistDir = null;
+let assistThread = "";            // 当前会话 id（同一段选文内持续追问）
+let assistTurns = [];             // [{role:"user"|"assistant", content}]，发给后端做上下文
+let assistEnabled = true;
+let assistBusy = false;
 
 function fabShouldShow() {
   // 有文章在读、设置里没关掉助手、且抽屉没开着时才出现。
@@ -2003,7 +1995,6 @@ function fabShouldShow() {
   // （CSS 那句 body.assistopen .fab 保留，作为双保险）。
   return $("result").classList.contains("show") && assistEnabled && !assistOpen;
 }
-let assistEnabled = true;
 
 function syncFab() {
   $("fab").classList.toggle("show", fabShouldShow());
@@ -2012,14 +2003,20 @@ function syncFab() {
 }
 
 function openAssist(preset) {
-  const ex = $("assist");
-  if (ex.classList.contains("show")) return;
+  const el = $("assist");
+  if (el.classList.contains("show")) {
+    if (preset && preset.selection && preset.selection !== assistSelection) {
+      // 在抽屉已开的情况下选了**另一段**文字：按新选段开一段新对话
+      startAssistThread(preset.selection, { keepOpen: true });
+    }
+    return;
+  }
   assistOpen = true;
   assistDir = curWorkdir;
-  ex.classList.add("show");
+  el.classList.add("show");
   syncFab();
   if (preset && preset.selection !== undefined) setAssistSelection(preset.selection || "");
-  loadAssistHistory();
+  restoreAssistThread();                 // 恢复上次的对话（同一集、同一段选文）
   setTimeout(() => $("aq").focus(), 60);
 }
 
@@ -2032,21 +2029,58 @@ function closeAssist() {
 
 function toggleAssist() {
   if (assistOpen) closeAssist();
-  // 悬浮球兜底：拿不到选区（例如在别处点了鼠标）时用最近一次记住的选文
   else openAssist({ selection: currentArticleSelection() || lastSelection });
 }
 
-/** 抽屉里当前展示的「选中原文」。传空串表示清掉（之后只按问题回答）。 */
+/** 当前对话针对的选文。传空串表示清掉（之后只按问题回答）。
+    界面上它显示为会话的第一条用户消息，所以这里只管状态。 */
 function setAssistSelection(text) {
   assistSelection = (text || "").trim();
-  const box = $("aquote");
-  if (assistSelection) {
-    $("aqtext").textContent = assistSelection;
-    box.style.display = "block";
-  } else {
-    box.style.display = "none";
-    lastSelection = "";      // 一起清掉，否则点悬浮球又会把刚才那段捞回来
-  }
+  if (!assistSelection) lastSelection = "";
+}
+
+/** 开一段新对话：清空消息流与上下文 */
+function startAssistThread(selection, opts = {}) {
+  stopAssistStream();
+  assistThread = "";
+  assistTurns = [];
+  assistSelection = (selection === undefined ? assistSelection : (selection || "")).trim();
+  if (opts.keepOpen && !assistOpen) { /* 调用方负责打开 */ }
+  setAssistSelection(assistSelection);
+  $("amessages").innerHTML = "";
+  $("aintro").style.display = "block";
+  $("aq").value = "";
+  $("agobtn").disabled = false;
+  assistBusy = false;
+}
+
+function newAssistThread() {
+  startAssistThread(currentArticleSelection() || "");
+  $("aq").focus();
+}
+
+/** 界面重开时把上次那段对话恢复出来 */
+async function restoreAssistThread() {
+  if (!curWorkdir) return;
+  try {
+    const d = await (await fetch("/api/qa?dir=" + encodeURIComponent(curWorkdir))).json();
+    const thread = d.last_thread || "";
+    if (!thread) { startAssistThread(assistSelection); return; }
+    const t = await (await fetch(`/api/qa?dir=${encodeURIComponent(curWorkdir)}&thread=${encodeURIComponent(thread)}`)).json();
+    const turns = t.turns || [];
+    if (!turns.length) { startAssistThread(assistSelection); return; }
+    assistThread = thread;
+    assistSelection = turns[0].selection || assistSelection;
+    assistTurns = [];
+    $("amessages").innerHTML = "";
+    $("aintro").style.display = "none";
+    for (const turn of turns) {
+      if (turn.question) { appendUserBubble(turn.selection || "", turn.question); assistTurns.push({ role: "user", content: turn.question }); }
+      appendAiBubble(turn.answer || "", { passages: turn.passages, web: turn.web, error: turn.error });
+      assistTurns.push({ role: "assistant", content: turn.answer || "" });
+    }
+    scrollAssist();
+  } catch (e) { startAssistThread(assistSelection); }
 }
 
 /** 用户在文章/文字稿里选中的文字（只认正文区域，避免把界面文字也带走） */
@@ -2061,9 +2095,9 @@ function currentArticleSelection() {
   return text.slice(0, 3000);
 }
 
-/* ---- 选中后浮出「深挖这段」按钮 ---- */
+/* ---- 选中文字 → 浮出「深挖这段」 ---- */
 let selBtnTimer = null;
-let lastSelection = "";     // 浮出按钮时就把选中的文字存下来
+let lastSelection = "";
 
 function positionSelBtn() {
   const btn = $("selbtn");
@@ -2088,21 +2122,114 @@ function positionSelBtn() {
 
 function onArticleSelectionChange() {
   clearTimeout(selBtnTimer);
-  // 等选区稳定（拖动选取会连续触发）
   selBtnTimer = setTimeout(positionSelBtn, 130);
 }
 
-/** 点浮出按钮：把选中的文字带进抽屉并直接开问 */
+/** 点浮出按钮：把选中的文字带进抽屉并按新选段开一段对话 */
 function askSelection() {
   const text = lastSelection || currentArticleSelection();
   $("selbtn").classList.remove("show");
-  openAssist({ selection: text });
-  if (text) { setAssistSelection(text); askAI(); }
+  if (!text) return;
+  if (!assistOpen) { assistOpen = true; assistDir = curWorkdir; $("assist").classList.add("show"); syncFab(); }
+  startAssistThread(text);
+  askAI();
+}
+
+/* ---- 消息气泡 ---- */
+function scrollAssist() {
+  const body = $("abody");
+  body.scrollTop = body.scrollHeight;
+}
+
+function appendUserBubble(selection, question) {
+  const wrap = doc_el("div", "amsg user");
+  if (selection) {
+    const q = doc_el("div", "aqtext");
+    q.textContent = selection;
+    wrap.appendChild(q);
+  }
+  if (question) {
+    const q = doc_el("div", "aq");
+    q.textContent = question;
+    wrap.appendChild(q);
+  }
+  $("amessages").appendChild(wrap);
+  $("aintro").style.display = "none";
+  scrollAssist();
+  return wrap;
+}
+
+function appendAiBubble(md, sources) {
+  const wrap = doc_el("div", "amsg ai");
+  const body = doc_el("div", "aanswer");
+  body.innerHTML = mdLite(md || "");
+  wrap.appendChild(body);
+  $("amessages").appendChild(wrap);
+  $("aintro").style.display = "none";
+  if (sources) attachSources(wrap, sources);
+  scrollAssist();
+  return wrap;
+}
+
+/** 依据默认收起来：一行摘要 + <details>，要核对时再展开 */
+function attachSources(bubble, src) {
+  const old = bubble.querySelector(".asrc");
+  if (old) old.remove();
+  const passages = (src && src.passages) || [];
+  const web = src && src.web;
+  const bits = [];
+  if (passages.length) bits.push(`${passages.length} 段原文`);
+  if (web && web.ok && (web.results || []).length) bits.push(`${web.results.length} 条网络结果`);
+  if (!bits.length) return;
+
+  const box = doc_el("details", "asrc");
+  const sum = doc_el("summary", "");
+  sum.textContent = `依据：${bits.join(" · ")}`;
+  box.appendChild(sum);
+
+  if (passages.length) {
+    const list = doc_el("div", "apassages");
+    list.innerHTML = passages.map((p) => `
+      <div class="apass">
+        ${p.ts ? `<a class="ts" data-sec="${tsToSec(p.ts)}" data-dir="${esc(assistDir || curWorkdir || "")}"
+              title="跳到音频此处" onclick="event.preventDefault();playFromTs(this)">[${esc(p.ts)}]</a>` : ""}
+        <span class="aptext">${esc(p.text || "")}</span>
+      </div>`).join("");
+    box.appendChild(list);
+  } else {
+    const none = doc_el("div", "anoweb");
+    none.textContent = "这一集的文字稿里没有和这段明显相关的段落。";
+    box.appendChild(none);
+  }
+
+  if (web) {
+    if (web.ok && (web.results || []).length) {
+      const wl = doc_el("div", "awebwrap");
+      wl.innerHTML = web.results.map((r) => `
+        <a class="aweb" href="${esc(r.url)}" target="_blank" rel="noopener noreferrer">
+          <span class="awt">${esc(r.title || r.url)}</span>
+          <span class="awu">${esc(r.url)}</span>
+        </a>`).join("");
+      box.appendChild(wl);
+    } else {
+      const none = doc_el("div", "anoweb");
+      none.textContent = `这次没联网成功（${web.error || "原因未知"}）—— 解读只基于播客原文。`;
+      box.appendChild(none);
+    }
+  }
+  bubble.appendChild(box);
+}
+
+function doc_el(tag, cls) {
+  const el = document.createElement(tag);
+  if (cls) el.className = cls;
+  return el;
 }
 
 /* ---- 提问 ---- */
-function askAI() {
+async function askAI() {
   if (!curWorkdir) { toast("⚠ 先打开一篇文章"); return; }
+  if (assistBusy) return;
   const question = ($("aq").value || "").trim();
   const selection = assistSelection || currentArticleSelection();
   if (!selection && !question) {
@@ -2111,93 +2238,89 @@ function askAI() {
     return;
   }
   assistDir = curWorkdir;
-  setAssistSelection(selection);
-  renderAssistAnswer("", true);
-  $("asources").style.display = "none";
+  assistSelection = selection;
+  appendUserBubble(assistTurns.length ? "" : selection, question || "（就这段展开讲讲）");
+  $("aq").value = "";
+  $("aq").style.height = "auto";
+  assistBusy = true;
   $("agobtn").disabled = true;
-  $("astatus").textContent = "正在找原文依据…";
 
-  fetch("/api/ask", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      dir: curWorkdir, selection, question,
-      web: $("aweb_toggle").checked,
-      mode: $("adetail").checked ? "detail" : "concise",
-    }),
-  }).then(async (resp) => {
+  // 等第一条 delta 之前先给一个「正在输入」的气泡，替代原来的阶段文字
+  const bubble = appendAiBubble("", null);
+  bubble.querySelector(".aanswer").classList.add("streaming", "pending");
+  assistStreamBubble = bubble;
+
+  const payload = {
+    dir: curWorkdir, selection, question,
+    web: $("aweb_toggle").checked,
+    mode: $("adetail").checked ? "detail" : "concise",
+    thread: assistThread,
+    history: assistTurns.slice(-12),
+  };
+  try {
+    const resp = await fetch("/api/ask", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
     const d = await resp.json();
-    if (!resp.ok) {
-      $("agobtn").disabled = false;
-      $("astatus").textContent = "";
-      renderAssistAnswer("", false);
-      renderAssistError(d.error || "提问失败");
-      return;
-    }
+    if (!resp.ok) throw new Error(d.error || "提问失败");
     assistAskId = d.id;
-    connectAssistStream(d.id);
-  }).catch((e) => {
-    $("agobtn").disabled = false;
-    $("astatus").textContent = "";
-    renderAssistAnswer("", false);
-    renderAssistError(String(e));
-  });
+    connectAssistStream(d.id, bubble, question, selection);
+  } catch (e) {
+    bubble.querySelector(".aanswer").classList.remove("streaming", "pending");
+    bubble.querySelector(".aanswer").innerHTML = `<p class="aerr">✕ ${esc(String(e.message || e))}</p>`;
+    assistBusy = false; $("agobtn").disabled = false;
+  }
 }
 
-function connectAssistStream(id) {
+let assistStreamBubble = null;
+
+function connectAssistStream(id, bubble, question, selection) {
   stopAssistStream();
+  const view = bubble.querySelector(".aanswer");
   let text = "";
-  const useSSE = typeof EventSource !== "undefined";
-  const onDelta = (t) => {
-    text += t;
-    renderAssistAnswer(text, true);
-  };
+  let sources = null;
+  const seen = (t) => { text += t; view.classList.remove("pending"); view.innerHTML = mdLite(text); scrollAssist(); };
   const finish = (d) => {
+    assistBusy = false;
     $("agobtn").disabled = false;
-    $("astatus").textContent = "";
-    renderAssistAnswer(text || d.answer || "", false);
-    if (d.error && !(text || d.answer)) renderAssistError(d.error);
-    if (d.sources) renderAssistSources(d.sources);
-    loadAssistHistory();
+    view.classList.remove("streaming", "pending");
+    const answer = text || d.answer || "";
+    view.innerHTML = mdLite(answer);
+    if (!answer && d.error) view.innerHTML = `<p class="aerr">✕ ${esc(d.error)}</p>`;
+    if (d.sources) sources = d.sources;
+    if (sources) attachSources(bubble, sources);
+    if (d.thread) assistThread = d.thread;          // 首轮由后端生成，之后一直沿用
+    if (answer) {
+      assistTurns.push({ role: "user", content: question || "（就这段展开讲讲）" });
+      assistTurns.push({ role: "assistant", content: answer });
+    }
+    scrollAssist();
   };
 
-  if (useSSE) {
+  if (typeof EventSource !== "undefined") {
     assistES = new EventSource("/api/ask/" + encodeURIComponent(id) + "/stream");
-    assistES.addEventListener("sources", (e) => {
-      $("astatus").textContent = "正在写解读…";
-      renderAssistSources(JSON.parse(e.data));
-    });
-    assistES.addEventListener("delta", (e) => onDelta(JSON.parse(e.data).text || ""));
-    assistES.addEventListener("done", (e) => {
-      stopAssistStream();
-      finish(JSON.parse(e.data));
-    });
+    assistES.addEventListener("sources", (e) => { sources = JSON.parse(e.data); });
+    assistES.addEventListener("delta", (e) => seen(JSON.parse(e.data).text || ""));
+    assistES.addEventListener("done", (e) => { stopAssistStream(); finish(JSON.parse(e.data)); });
     assistES.addEventListener("error", (e) => {
-      // 服务端的 error 事件带 data，连接层面的错误没有
       if (e && e.data) { stopAssistStream(); finish(Object.assign({ error: "提问失败" }, JSON.parse(e.data))); }
     });
-    assistES.onerror = () => {              // SSE 断了就退回轮询
-      if (!assistES) return;
-      stopAssistStream();
-      pollAssist(id, text, finish, onDelta);
-    };
+    assistES.onerror = () => { if (assistES) { stopAssistStream(); pollAssist(id, text, finish, seen); } };
   } else {
-    pollAssist(id, text, finish, onDelta);
+    pollAssist(id, text, finish, seen);
   }
 }
 
 /** SSE 不可用时的兜底：轮询同一个提问任务，增量靠已渲染文本的长度推算 */
 function pollAssist(id, text, finish, onDelta) {
-  let seen = text.length;
+  let shown = text.length;
   const timer = setInterval(async () => {
     try {
       const d = await (await fetch("/api/ask/" + encodeURIComponent(id))).json();
       const full = d.answer || "";
-      if (full.length > seen) { onDelta(full.slice(seen)); seen = full.length; }
-      if (d.sources) renderAssistSources(d.sources);
-      if (d.status !== "running") {
-        clearInterval(timer);
-        finish({ answer: full, error: d.error || "", sources: d.sources });
-      }
+      if (full.length > shown) { onDelta(full.slice(shown)); shown = full.length; }
+      if (d.status !== "running") { clearInterval(timer); finish(d); }
     } catch (e) {
       clearInterval(timer);
       finish({ answer: text, error: String(e) });
@@ -2209,62 +2332,7 @@ function stopAssistStream() {
   if (assistES) { assistES.close(); assistES = null; }
 }
 
-/* ---- 渲染 ---- */
-function renderAssistAnswer(md, streaming) {
-  const box = $("aanswer");
-  $("aanswerbox").style.display = "block";
-  $("aintro").style.display = "none";
-  box.classList.toggle("streaming", !!streaming);
-  box.innerHTML = mdLite(md);
-  if (streaming) $("abody").scrollTop = $("abody").scrollHeight;
-}
-
-function renderAssistError(msg) {
-  const box = $("aanswer");
-  $("aanswerbox").style.display = "block";
-  $("aintro").style.display = "none";
-  box.classList.remove("streaming");
-  box.innerHTML = `<p class="aerr">✕ ${esc(msg)}</p>`;
-}
-
-function renderAssistSources(src) {
-  const passages = (src && src.passages) || [];
-  const web = src && src.web;
-  const wrap = $("asources");
-
-  if (passages.length) {
-    $("apcount").textContent = `${passages.length} 段`;
-    $("apassages").innerHTML = passages.map((p) => `
-      <div class="apass">
-        ${p.ts ? `<a class="ts" data-sec="${tsToSec(p.ts)}" data-dir="${esc(assistDir || curWorkdir || "")}"
-              title="跳到音频此处" onclick="event.preventDefault();playFromTs(this)">[${esc(p.ts)}]</a>` : ""}
-        <span class="aptext">${esc(p.text || "")}</span>
-      </div>`).join("");
-  } else {
-    $("apcount").textContent = "没找到相关段落";
-    $("apassages").innerHTML = `<div class="anoweb">这一集的文字稿里没有和这段明显相关的段落，下面的解读只能是背景补充。</div>`;
-  }
-
-  if (web) {
-    $("aweblabel").style.display = "flex";
-    if (web.ok && (web.results || []).length) {
-      $("awebcount").textContent = `${web.results.length} 条 · ${web.provider || ""}`;
-      $("aweb").innerHTML = web.results.map((r) => `
-        <a class="aweb" href="${esc(r.url)}" target="_blank" rel="noopener noreferrer">
-          <span class="awt">${esc(r.title || r.url)}</span>
-          <span class="awu">${esc(r.url)}</span>
-          ${r.snippet ? `<span class="aws">${esc(r.snippet)}</span>` : ""}
-        </a>`).join("");
-    } else {
-      $("awebcount").textContent = "未取到";
-      $("aweb").innerHTML = `<div class="anoweb">这次没联网成功（${esc(web.error || "原因未知")}）——
-        解读只基于播客原文。可以在设置里换一个搜索服务。</div>`;
-    }
-  }
-  wrap.style.display = "block";
-}
-
-/** 极简 markdown → HTML（抽屉里够用：段落 / 粗体 / 行内码 / 引用 / 列表 / 链接 / 时间戳） */
+/** 极简 markdown → HTML（会话里够用：段落 / 粗体 / 行内码 / 引用 / 列表 / 链接 / 时间戳） */
 function mdLite(md) {
   if (!md) return "";
   const inline = (s) => esc(s)
@@ -2291,70 +2359,16 @@ function mdLite(md) {
   return out.join("");
 }
 
-/* ---- 历史问答 ---- */
-function toggleAssistHistory() {
-  const box = $("ahistory");
-  const show = box.style.display === "none";
-  box.style.display = show ? "block" : "none";
-  if (show) loadAssistHistory();
+/** 换文章时把助手里上一集的痕迹清掉（否则会拿旧片段回答新文章的问题） */
+function resetAssist() {
+  stopAssistStream();
+  assistAskId = null;
+  startAssistThread("");
+  assistTurns = [];
+  assistThread = "";
+  assistBusy = false;
+  $("agobtn").disabled = false;
 }
-
-async function loadAssistHistory() {
-  if (!curWorkdir) return;
-  try {
-    const d = await (await fetch("/api/qa?dir=" + encodeURIComponent(curWorkdir))).json();
-    const items = d.items || [];
-    $("ahcount").textContent = items.length ? `${items.length} 条（最多留 ${d.max} 条）` : "还没有";
-    $("ahlist").innerHTML = items.length
-      ? items.map((it) => `
-        <div class="ahitem" data-id="${esc(it.id)}">
-          <div class="ahq" onclick="toggleAhItem(this)">${esc(it.question || it.selection || "(无标题)")}</div>
-          <div class="ahs">${esc((it.answer || "").slice(0, 300))}</div>
-          <div class="ahacts">
-            <button onclick="restoreAssistItem('${esc(it.id)}')">重新查看</button>
-            <button onclick="deleteAssistItem('${esc(it.id)}')">删除</button>
-          </div>
-        </div>`).join("")
-      : `<div class="anoweb">这一集还没有问答记录。</div>`;
-  } catch (e) { /* 服务不可用时静默 */ }
-}
-
-function toggleAhItem(el) { el.parentElement.classList.toggle("open"); }
-
-async function restoreAssistItem(id) {
-  if (!curWorkdir) return;
-  const d = await (await fetch("/api/qa?dir=" + encodeURIComponent(curWorkdir))).json();
-  const it = (d.items || []).find((x) => x.id === id);
-  if (!it) return;
-  setAssistSelection(it.selection || "");
-  $("aq").value = it.question || "";
-  $("aanswerbox").style.display = "block";
-  $("aintro").style.display = "none";
-  renderAssistAnswer(it.answer || "", false);
-  renderAssistSources({ passages: it.passages || [], web: it.web });
-  $("abody").scrollTop = 0;
-}
-
-async function deleteAssistItem(id) {
-  if (!curWorkdir) return;
-  await fetch(`/api/qa/${encodeURIComponent(curWorkdir)}/${encodeURIComponent(id)}`, { method: "DELETE" });
-  loadAssistHistory();
-}
-
-function clearAssistHistory() {
-  if (!curWorkdir) return;
-  showModal({
-    title: "清空这一集的问答记录？",
-    desc: "只是删掉阅读助手里的问答，文章和文字稿不受影响。",
-    withInput: false, danger: true, okText: "清空",
-    onOk: async () => {
-      await fetch("/api/qa/" + encodeURIComponent(curWorkdir), { method: "DELETE" });
-      loadAssistHistory();
-      toast("✦ 已清空");
-    },
-  });
-}
-
 /** 设置页的联网搜索服务状态 */
 async function loadSearchService() {
   const box = $("as_providers");

@@ -143,3 +143,53 @@ def test_empty_question_or_selection_is_allowed(workdir):
     """只有选文没提问、或只提问没选文，都应该能存下来。"""
     assert _add(workdir, question="")["question"] == ""
     assert _add(workdir, selection="")["selection"] == ""
+
+
+# ---------------------------------------------------------------- 会话（thread）
+
+
+def test_new_thread_id_shape():
+    tid = qa_store.new_thread()
+    assert tid.startswith("t") and len(tid) == 9, f"会话 id 形态不对：{tid}"
+    assert qa_store.new_thread() != tid, "每次都应是新的"
+
+
+def test_append_stores_thread_and_groups_turns(workdir):
+    t1 = qa_store.new_thread()
+    _add(workdir, question="第一问", answer="第一答", thread=t1)
+    _add(workdir, question="第二问", answer="第二答", thread=t1)
+    t2 = qa_store.new_thread()
+    _add(workdir, question="另起一问", answer="另起一答", thread=t2)
+
+    turns = qa_store.load_thread(workdir, t1)
+    assert [t["question"] for t in turns] == ["第一问", "第二问"], \
+        f"同一会话应按时间**正序**取回，实际 {[t['question'] for t in turns]}"
+    assert all(t["thread"] == t1 for t in turns)
+    assert len(qa_store.load_thread(workdir, t2)) == 1, "另一段会话只应有一条"
+
+
+def test_append_without_thread_generates_one(workdir):
+    rec = _add(workdir)
+    assert rec["thread"].startswith("t"), f"没给 thread 时应自动生成，实际 {rec['thread']}"
+    assert qa_store.load_thread(workdir, rec["thread"]) == [rec], "生成的会话应能取回"
+
+
+def test_last_thread_is_the_most_recent(workdir):
+    assert qa_store.last_thread(workdir) == "", "没有记录时应返回空串"
+    first = _add(workdir, thread="t_old")
+    second = _add(workdir, thread="t_new")
+    assert qa_store.last_thread(workdir) == "t_new", "应返回最近一段会话"
+
+    # 老记录没有 thread 字段时，用它的 id 当会话 id（升级兼容）
+    (workdir / "qa.json").write_text(json.dumps({"items": [
+        {"id": "a_legacy", "at": 1.0, "question": "旧问", "answer": "旧答"}
+    ]}, ensure_ascii=False), encoding="utf-8")
+    assert qa_store.last_thread(workdir) == "a_legacy", "老记录应按 id 自成一段"
+    assert len(qa_store.load_thread(workdir, "a_legacy")) == 1, "老记录也应能被取回"
+
+
+def test_load_thread_tolerates_bad_input(workdir):
+    _add(workdir, thread="t1")
+    assert qa_store.load_thread(workdir, "") == []
+    assert qa_store.load_thread(workdir, "不存在") == []
+    assert qa_store.load_thread(workdir, None) == []

@@ -363,14 +363,18 @@ The place you get stuck while reading **shouldn't require opening a separate cha
 ```
 ① Select a passage you're unsure about
         ↓  a "✦ Dig into this" button appears
-② Click it → a drawer slides in from the right: evidence first, then the explanation
+② Click it → the drawer slides in with the explanation
         ↓
-③ Timestamps in the evidence play the audio — click one, then keep asking
+③ Keep asking follow-ups (like any AI chat) — context carries over
+        ↓
+④ Expand the "evidence" line under an answer when you want to verify; timestamps play the audio
 ```
 
-The drawer has three parts, **evidence before explanation**, so you don't wait for it to finish:
+**It's a conversation**: keep asking follow-ups and the context carries over (in testing, a second question volunteered "what you asked before and what you're asking now are the same point"). Questions about the same passage form one thread; "＋ New chat" starts over.
 
-| Block | Contents |
+**Evidence is collapsed by default** — under each answer there's just one line, "evidence: 6 passages · 5 web results", and you expand it when you want to check:
+
+| Expanded | Contents |
 |---|---|
 | **Transcript evidence** | Passages retrieved from this episode's transcript, **each with a timestamp** — click to jump to that second in the audio and check the claim against the source |
 | **Web results** | Real results from the built-in search layer (title / link / snippet), opening in a new tab |

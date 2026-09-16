@@ -686,6 +686,8 @@ def api_audio(job_dir: str):
 _ASKS: dict[str, dict] = {}
 _ASKS_LOCK = threading.Lock()
 _MAX_ASKS = 50                     # 只留最近这些提问的内存状态
+MAX_HISTORY_TURNS = 12             # 连续追问时最多带上多少轮（再多也放不下、也更贵）
+MAX_HISTORY_CHARS = 4000           # 单轮上限；解读本身也就几百字，这个够宽松了
 
 
 def _slim_ask(job: dict) -> dict:
@@ -695,8 +697,32 @@ def _slim_ask(job: dict) -> dict:
         "stage": job.get("stage") or "",   # retrieve（找原文）/ search（联网）/ write（写解读）
         "answer": job.get("answer") or "",
         "sources": job.get("sources"),
+        "thread": job.get("thread") or "",
         "error": job.get("error") or "",
     }
+
+
+def _clean_history(raw) -> list[dict]:
+    """清洗前端传来的历史轮次：只认 user/assistant 两个角色，单条与总长都截断。
+
+    这是**用户可控输入**，会被拼进提示词，所以不能原样透传：
+    条数与长度都要有上限，避免把整个对话历史灌成超长上下文（既贵又容易跑题）。
+    """
+    if not isinstance(raw, list):
+        return []
+    out: list[dict] = []
+    for turn in raw[-MAX_HISTORY_TURNS:]:
+        if not isinstance(turn, dict):
+            continue
+        role = str(turn.get("role") or "").strip()
+        content = turn.get("content")
+        if role not in ("user", "assistant") or not isinstance(content, str):
+            continue
+        text = content.strip()
+        if not text:
+            continue
+        out.append({"role": role, "content": text[:MAX_HISTORY_CHARS]})
+    return out
 
 
 def _ask_query(selection: str, question: str) -> str:
@@ -732,11 +758,15 @@ def api_ask():
     use_web = bool(subs.get("web_default", True)) if use_web is None else bool(use_web)
     # 篇幅档位：默认简洁（用户反馈：原来的 400-900 字里只有一段是回答所问的）
     mode = (data.get("mode") or subs.get("length_mode") or "concise").strip()
+    # 连续追问：同一段选文下的多轮问答串成一个 thread；history 是之前的轮次
+    thread = (data.get("thread") or "").strip()
+    history = _clean_history(data.get("history"))
 
     ask_id = uuid.uuid4().hex[:12]
     job = {
         "id": ask_id, "dir": dir_name, "status": "running", "stage": "retrieve",
         "selection": selection, "question": question, "web": use_web, "mode": mode,
+        "thread": thread, "history": history,
         "answer": "", "deltas": [], "sources": None, "error": "", "at": time.time(),
     }
     with _ASKS_LOCK:
@@ -779,6 +809,7 @@ def api_ask():
                 podcast=meta.get("podcast") or "",
                 use_web=use_web,
                 mode=mode,
+                history=history,
                 log=log,
                 on_delta=lambda t: job["deltas"].append(t),
             )
@@ -792,10 +823,12 @@ def api_ask():
                 "web": result.get("web") if result.get("web") is not None else web,
             }
             if job["answer"]:
-                qa_store.append(base, selection=selection, question=question,
-                                answer=job["answer"],
-                                passages=job["sources"]["passages"],
-                                web=job["sources"]["web"], error=job["error"])
+                saved = qa_store.append(base, selection=selection, question=question,
+                                        answer=job["answer"],
+                                        passages=job["sources"]["passages"],
+                                        web=job["sources"]["web"], error=job["error"],
+                                        thread=thread)
+                job["thread"] = saved["thread"]           # 首轮时后端生成，回给前端继续用
             job["status"] = "error" if (job["error"] and not job["answer"]) else "done"
         except Exception as exc:                        # 任何意外都要变成一句话给用户
             job["status"] = "error"
@@ -846,12 +879,20 @@ def api_ask_get(ask_id: str):
 
 @app.get("/api/qa")
 def api_qa_list():
-    """某一集的历史问答。GET /api/qa?dir=..."""
+    """某一集的历史问答。
+
+    GET /api/qa?dir=...               → 全部轮次（倒序）+ 最近一段会话的 id
+    GET /api/qa?dir=...&thread=<id>   → 那一段会话的全部轮次（**正序**，供界面从上往下读）
+    """
     dir_name = (request.args.get("dir") or "").strip()
     base = _safe_dir(dir_name)
     if not base:
         return jsonify({"error": "目录不存在"}), 404
-    return jsonify({"items": qa_store.load(base), "max": qa_store.MAX_ITEMS})
+    thread = (request.args.get("thread") or "").strip()
+    if thread:
+        return jsonify({"thread": thread, "turns": qa_store.load_thread(base, thread)})
+    return jsonify({"items": qa_store.load(base), "max": qa_store.MAX_ITEMS,
+                    "last_thread": qa_store.last_thread(base)})
 
 
 @app.delete("/api/qa/<dir_name>/<item_id>")

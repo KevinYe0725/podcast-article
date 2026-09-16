@@ -522,7 +522,8 @@ _WEB_EMPTY = (
 
 def build_prompt(*, selection: str, question: str, title: str, podcast: str,
                  passages: list[dict], web: str, profile: str = "",
-                 mode: str | None = None) -> tuple[str, str]:
+                 mode: str | None = None,
+                 history: list[dict] | None = None) -> tuple[str, str]:
     """拼出 (system, user)。
 
     system：角色 + 依据优先级 + 「绝不编造」+ 「只回答被问的那一点」+ 输出格式（见 `_SYSTEM`）
@@ -568,7 +569,19 @@ def build_prompt(*, selection: str, question: str, title: str, podcast: str,
 
     web_text = (web or "").strip()
     blocks.append(f"{_WEB_HEADER}\n{web_text or _WEB_EMPTY}")
-    blocks.append("请按系统要求给出解读。")
+    # 连续追问：把之前的轮次也放进 user 块。虽然 _chat 的 history 已经带了真实角色，
+    # 这里再落一份纯文本副本是有意的 —— 模型对着「上一轮我答了什么」不容易跑题，
+    # 而且这一段是**可核对**的（出问题时能直接从日志看出它看到了什么）。
+    turns = [t for t in (history or []) if isinstance(t, dict) and str(t.get("content") or "").strip()]
+    if turns:
+        lines = ["【之前的对话（他一直在追问同一段文字，回答要接着上次说，不要重复已经讲过的内容）】"]
+        for turn in turns:
+            who = "他" if turn.get("role") == "user" else "你（上次的回答）"
+            lines.append(f"{who}：{str(turn.get('content')).strip()}")
+        blocks.append("\n".join(lines))
+        blocks.append("请接着上面的对话回答【他的疑问】，按系统要求给出解读。")
+    else:
+        blocks.append("请按系统要求给出解读。")
     return system, "\n\n".join(blocks)
 
 
@@ -618,7 +631,7 @@ def _tee_client(client, on_delta, log=print):
 
 
 def _call_model(*, system: str, user: str, model: str, log=print, on_delta=None,
-                max_tokens: int | None = None) -> str:
+                max_tokens: int | None = None, history: list[dict] | None = None) -> str:
     """流式调用，返回正文全文（复用 summarize._chat 的全部既有约定）。"""
     client = _client()
     return _chat(
@@ -626,6 +639,7 @@ def _call_model(*, system: str, user: str, model: str, log=print, on_delta=None,
         model, system, user,
         log=log, max_tokens=max_tokens or answer_limits()[1], temperature=ANSWER_TEMPERATURE,
         thinking=False,   # 关思考：抽屉场景要的是快而稳，且关掉后 temperature 才生效
+        history=history,  # 连续追问：把之前的轮次按真实角色带上（见 _chat 的说明）
     )
 
 
@@ -835,7 +849,8 @@ def _stop_usage(started: bool, log=print) -> None:
 
 def stream_answer(*, workdir: Path | None, selection: str, question: str, title: str,
                   podcast: str, model: str | None = None, use_web: bool = True,
-                  mode: str | None = None, log=print, on_delta=None, search=None) -> dict:
+                  mode: str | None = None, log=print, on_delta=None, search=None,
+                  history: list[dict] | None = None) -> dict:
     """主入口（流式）。返回 `{"answer", "passages", "web", "error"}`。
 
     - 先 `retrieve()` 拿原文片段（query = 选中文字 + 疑问，两者都可能在讲他关心的词）；
@@ -864,7 +879,7 @@ def stream_answer(*, workdir: Path | None, selection: str, question: str, title:
 
     system, user = build_prompt(
         selection=selection, question=question, title=title or "", podcast=podcast or "",
-        passages=passages, web=web_text, profile=_profile(), mode=mode,
+        passages=passages, web=web_text, profile=_profile(), mode=mode, history=history,
     )
 
     started = _start_usage(workdir, model, log)
@@ -881,7 +896,7 @@ def stream_answer(*, workdir: Path | None, selection: str, question: str, title:
 
     try:
         text = _call_model(system=system, user=user, model=model, log=log, on_delta=emit,
-                           max_tokens=answer_limits(mode)[1])
+                           max_tokens=answer_limits(mode)[1], history=history)
         if not pieces and text:
             # 兜底：万一流里没有 content（例如上游换了实现），整段补发一次，
             # 保证「on_delta 收到的拼接」永远等于 answer
