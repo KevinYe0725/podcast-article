@@ -329,6 +329,11 @@
     display: flex; align-items: center; gap: 9px; width: 100%; padding: 7px 9px;
     border: 0; background: transparent; border-radius: 9px; cursor: pointer; font: inherit;
     font-size: 13.5px; color: var(--text); text-align: left; transition: background .12s;
+    /* 侧边栏是「可滚动的纵向 flex 容器」：每一行都必须不可压缩。
+       否则内容超过一屏时（手机上地址栏一占，100dvh 更矮，更容易超），
+       纵向 flex 会把行按比例压扁 —— iOS 上实测就是「分类按钮都扁了」。
+       正确行为是让 .appside overflow-y: auto 去滚动。 */
+    flex: 0 0 auto;
   }
   .folder:hover { background: #f1f1f3; }
   .folder.on { background: #ececef; font-weight: 500; }
@@ -787,6 +792,10 @@
     .appside nav { display: flex; flex-direction: column; gap: 2px; }
     .appside .folder { width: 100%; background: transparent; white-space: nowrap; }
     .appside .sidefoot { display: block; }
+    /* 抽屉里的每一块都不可压缩：压缩了就是「全部挤成一条」的那个 bug。
+       要滚动交给 .appside 自己的 overflow-y。 */
+    .appside > *, .appside nav > * { flex: 0 0 auto; }
+    .appside { min-height: 0; }
     .menubtn { display: inline-flex; }
     .topbar .meta { display: none; }
     /* 顶栏在手机上要放得下：品牌名允许截断，用量改成短文案（见 renderUsagePill） */
@@ -835,10 +844,17 @@
     #article { overflow-wrap: anywhere; }
   }
 
-  /* 触屏设备没有 hover：靠悬停才显示的入口必须直接可见（否则「＋ 分类」永远看不到） */
+  /* 触屏设备没有 hover：靠悬停才显示的入口必须直接可见 */
   @media (hover: none) {
-    .ep .catlabel.empty { opacity: 1; }
+    .ep .catlabel.empty { opacity: 1; }      /* 卡片上的「＋ 分类」 */
     .ep:hover { border-color: var(--border); box-shadow: none; }
+    .folder .fedit { opacity: 1; }           /* 分类行的「✎ 重命名 / ✕ 删除」——原来 iOS 上根本点不到 */
+    .folder .fedit span { font-size: 15px; padding: 6px 2px; }   /* 那两个小图标也要点得到 */
+    /* 手指按不准：按 iOS HIG 把可点区域撑到 44pt（桌面不受影响，鼠标没 hover:none） */
+    .folder { min-height: 44px; }
+    .quicktabs button { min-height: 36px; }
+    .mchip { min-height: 36px; }
+    .catlabel { min-height: 28px; }
   }
 
 /* ==================================================================

@@ -158,7 +158,20 @@ function pickBlock(css, header, marker) {
       greenInputFocus.map((r) => r.split("{")[0].trim()).join(" / "));
   }
 
-  // 3g. 宽内容（表格 / 代码块）在手机上要自己横滚，不许把整页撑宽
+  // 3g. 侧边栏是「可滚动的纵向 flex 容器」：里面的行必须不可压缩。
+  //     压缩了就是「分类按钮都扁了」那个症状（内容超过一屏时纵向 flex 会按比例压行）。
+  out.CSS_分类行不可压缩 = /\.folder \{[^}]*flex: 0 0 auto/.test(bare);
+  out.CSS_抽屉子块不可压缩 = /\.appside > \*, \.appside nav > \* \{ flex: 0 0 auto; \}/.test(bare);
+  if (!out.CSS_分类行不可压缩) fails.push("侧边栏分类行没有 flex: 0 0 auto，内容超一屏时会被压扁");
+  if (!out.CSS_抽屉子块不可压缩) fails.push("抽屉的直接子块没有 flex: 0 0 auto，会被压扁");
+
+  // 3h. 触屏上可点区域要够大（iOS HIG 44pt），且 hover-only 的入口要直接可见
+  out.CSS_触屏_分类行高度 = /\.folder \{ min-height: 44px; \}/.test(hoverNone);
+  out.CSS_触屏_重命名入口 = /\.folder \.fedit \{ opacity: 1; \}/.test(hoverNone);
+  if (!out.CSS_触屏_分类行高度) fails.push("触屏上分类行没有 44px 的可点高度");
+  if (!out.CSS_触屏_重命名入口) fails.push("触屏上分类的「✎/✕」仍然只在 hover 时出现，等于点不到");
+
+  // 3i. 宽内容（表格 / 代码块）在手机上要自己横滚，不许把整页撑宽
   out.CSS_表格可横滚 = rule(mobile, /#article table \{ display: block; overflow-x: auto/);
   if (!out.CSS_表格可横滚) fails.push("文章里的表格在窄屏没有横滚处理，会把整页撑出横向滚动");
 
