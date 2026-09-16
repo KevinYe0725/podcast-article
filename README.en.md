@@ -35,6 +35,7 @@ podcast-article hands that job to the machine: local speech-to-text plus LLM clo
 | ⏱ **Timestamp playback** | Every `[00:44:03]` in the article and transcript is a link that plays your **local audio** from that second — verify any claim on the spot |
 | 🔎 **Full-text search** | Searches article bodies *and* transcripts, with context snippets and highlighting; timestamps in hits are directly playable |
 | 🗂 **Library management** | Sidebar category folders with drag & drop filing; unread / reading / read / read-later states with one-click smart lists |
+| 🖼 **Card covers** | Fetches each episode's artwork (YouTube / Bilibili thumbnails, podcast show art) and **downloads it locally**, so cards render even offline |
 | 📦 **Export** | Per article: Markdown (with YAML front matter) / self-contained single-file HTML / plain transcript. Whole library: one-click zip |
 | 🚚 **Batch queue** | Paste 20 links at once into a persistent queue; the daemon works through them. Closing the browser or restarting loses nothing |
 | 🔔 **Feed subscriptions** | Subscribe to RSS / Apple Podcasts; new episodes are discovered on a schedule and queued automatically |
@@ -561,6 +562,7 @@ podcast_article/
 ├── outline.py        # Outline + per-section writing (length-controlled)
 ├── postprocess.py    # Deterministic formatting pass (paragraphs/punctuation/filler)
 ├── usage.py          # Token & cost accounting (peak/off-peak pricing, cache hit rate)
+├── cover.py          # Episode artwork: downloaded locally for the cards
 ├── deepdive.py       # Reading assistant: transcript retrieval (IDF) + prompt + streaming
 ├── websearch.py      # Self-built web search (keyless Bing/Brave + optional Tavily/Serper + relevance filter)
 ├── qa_store.py       # Per-episode Q&A history (lives next to the article)

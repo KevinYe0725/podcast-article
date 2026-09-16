@@ -85,5 +85,36 @@ const PATH = require("path").join(process.env.PA_OUTPUT_DIR || "/tmp/pa-out", DI
   }
   await sleep(300);
 
+  // ---- 卡片封面 ----
+  // seed.js 造的那集（__UI测试单集）带 cover.png，本测试自己造的那集没有 —— 正好对照
+  window.setCat("all");
+  await window.loadLibrary();
+  await sleep(500);
+  const covered = [...doc.querySelectorAll("#libgrid .ep")].find((c) => c.dataset.dir === "__UI测试单集");
+  out.封面_卡片有图 = !!covered.querySelector(".cover img");
+  out.封面_地址 = covered.querySelector(".cover img") ? covered.querySelector(".cover img").getAttribute("src") : "";
+  out.封面_懒加载 = covered.querySelector(".cover img") ? covered.querySelector(".cover img").getAttribute("loading") : "";
+  out.封面_卡片带hascover类 = covered.classList.contains("hascover");
+  // seed 出来的那集 source 为空 → 按播客方形处理
+  out.封面_方形容器 = covered.querySelector(".cover") ? covered.querySelector(".cover").classList.contains("sq") : null;
+  if (!out.封面_卡片有图) fails.push("有封面的卡片应当渲染 .cover img");
+  if (out.封面_地址 !== "/api/cover/" + encodeURIComponent("__UI测试单集")) {
+    fails.push(`封面地址不对：${out.封面_地址}`);
+  }
+  if (out.封面_懒加载 !== "lazy") fails.push("封面图应当 lazy 加载（列表里一次渲染十几张）");
+  if (!out.封面_卡片带hascover类) fails.push("有封面的卡片应带 hascover 类（标题不再给右上角留白）");
+  // 无封面的卡片不能因此崩掉，也不该渲染空容器
+  const bare = [...doc.querySelectorAll("#libgrid .ep")].find((c) => c.dataset.dir === DIR);
+  if (bare) {
+    out.封面_无封面的卡片 = bare.querySelector(".cover") ? "有容器（不该）" : "没有容器 ✓";
+    if (bare.querySelector(".cover")) fails.push("没有封面时不该渲染空的封面容器");
+  }
+  // 封面接口真的能取到图
+  const cresp = await fetch(`${BASE}/api/cover/__UI测试单集`);
+  out.封面_接口状态 = cresp.status;
+  out.封面_接口类型 = cresp.headers.get("content-type") || "";
+  if (cresp.status !== 200) fails.push(`/api/cover 应返回 200，实际 ${cresp.status}`);
+  if (!/^image\//.test(out.封面_接口类型)) fails.push(`封面 MIME 不对：${out.封面_接口类型}`);
+
   report("侧边栏文件夹全部通过", out, fails);
 })();

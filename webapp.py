@@ -25,6 +25,7 @@ from podcast_article import publish as publish_mod
 from podcast_article import qa_store
 from podcast_article import settings as settings_mod
 from podcast_article import usage as usage_mod
+from podcast_article import cover as cover_mod
 from podcast_article import export as export_mod
 from podcast_article import feeds as feeds_mod
 from podcast_article import queue as queue_mod
@@ -932,6 +933,52 @@ def api_search_service_test():
     return jsonify(result)
 
 
+@app.get("/api/cover/<job_dir>")
+def api_cover(job_dir: str):
+    """这一集的本地封面图（生成时下载到 output/<dir>/cover.<ext>）。
+
+    从**本地**发而不是让浏览器去热链图床：断网/防盗链都不该让卡片变成碎图。
+    单集封面不会变，所以给一个长缓存。
+    """
+    base = _safe_dir(job_dir)
+    if not base:
+        return jsonify({"error": "目录不存在"}), 404
+    path = cover_mod.find(base)
+    if not path:
+        return jsonify({"error": "这一集没有封面"}), 404
+    return send_file(path, mimetype=cover_mod.mimetype(path),
+                     conditional=True, max_age=86400 * 30)
+
+
+@app.post("/api/covers/backfill")
+def api_covers_backfill():
+    """给「元信息里有封面链接、但本地还没下载」的历史单集补下封面。
+
+    老文章是在这个功能之前生成的（当时只把封面 URL 存进了 meta.json），
+    需要一次补齐；以后新生成的会自动下载。
+    """
+    filled, skipped, failed = [], [], []
+    for d in sorted(OUTPUT_ROOT.iterdir()) if OUTPUT_ROOT.exists() else []:
+        meta_file = d / "meta.json"
+        if not d.is_dir() or not meta_file.exists():
+            continue
+        try:
+            meta = json.loads(meta_file.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        if cover_mod.find(d):
+            skipped.append(d.name)
+            continue
+        url = (meta.get("cover") or "").strip()
+        if not url:
+            failed.append({"dir": d.name, "why": "元信息里没有封面链接"})
+            continue
+        (filled if cover_mod.fetch(url, d) else failed).append(
+            d.name if cover_mod.find(d) else {"dir": d.name, "why": "下载失败"})
+    return jsonify({"filled": [x for x in filled if isinstance(x, str)],
+                    "skipped": len(skipped), "failed": failed})
+
+
 @app.get("/api/file/<job_dir>/<name>")
 def api_file(job_dir: str, name: str):
     """安全地取输出目录里的文件（白名单）。"""
@@ -969,11 +1016,13 @@ def _library_items() -> list[dict]:
             "title": meta.get("title") or d.name,
             "podcast": meta.get("podcast") or "",
             "duration": meta.get("duration"),
+            "source": meta.get("source") or "",
             "pub_date": meta.get("pub_date"),
             "url": meta.get("url") or "",
             "has_article": (d / "article.md").exists(),
             "has_transcript": (d / "transcript.txt").exists(),
             "has_audio": _audio_path(d) is not None,
+            "has_cover": cover_mod.find(d) is not None,
         }
         try:
             item["size"] = sum(f.stat().st_size for f in d.rglob("*") if f.is_file())

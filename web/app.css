@@ -985,3 +985,24 @@ body.assistopen .fab { display: none; }
 
 /* 抽屉里的历史按钮换成「＋ 新对话」，宽度让它像个小按钮 */
 .assist .ahead .iconbtn.small { width: auto; padding: 0 9px; font-size: 12px; gap: 3px; }
+
+/* ---- 卡片封面 ----
+   视频来源（YouTube / B站）封面是 16:9，铺满即可；播客来源是方形节目 logo，
+   用 1:1 容器完整显示 —— 裁成 16:9 会把 logo 上下切掉。
+   卡片的内边距是 18/20，所以封面用负外边距顶到卡片边缘。 */
+.ep .cover {
+  margin: -18px -20px 14px; overflow: hidden;
+  border-radius: 13px 13px 0 0;              /* 比卡片圆角小 1px，对齐边框 */
+  aspect-ratio: 16 / 9; background: var(--bg2);
+}
+.ep .cover.sq {
+  /* 方形封面：容器仍是 16:9（保证网格里各行高度一致），图完整居中显示 */
+  display: flex; align-items: center; justify-content: center;
+}
+.ep .cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.ep .cover.sq img { object-fit: contain; }
+
+/* 有封面时右上角那排按钮浮在图上：给它们一点底色保证在任何封面上都看得清 */
+.ep.hascover .cardtools .ctool { background: rgba(255, 255, 255, .92); }
+/* 标题上方已经有封面占位，不再需要给右上角按钮留白 */
+.ep.hascover .t { padding-right: 0; }

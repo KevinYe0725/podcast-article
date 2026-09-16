@@ -1047,8 +1047,16 @@ function cardHTML(it) {
   const take = (pv.takeaways || []).map((t) => `<li>${esc(t)}</li>`).join("");
   const dir = esc(it.dir);
   const cost = it.usage && it.usage.calls ? ` · ≈${fmtCost(it.usage.cost_cny)}` : "";
+  // 视频类封面是 16:9，铺满即可；播客类封面是方形（节目 logo），
+  // 用 1:1 的容器完整显示 —— 裁成 16:9 会把 logo 的上下切掉（小宇宙那张就是个圆环）。
+  const squareCover = ["xiaoyuzhou", "rss", "file", ""].includes(it.source || "");
+  const cover = it.has_cover
+    ? `<div class="cover${squareCover ? " sq" : ""}">
+         <img src="/api/cover/${encodeURIComponent(it.dir)}" alt="" loading="lazy">
+       </div>`
+    : "";
   return `
-  <div class="ep" data-dir="${dir}" onclick="openEpisode('${encodeURIComponent(it.dir)}')">
+  <div class="ep${it.has_cover ? " hascover" : ""}" data-dir="${dir}" onclick="openEpisode('${encodeURIComponent(it.dir)}')">
     <div class="cardtools">
       <button class="ctool" title="文章设置（状态 / 分类 / 导出）" aria-label="文章设置"
               onclick="event.stopPropagation();openCardMenu('${dir}')">
@@ -1064,6 +1072,7 @@ function cardHTML(it) {
         </svg>
       </button>
     </div>
+    ${cover}
     <div class="t">${esc(it.title)}</div>
     ${pv.deck ? `<div class="deck">${esc(pv.deck)}</div>` : ""}
     ${take ? `<ul class="tk">${take}</ul>` : ""}

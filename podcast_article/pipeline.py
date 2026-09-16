@@ -10,7 +10,7 @@ from pathlib import Path
 
 import requests
 
-from . import config, summarize, transcribe, usage
+from . import config, cover as cover_mod, summarize, transcribe, usage
 from . import subtitles as subs
 from .sources import resolve
 from .sources.ytdlp_src import download_audio
@@ -141,10 +141,21 @@ class Pipeline:
                 json.dumps(ep.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8"
             )
 
+        self._stage_cover(ep, workdir)
         audio_file = self._stage_audio(ep, workdir)
         segments = self._stage_transcript(ep, workdir, audio_file)
         article = self._stage_article(ep, workdir, segments)
         return article
+
+    def _stage_cover(self, ep, workdir: Path) -> None:
+        """把封面图落到这一集目录里（卡片要用）。拿不到就算了，不影响出文章。"""
+        if cover_mod.find(workdir):
+            return
+        if not getattr(ep, "cover", None):
+            self.log("[meta] 这个来源没有给封面图，卡片将不显示缩略图")
+            return
+        path = cover_mod.ensure(ep.cover, workdir)
+        self.log(f"[meta] 封面：{path.name}" if path else "[meta] 封面下载失败（不影响出文章）")
 
     # ------------------------------------------------------------ 阶段 2：音频
 

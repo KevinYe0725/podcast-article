@@ -28,6 +28,26 @@ def _parse_next_data(html: str) -> dict:
     return json.loads(m.group(1))
 
 
+def _podcast_cover(podcast: dict) -> str | None:
+    """从 podcast.image 里取一张封面。
+
+    **字段名改过**：小宇宙现在给的是 `picUrl` / `smallPicUrl` / `middlePicUrl` /
+    `largePicUrl`（带 Url 后缀），而旧代码找的是 `middlePic` / `smallPic`（没后缀）——
+    结果静默返回 None，卡片一直没有封面。所以这里新旧名字都认，按尺寸从小到大优先。
+    """
+    # image 不一定是字典（接口抽风时会是字符串/列表），先挡一层：这里返回 None 就好，
+    # 拿不到封面只是卡片少张图，绝不能让它把整条抓取流程带崩
+    image = podcast.get("image")
+    if not isinstance(image, dict):
+        return None
+    for key in ("middlePicUrl", "middlePic", "smallPicUrl", "smallPic",
+                "picUrl", "largePicUrl", "thumbnailUrl"):
+        value = image.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
 def fetch_episode(url: str, timeout: float = 30.0) -> Episode:
     resp = requests.get(url, headers={"User-Agent": _UA}, timeout=timeout)
     resp.raise_for_status()
@@ -51,5 +71,5 @@ def fetch_episode(url: str, timeout: float = 30.0) -> Episode:
         duration=ep.get("duration"),
         shownotes_html=ep.get("shownotes") or None,
         audio_url=enclosure.get("url"),
-        cover=(podcast.get("image") or {}).get("middlePic") or (podcast.get("image") or {}).get("smallPic"),
+        cover=_podcast_cover(podcast),
     )

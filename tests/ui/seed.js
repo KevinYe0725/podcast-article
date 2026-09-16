@@ -21,4 +21,8 @@ fs.writeFileSync(path.join(dir, "article.md"),
 fs.writeFileSync(path.join(dir, "transcript.txt"), "[00:00:01] 开头\n[00:10:07] 这是原话\n");
 fs.writeFileSync(path.join(dir, "transcript.json"), "[]");
 fs.writeFileSync(path.join(dir, "audio.m4a"), Buffer.alloc(64 * 1024, 0));
+// 1x1 的合法 PNG（做卡片封面用；测试要验证 /api/cover 能被卡片引用到）
+fs.writeFileSync(path.join(dir, "cover.png"), Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+  "base64"));
 console.log("seeded:", dir);
