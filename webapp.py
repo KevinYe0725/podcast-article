@@ -113,9 +113,30 @@ def _new_job(url: str, opts: dict, *, source: str = "manual",
             job["status"] = "error"
             job["error"] = str(exc)
             job["logs"].append(f"[error] {exc}")
+        finally:
+            _finish_queue_item(job)
 
     threading.Thread(target=worker, daemon=True).start()
     return job_id
+
+
+def _finish_queue_item(job: dict) -> None:
+    """把任务结果回写到它对应的队列条目上。
+
+    这个动作必须挂在**任务自己**身上，不能只交给后台调度循环：否则用
+    `/api/queue/run` 手动开一条、或者 `--no-scheduler` 启动时，条目会永远停在
+    running，而队列只挑 pending —— 整条队列就被一条失败任务堵死了（实测踩过）。
+    """
+    qid = job.get("queue_id")
+    if not qid:
+        return
+    try:
+        if job["status"] == "done":
+            queue_mod.finish(qid, "done", dir_name=job.get("workdir"))
+        elif job["status"] == "error":
+            queue_mod.finish(qid, "error", error=job.get("error") or "未知错误")
+    except ValueError:
+        pass          # 条目被用户删掉了，不用管
 
 
 def _after_done(dir_name: str, opts: dict, log) -> None:
@@ -786,7 +807,9 @@ def api_export_episode(job_dir: str):
         name, payload, mime = export_mod.export_episode(OUTPUT_ROOT, job_dir, fmt)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
-    return Response(payload, mimetype=mime, headers=_attachment(name))
+    # 去掉 export 模块带的 charset：Flask 会再补一个，否则头里出现两次 charset=utf-8
+    return Response(payload, mimetype=str(mime).split(";")[0].strip(),
+                    headers=_attachment(name))
 
 
 @app.get("/api/export")
@@ -1063,7 +1086,11 @@ def _maybe_check_feeds() -> None:
 
 
 def _scheduler_loop() -> None:
-    """后台循环：按间隔检查订阅 → 取队列里的任务跑完一条再跑下一条。"""
+    """后台循环：按间隔检查订阅 → 取队列里的任务跑完一条再跑下一条。
+
+    注意条目状态的回写不在这里（见 _finish_queue_item）：手动开一条时这个循环
+    可能压根没在跑，把回写挂在这里会让条目永远停在 running。
+    """
     while not _scheduler_stop.wait(5.0):
         try:
             _maybe_check_feeds()
@@ -1075,17 +1102,8 @@ def _scheduler_loop() -> None:
             job_id = None
         if not job_id:
             continue
-        try:
-            job = _wait_job(job_id) or {}
-            qid = job.get("queue_id")
-            if not qid:
-                continue
-            if job.get("status") == "done":
-                queue_mod.finish(qid, "done", dir_name=job.get("workdir"))
-            elif job.get("error"):
-                queue_mod.finish(qid, "error", error=job["error"])
-        except Exception:
-            pass
+        _wait_job(job_id)          # 等它跑完再取下一条（转写吃满 GPU，不并发）
+        queue_mod.recover_running()   # 万一有别的 worker 崩了，别让条目卡住
 
 
 def start_scheduler() -> bool:
@@ -1093,6 +1111,10 @@ def start_scheduler() -> bool:
     global _scheduler_started
     if os.environ.get("PA_SCHEDULER", "1") == "0" or _scheduler_started:
         return False
+    # 上次进程被杀时留下的 running 条目先归位，否则队列会被它堵住
+    recovered = queue_mod.recover_running()
+    if recovered:
+        print(f"队列：回收了 {recovered} 条上次中断的任务，已重新排队")
 
     def guard() -> None:
         global _scheduler_started

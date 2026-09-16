@@ -10,3 +10,7 @@ mcp_servers.json
 settings.json
 library.json
 node_modules/
+
+# 个人运行时数据（批量队列 / 订阅）
+queue.json
+feeds.json

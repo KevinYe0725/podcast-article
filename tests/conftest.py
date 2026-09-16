@@ -1,4 +1,20 @@
-"""pytest 公共装置：所有测试都跑在临时目录里，绝不触碰真实的 output/ 与 library.json。"""
+"""pytest 公共装置：所有测试都跑在临时目录里，绝不触碰用户的真实数据。
+
+这个隔离是**默认全局**的，不是各测试自己记得加：曾经有测试只把 `ENV_PATH` 打了桩、
+忘了 `SETTINGS_PATH`，于是 `POST /api/settings` 直接把 `subscriptions` 段写进了用户
+真实的 settings.json。所以凡是「会落盘的个人数据」，都在这里一次性指到 tmp_path：
+
+    output/           → tmp_path/output          （PA_OUTPUT_DIR）
+    library.json      → 分类 + 阅读状态
+    settings.json     → 个人资料 / 生成默认值 / 订阅调度
+    .env              → 密钥
+    queue.json        → 批量队列
+    feeds.json        → 订阅
+    mcp_servers.json  → MCP 服务器配置（可能含密钥）
+
+模块级常量是在 import 时读环境变量的，所以这里**必须 monkeypatch 模块属性**
+（而不是只设环境变量）才能真正生效。
+"""
 from __future__ import annotations
 
 import json
@@ -14,14 +30,21 @@ if str(ROOT) not in sys.path:
 
 @pytest.fixture()
 def tmp_output(tmp_path, monkeypatch):
-    """把输出根目录指向临时目录，并让 library.json 也落在临时目录。"""
+    """把输出根目录与所有个人数据文件都指向临时目录。"""
     out = tmp_path / "output"
     out.mkdir()
     monkeypatch.setenv("PA_OUTPUT_DIR", str(out))
 
-    from podcast_article import library
+    from podcast_article import feeds, library, mcp_config, queue
+    from podcast_article import settings as st
 
     monkeypatch.setattr(library, "STORE_PATH", tmp_path / "library.json")
+    monkeypatch.setattr(st, "SETTINGS_PATH", tmp_path / "settings.json")
+    monkeypatch.setattr(st, "ENV_PATH", tmp_path / ".env")
+    monkeypatch.setattr(queue, "QUEUE_PATH", tmp_path / "queue.json")
+    monkeypatch.setattr(feeds, "FEEDS_PATH", tmp_path / "feeds.json")
+    if hasattr(mcp_config, "SERVERS_PATH"):
+        monkeypatch.setattr(mcp_config, "SERVERS_PATH", tmp_path / "mcp_servers.json")
     return out
 
 

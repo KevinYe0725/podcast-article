@@ -32,9 +32,17 @@ podcast-article 把这件事交给机器：本地语音转写 + LLM 精读，产
 | 🎧 **本地转写** | mlx-whisper 走 Apple Silicon GPU，约 38 倍实时；平台有字幕时直接解析，零转写成本 |
 | 📝 **深度成文** | 不做流水账复述：按逻辑重组章节、区分事实与观点、金句带时间戳、附编辑点评 |
 | 📊 **实时进度** | Web 界面 SSE 推送：下载百分比、转写进度与剩余时间、LLM 已生成字数 |
+| ⏱ **时间戳回听** | 文章与文字稿里的 `[00:44:03]` 都是链接，点一下从那一秒播放**本地音频**，读到哪句都能当场核对 |
+| 🔎 **全文检索** | 搜文章正文也搜文字稿，结果带上下文与高亮，命中处的时间戳直接可听 |
+| 🗂 **文章库管理** | 侧边栏分类文件夹 + 拖拽归类；未读 / 在读 / 已读 / 稍后读四种状态，智能列表一键筛 |
+| 📦 **导出与备份** | 单篇导出 Markdown（带 YAML 元信息）/ 自包含 HTML 单文件 / 纯文字稿；整库一键打包 zip |
+| 🚚 **批量队列** | 一次粘 20 条链接排进持久化队列，后台依次跑完；关浏览器、重启服务都不丢 |
+| 🔔 **订阅自动出文** | 订阅 RSS / Apple Podcasts，按间隔自动发现新单集并排队生成文章 |
+| 💰 **费用可见** | 每篇花了多少 token、多少钱（按官方分时段价目精算）、缓存命中率多少，一目了然 |
 | ☁️ **一键进 Notion** | markdown 转原生块（表格/引用/行内样式），元信息自动填入数据库属性 |
 | 🔌 **MCP 支持** | 作为 MCP 服务器接入 Claude Desktop 等客户端，对话式调用全部能力 |
-| 💾 **全程缓存** | 每步产物落盘，重新写文章不必重新转写，中断续跑 |
+| 💾 **全程缓存** | 每步产物落盘，重新写文章不必重新转写；下载支持断点续传与自动重试 |
+| 📱 **手机可用** | 响应式布局，窄屏自动收起为抽屉式侧边栏；`--host 0.0.0.0` 即可局域网访问 |
 
 ## 🔍 工作原理
 
@@ -169,6 +177,21 @@ uv run python webapp.py    # 打开 http://127.0.0.1:8787
 
 粘贴链接 → 四阶段时间线实时推进（下载 / 转写 / 精读的百分比与剩余时间）→ 文章阅读视图，支持文章与文字稿**分栏对照**。写完选发布目标，一键投递到 Notion 或任意 MCP 工具。
 
+> **一次粘多条链接**：输入框识别到多个链接时，按钮会自动变成「加入队列 (N)」——按顺序排进后台，你关掉页面它也会跑完。
+
+主要交互速查：
+
+| 想做的事 | 怎么做 |
+|---|---|
+| 回听某一句 | 点文章或文字稿里的 `[00:44:03]`，底部滑出播放条（可拖进度、±15 秒） |
+| 找以前听过的内容 | 左上角搜索框：既搜文章正文也搜文字稿，命中处直接可点回听 |
+| 归类文章 | 按住卡片拖到侧边栏的分类文件夹；或点卡片上的分类标签选 |
+| 标记阅读进度 | 打开文章自动变「在读」；卡片悬停出现「✓ 已读 / ◷ 稍后读」，或用工具条的状态菜单 |
+| 只看没读的 | 侧边栏「未读 / 在读 / 已读 / 稍后读」四个智能列表（也可以把卡片拖上去直接改状态） |
+| 导出 | 文章工具条「导出 ▾」：Markdown（带元信息）/ HTML 单文件 / 纯文字稿；列表右上「导出全部」打包 zip |
+| 攒着慢慢看 | 首页粘贴多条链接排队，或到「订阅」页订阅节目，让它自己发现新单集 |
+| 看花了多少钱 | 顶栏用量胶囊（点开累计明细）；文章工具条右侧显示这一篇的实测费用 |
+
 右上角 **⚙ 设置** 里管理个人信息、密钥与生成偏好：
 
 | 分区 | 内容 |
@@ -177,8 +200,9 @@ uv run python webapp.py    # 打开 http://127.0.0.1:8787
 | API 密钥 | DeepSeek / Notion，**只写不读**（接口只回报是否已配置 + 打码值），可一键测试连接 |
 | 发布目标 | Notion 数据库 / 父页面 ID |
 | 生成默认值 | 成文模型（flash / pro）、默认篇幅档位、默认转写语言、转写后端、ASR 模型、直读上限、是否强制转写、生成后是否复检 |
+| 订阅调度 | 后台检查间隔、发现新单集是否自动生成、自动生成的文章归入哪个分类 |
 | MCP 服务器 | 见下节 |
-| 存储 | 输出目录、已生成集数与占用、本地模型、配置文件路径 |
+| 存储与用量 | 输出目录与占用、本地模型、配置文件路径；累计 token / 费用 / 缓存命中率（分模型明细） |
 
 > 密钥字段留空即保持原值，不会被误清空；填写后写入 `.env`（保留原有注释）。
 
@@ -263,12 +287,131 @@ MCP · podcast-article（4 个工具）
 
 > 内置 Notion 集成与 MCP 方式可以共存：前者一次调用完成（REST），后者可复用你已经在其他客户端里配好的 MCP 生态。
 
+## 🗂 文章库：检索、状态、导出
+
+文章不是生成完就结束了，**真正用起来的是「找得到、读得完、拿得走」**。
+
+### 全文检索
+
+搜的是**文章正文 + 文字稿全文**，不是标题。命中结果给上下文片段并高亮关键词；如果命中的是文字稿，行首那个时间戳可以直接点开回听——「我记得他好像说过这个」到「找到并听到那一句」只需要一次点击。
+
+```
+搜索「缝在鱼身上」
+
+📄 49. 鱼不存在（大卫·斯塔尔·乔丹）
+   正文    …混乱会再来一次，所以他决定[缝在鱼身上]的东西必须经得起…
+   文字稿  [00:44:03] …我把名字缝在鱼身上，只是为了下次还能认出它…   ← 点这里就能听
+```
+
+查询语法：空格 = 都要满足；`|` = 或者（`强化学习|RL`）；`"两个词"` = 当作一个词组。
+
+### 阅读状态
+
+四态：**未读 / 在读 / 已读 / 稍后读**。打开文章自动从「未读」推进到「在读」，其余手动标（卡片悬停的快捷键，或拖到侧边栏对应行上）。侧边栏的四个智能列表就是一键筛选，配合分类文件夹用：
+
+```
+文章库                    ＋
+🔍 搜索文章与文字稿…
+────────────────────
+☰ 全部文章            24
+◷ 未分类               3
+────────────────────
+● 未读                11
+● 在读                 2
+● 已读                 8
+● 稍后读               3
+────────────────────
+📁 AI 技术             7
+📁 商业访谈            4
+＋ 新建分类
+────────────────────
+▤ 批量队列            (3)
+◎ 订阅                 (2)
+⚙ 设置
+```
+
+### 导出
+
+| 格式 | 用途 |
+|---|---|
+| Markdown（带 YAML front matter） | 丢进 Obsidian / Logseq，或继续二次编辑 |
+| 自包含 HTML 单文件 | 内联样式、不引用任何外部资源，**可以直接发给别人**（微信/邮件都能打开） |
+| 纯文字稿 | 带时间戳的原始转写，用来做自己的检索语料 |
+| 整库 zip | 一次打包所有文章（可选是否含文字稿），按当前分类筛选 |
+
+## 🚚 批量队列与订阅
+
+**转写是本地跑的重活**（一期 100 分钟节目十几分钟），所以真正的用法不是守着页面一条条点，而是「把攒下来的链接丢进去，回头来收文章」。
+
+- **批量**：首页一次粘贴多条链接，自动排队（队列存在 `queue.json`，关浏览器、重启服务都不丢）。可以上下移动顺序、单独删除、一键重试失败的。
+- **订阅**：填 RSS 或 Apple Podcasts 链接订阅节目。后台按设定间隔检查，发现新单集按你的设置自动排队生成文章，并可自动归入指定分类。
+
+> 队列**一次只跑一条**（转写吃满 GPU，并发没有意义），但你可以随时关掉页面。
+
+订阅的稳定性有一个不明显的设计点：入队时会把那一集的**完整信息快照**下来，而不是记「feed 里第 3 集」。因为 feed 更新后所有序号都会前移，用相对位置会让排队中的任务跑到另一集上去。
+
 ## 💰 成本
 
 | 环节 | 方式 | 费用 |
 |---|---|---|
 | 语音转写 | 本地 mlx-whisper | **免费** |
 | 精读成文 | DeepSeek API | 2 小时播客约 **几分钱** |
+
+费用不是估的，是**记出来的**：每次调用都从 API 的 `usage` 里取 `prompt_tokens` / `prompt_cache_hit_tokens` / `completion_tokens`。价格按 DeepSeek 官方价目表（元 / 百万 tokens），并且**分时段精确计价**（高峰 = 北京时间周一至周五 9:00-12:00、14:00-18:00，价格是空闲时段的两倍）：
+
+| 模型 | 输入（缓存命中） | 输入（未命中） | 输出 |
+|---|---|---|---|
+| `deepseek-flash` | 0.02 / 0.04 | 1.0 / 2.0 | 4.0 / 8.0 |
+| `deepseek-v4-pro` | 0.15 / 0.30 | 4.5 / 9.0 | 13.5 / 27.0 |
+
+（空闲 / 高峰。价格表来自 [api-docs.deepseek.com](https://api-docs.deepseek.com/zh-cn/quick_start/pricing)，如有变动以官方为准。）
+
+**缓存命中是省钱的关键**：逐节写作把文字稿当固定前缀放在每条消息最前面，DeepSeek 的上下文缓存会命中它——命中部分的输入单价只有未命中的 **1/50**，所以 8-12 次调用并不会把全文重复计费 8-12 遍。界面上的「缓存命中率」就是这条优化的直接读数。
+
+## 🛠 环境变量
+
+| 变量 | 作用 |
+|---|---|
+| `PA_PORT` | Web 服务端口（默认 8787） |
+| `PA_OUTPUT_DIR` | 输出根目录（默认 `./output`） |
+| `PA_LIBRARY_FILE` | 分类与阅读状态存储（默认 `./library.json`） |
+| `PA_QUEUE_FILE` / `PA_FEEDS_FILE` | 批量队列 / 订阅存储 |
+| `PA_SCHEDULER=0` | 关掉后台调度（订阅检查 + 队列自动执行） |
+| `PA_DOWNLOAD_RETRIES` | 下载重试次数（默认 3） |
+| `PA_DOWNLOAD_BACKOFF` | 重试退避秒数（默认 `2,5`） |
+| `DEEPSEEK_API_KEY` / `DEEPSEEK_MODEL` | 成文用的密钥与模型 |
+
+## 📱 局域网访问与开机自启
+
+默认只监听 `127.0.0.1`（**没有鉴权，不要直接暴露到公网**）。想在手机上用：
+
+```bash
+uv run python webapp.py --host 0.0.0.0 --port 8787
+# 手机浏览器打开 http://<你的电脑局域网 IP>:8787
+```
+
+窄屏会自动收成抽屉式侧边栏 + 单列布局。macOS 上想让它常驻（顺便让订阅后台检查生效），用 launchd：
+
+```bash
+cat > ~/Library/LaunchAgents/com.kevin.podcast-article.plist <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.kevin.podcast-article</string>
+  <key>WorkingDirectory</key><string>/ABSOLUTE/PATH/TO/podcast-article</string>
+  <key>ProgramArguments</key>
+  <array><string>/opt/homebrew/bin/uv</string><string>run</string><string>python</string>
+    <string>webapp.py</string><string>--port</string><string>8787</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/tmp/podcast-article.log</string>
+  <key>StandardErrorPath</key><string>/tmp/podcast-article.err</string>
+</dict></plist>
+PLIST
+
+# 把 /ABSOLUTE/PATH/TO/podcast-article 换成真实路径（用 pwd 取），再执行：
+launchctl load ~/Library/LaunchAgents/com.kevin.podcast-article.plist
+```
 
 ## 🔧 故障排查
 
@@ -300,21 +443,34 @@ curl -L -o $D/multilingual.tiktoken "https://huggingface.co/mlx-community/whispe
 <details>
 <summary><b>小宇宙音频下载速度波动</b></summary>
 
-xyzcdn 的 CDN 速度不稳定（实测 1-7 分钟不等），失败重跑即可，已下载的部分不会重复下载。
+xyzcdn 的 CDN 速度不稳定（实测 1-7 分钟不等）。现在下载**断点续传 + 自动重试**：网络断了会带着 `Range` 头从断点继续，4xx 之外的可重试错误会退避重试 3 次（`PA_DOWNLOAD_RETRIES` / `PA_DOWNLOAD_BACKOFF` 可调）。中途失败留下的是 `audio.mp3.part`，下次运行自动接着下。
+</details>
+
+<details>
+<summary><b>点了「生成文章」没反应 / 提示已有任务在运行</b></summary>
+
+**同一时刻只允许一条流水线**（转写吃满 GPU，并发只会互相拖慢）。已有任务在跑时接口返回 409，界面会告诉你当前在跑哪一条，并自动接上它的进度——页面刷新也不会丢（`/api/jobs/current`）。
+</details>
+
+<details>
+<summary><b>订阅没有自动出文</b></summary>
+
+自动检查只在 **`python webapp.py` 常驻运行时**生效（关掉浏览器不影响）。确认三件事：设置 → 订阅调度里「后台自动检查」开着、间隔不是 0、并且没有用 `--no-scheduler` 启动。也可以随时在「订阅」页点**立即检查**。
 </details>
 
 ## ✅ 测试
 
 ```bash
-uv run pytest tests/ -q        # 后端：后处理修正器、分类存储、发布模板、MCP 配置、设置、Web 接口
-bash tests/ui/run.sh           # 界面：jsdom 驱动真实页面 + 真实服务，跑完自动关服务
+uv run pytest tests/ -q        # 后端 254 项
+bash tests/ui/run.sh           # 界面：jsdom 驱动真实页面 + 真实服务（9 个文件）
 ```
 
-UI 测试覆盖的交互（都是真实事件，不是模拟断言）：拖拽归类、删除记录（两种粒度）、
-同风格模态框、文章关闭与 Esc 分层、**时间戳点开回听本地音频**。
+| 范围 | 覆盖 |
+|---|---|
+| 后端 | 后处理修正器、大纲写作、分类与阅读状态存储、队列、订阅、导出、用量计价、检索、发布模板、MCP 配置、设置与 `.env` 语义、全部 Web 接口（含音频 Range 请求与路径穿越防护）、后台调度 |
+| 界面 | 拖拽归类、拖拽改阅读状态、删除记录（两种粒度）、同风格模态框、文章关闭与 Esc 分层、时间戳回听、全文检索与高亮、批量入队、订阅管理、导出 URL |
 
-两者都跑在**临时目录与临时分类文件**上（`PA_OUTPUT_DIR` / `PA_LIBRARY_FILE`），
-不会碰你真实的 `output/`、`library.json`。CI 见 `.github/workflows/ci.yml`（push 时自动跑这两套）。
+测试全部跑在**临时目录与临时数据文件**上（`PA_OUTPUT_DIR` / `PA_LIBRARY_FILE` / `PA_QUEUE_FILE` / `PA_FEEDS_FILE`），不会碰你真实的 `output/` 与个人数据。CI 见 `.github/workflows/ci.yml`（Linux + Python 3.12，push 时自动跑这两套）。
 
 > 注：`tests/ui/runview.test.js` 需要真实下载与转写（依赖网络），不进 CI，需要时手动跑。
 
@@ -323,25 +479,35 @@ UI 测试覆盖的交互（都是真实事件，不是模拟断言）：拖拽�
 ```
 podcast_article/
 ├── cli.py            # 命令行入口
-├── pipeline.py       # 全流程编排 + 目录级缓存
+├── pipeline.py       # 全流程编排 + 目录级缓存 + 下载重试/续传
 ├── sources/          # 链接解析：小宇宙 / RSS / Apple / yt-dlp
 ├── subtitles.py      # 平台字幕下载与 VTT/SRT 解析（滚动字幕去重）
 ├── transcribe.py     # 本地转写 + tqdm 进度解析
 ├── summarize.py      # DeepSeek 精读与文章生成（三档篇幅 + 提示词）
 ├── outline.py        # 大纲 + 逐节写作（篇幅可控的分节生成）
 ├── postprocess.py    # 确定性排版收尾（段落/标点/套话/时间戳/重复引用）
-├── library.py        # 文章分类与归属存储
+├── usage.py          # token 与费用记账（分时段计价、缓存命中率）
+├── search.py         # 全文检索（文章 + 文字稿，无索引文件）
+├── library.py        # 分类、阅读状态存储
+├── export.py         # Markdown / 自包含 HTML / 整库 zip 导出
+├── queue.py          # 批量队列（持久化、可重排、可重试）
+├── feeds.py          # RSS 订阅与新单集发现
 ├── notion.py         # markdown → Notion blocks（带重试）
 ├── mcp_server.py     # MCP 服务器（stdio）
-├── settings.py       # 设置存储（个人信息 / 默认值 / .env 读写）
+├── settings.py       # 设置存储（个人信息 / 默认值 / 订阅调度 / .env 读写）
 ├── mcp_config.py     # MCP 服务器配置存储
 ├── mcp_client.py     # MCP stdio 客户端
 ├── publish.py        # 发布分发（内置 Notion / 任意 MCP 工具）
 ├── config.py         # .env 配置
 └── util.py           # 工具函数
 
-webapp.py             # Web 服务（Flask + SSE + 音频 Range 流，端口 8787）
-web/index.html        # 前端单页（零构建，Inter 自托管）
+webapp.py             # Web 服务（Flask + SSE + 音频 Range 流 + 后台调度，端口 8787）
+web/index.html        # 页面骨架
+web/app.js            # 前端逻辑（零构建，无框架）
+web/app.css           # 样式（OpenAI 风格浅色主题，Inter 自托管）
+
+tests/                # pytest：后端与接口
+tests/ui/             # jsdom UI 测试（harness.js 为共用骨架）
 
 scripts/
 ├── report_quality.py # 文章可读性体检（套话/段落/密度等指标）

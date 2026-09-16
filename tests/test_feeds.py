@@ -105,6 +105,75 @@ def _assert_never_online(holder: FakeFeed) -> None:
     assert holder.calls, "没有走 _fetch，测试可能真的联网了"
 
 
+# --------------------------------------------------------------- _fetch 本体
+# 下面这组测试专门覆盖**真实的** _fetch（上面的 fixture 都把它整个换掉了，
+# 于是它的实现细节没人验证 —— 实测就是这么漏掉一个致命 bug 的）。
+
+
+class _FakeResponse:
+    def __init__(self, content: bytes, status: int = 200):
+        self.content = content
+        self.status_code = status
+        self._status = status
+
+    def raise_for_status(self):
+        if self._status >= 400:
+            raise feeds.requests.HTTPError(f"{self._status} Client Error")
+
+    @property
+    def text(self) -> str:
+        return self.content.decode("utf-8")
+
+
+def test_fetch_uses_requests_with_timeout_and_parses_bytes(monkeypatch):
+    """_fetch 必须：带超时地请求、把响应体交给 feedparser。
+
+    回归测试：曾经写成 feedparser.parse(url, request_timeout=...) —— feedparser
+    根本没有 request_timeout 这个参数，一调用就 TypeError，导致**订阅功能整体不可用**；
+    而当时所有测试都把 _fetch 整个替换掉了，所以谁都没发现。
+    """
+    seen: dict = {}
+
+    def fake_get(url, headers=None, timeout=None):
+        seen["url"] = url
+        seen["headers"] = headers or {}
+        seen["timeout"] = timeout
+        return _FakeResponse(rss([{"title": "第一集", "guid": "g1"}]).encode("utf-8"))
+
+    monkeypatch.setattr(feeds.requests, "get", fake_get)
+    parsed = feeds._fetch(FEED_URL, timeout=7.0)
+
+    assert seen["url"] == FEED_URL, f"应当直接请求传入的 url，实际 {seen}"
+    assert seen["timeout"] is not None, "必须设置超时，否则会永久挂住"
+    # (连接超时, 读取超时) 元组；读取超时用调用方给的值
+    assert isinstance(seen["timeout"], tuple) and seen["timeout"][1] == 7.0, \
+        f"超时应当带上调用方给的值，实际 {seen['timeout']}"
+    assert "User-Agent" in seen["headers"], "应当带 User-Agent，否则部分站点会拒绝"
+    assert [e["title"] for e in parsed.entries] == ["第一集"], \
+        f"响应体应当被解析成 feed，实际 {parsed.entries}"
+
+
+def test_fetch_raises_on_http_error(monkeypatch):
+    monkeypatch.setattr(
+        feeds.requests, "get",
+        lambda url, headers=None, timeout=None: _FakeResponse(b"nope", status=404),
+    )
+    with pytest.raises(feeds.requests.HTTPError):
+        feeds._fetch(FEED_URL)
+
+
+def test_add_propagates_wrapped_error_when_fetch_fails(monkeypatch):
+    """真实 _fetch 出错时，add() 要给出可读的 ValueError（而不是把 HTTPError 抛到界面）。"""
+    def boom(url, headers=None, timeout=None):
+        raise feeds.requests.ConnectionError("connection reset by peer")
+
+    monkeypatch.setattr(feeds.requests, "get", boom)
+    with pytest.raises(ValueError) as exc:
+        feeds.add(FEED_URL)
+    assert "connection reset" in str(exc.value).lower() or "抓取" in str(exc.value), \
+        f"错误信息里应能看出是抓取失败，实际 {exc.value}"
+
+
 def _both_feeds(holder: FakeFeed, a_id: str):
     """两个 feed 用不同内容（A 有更新、B 也更新），验证 check() 会逐个抓取。"""
 

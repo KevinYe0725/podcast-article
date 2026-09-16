@@ -13,8 +13,26 @@
  */
 const { JSDOM } = require("jsdom");
 
+// jsdom 不实现 EventSource，而页面用 SSE 推任务进度。不补上它的话，
+// 任何「真的启动一次任务」的测试都会在 new EventSource 处直接崩掉。
+// （package.json 里本来就依赖 eventsource，就是为这个场景准备的。）
+//
+// 注意：eventsource 这个包**不接受相对地址**（浏览器里 "/api/stream/x" 会按文档
+// URL 解析，包里直接抛 DOMException SyntaxError），所以这里补一层把相对地址补全成绝对地址。
+let EventSourcePolyfill = null;
+try {
+  EventSourcePolyfill = require("eventsource").EventSource;
+} catch (e) {
+  EventSourcePolyfill = null;
+}
+
 const BASE = process.env.PA_BASE || "http://127.0.0.1:8787";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function EventSourceShim(url, opts) {
+  const abs = /^https?:/i.test(String(url)) ? String(url) : BASE + String(url);
+  return new EventSourcePolyfill(abs, opts);
+}
 
 /** 起一个真实页面。opts.beforeParse 会在页面脚本执行前拿到 window，可继续打桩。 */
 async function boot(opts = {}) {
@@ -30,6 +48,7 @@ async function boot(opts = {}) {
       w.fetch = (u, o) => fetch(u.startsWith("http") ? u : BASE + u, o);
       w.scrollTo = () => {};
       w.Element.prototype.scrollIntoView = function () { scrolled.push(this.id || "(anon)"); };
+      if (EventSourcePolyfill && !w.EventSource) w.EventSource = EventSourceShim;
       stubMedia(w);
       if (opts.beforeParse) opts.beforeParse(w);
     },

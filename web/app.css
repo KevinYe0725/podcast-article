@@ -75,12 +75,17 @@
   /* Composer */
   .composer { border: 1px solid var(--border2); border-radius: 20px; padding: 8px 8px 10px; transition: box-shadow .15s, border-color .15s; }
   .composer:focus-within { border-color: var(--text); box-shadow: 0 1px 12px rgba(0,0,0,.06); }
-  .composer .row { display: flex; align-items: center; gap: 10px; }
-  .composer input[type=text] {
+  .composer .row { display: flex; align-items: flex-end; gap: 10px; }
+  .composer input[type=text],
+  /* 首页输入框是 textarea：<input type="text"> 会丢掉换行，一次粘多条链接会被粘成一条。
+     这里把它做成「看起来像单行、随内容长高」的多行输入（高度由 JS 的 autoGrow 设置）。 */
+  .composer #url {
     flex: 1; border: none; outline: none; background: transparent;
     font-size: 15.5px; font-family: var(--font); padding: 12px 12px; color: var(--text);
+    resize: none; overflow-y: auto; line-height: 1.5; min-height: 48px; max-height: 160px;
+    white-space: pre; word-break: break-all;
   }
-  .composer input::placeholder { color: #b4b4bc; }
+  .composer input::placeholder, .composer #url::placeholder { color: #b4b4bc; }
   .composer .opts { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 2px 12px 4px; }
   .chip {
     display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border); border-radius: 999px;
@@ -722,7 +727,8 @@
     .popmenu { min-width: 200px; }
     /* 输入区纵向堆叠：输入框一行、按钮满宽 */
     .composer .row { flex-direction: column; align-items: stretch; gap: 8px; }
-    .composer .row input[type=text] { padding: 10px 12px; }
+    .composer .row input[type=text],
+    .composer .row #url { padding: 10px 12px; }
     #go { width: 100%; }
     /* 队列 / 订阅条目的操作区在窄屏始终可见，并单独占一行 */
     .qrow, .frow { flex-wrap: wrap; }

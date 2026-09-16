@@ -32,9 +32,17 @@ podcast-article hands that job to the machine: local speech-to-text plus LLM clo
 | 🎧 **Local transcription** | mlx-whisper on Apple Silicon GPU, ~38× realtime; parses platform subtitles when available |
 | 📝 **Deep writing** | No boring recap: logic-driven sections, facts vs. opinions, timestamped quotes, critical editorial notes |
 | 📊 **Live progress** | Web UI with SSE push: download percentage, ASR progress & ETA, LLM characters generated |
+| ⏱ **Timestamp playback** | Every `[00:44:03]` in the article and transcript is a link that plays your **local audio** from that second — verify any claim on the spot |
+| 🔎 **Full-text search** | Searches article bodies *and* transcripts, with context snippets and highlighting; timestamps in hits are directly playable |
+| 🗂 **Library management** | Sidebar category folders with drag & drop filing; unread / reading / read / read-later states with one-click smart lists |
+| 📦 **Export** | Per article: Markdown (with YAML front matter) / self-contained single-file HTML / plain transcript. Whole library: one-click zip |
+| 🚚 **Batch queue** | Paste 20 links at once into a persistent queue; the daemon works through them. Closing the browser or restarting loses nothing |
+| 🔔 **Feed subscriptions** | Subscribe to RSS / Apple Podcasts; new episodes are discovered on a schedule and queued automatically |
+| 💰 **Visible cost** | Tokens, exact cost (official peak/off-peak price table) and cache hit rate per article |
 | ☁️ **One-click Notion** | Markdown → native blocks (tables/quotes/inline styles), metadata auto-filled into database properties |
 | 🔌 **MCP support** | Runs as an MCP server for Claude Desktop & friends — conversational access to everything |
-| 💾 **Fully cached** | Every step lands on disk; rewriting the article never re-transcribes; interrupted runs resume |
+| 💾 **Fully cached** | Every step lands on disk; rewriting the article never re-transcribes; downloads resume and retry |
+| 📱 **Mobile ready** | Responsive layout that collapses into a drawer sidebar; `--host 0.0.0.0` for LAN access |
 
 ## 🔍 How it works
 
@@ -171,11 +179,24 @@ uv run python webapp.py    # open http://127.0.0.1:8787
 
 Paste a link → a four-stage timeline advances in real time (download / ASR / LLM percentages and ETAs) and then **collapses into a one-line summary** (elapsed time / download size / segments / characters) that you can re-expand → read the article, with an optional **side-by-side transcript view**. Then pick a publish target and send it to Notion or any MCP tool.
 
-Each card in the history grid carries a **one-line deck** (so you can decide whether to open it) and a **takeaway preview**.
+> **Paste several links at once**: when the input detects more than one URL the button turns into "Add to queue (N)" — they run in order in the background even after you close the tab.
+
+Quick reference for the main interactions:
+
+| I want to… | How |
+|---|---|
+| Re-listen to a sentence | Click any `[00:44:03]` in the article or transcript; a player slides up (draggable, ±15 s) |
+| Find something I heard before | Search box top-left: searches bodies *and* transcripts, hits are playable |
+| File an article | Press and drag a card onto a sidebar folder, or click its category label |
+| Track reading progress | Opening an article marks it "reading"; hover a card for "✓ Read / ◷ Read later", or use the toolbar status menu |
+| See only unread items | The four smart lists in the sidebar (All / Uncategorised / categories sit above them) |
+| Get something out | Toolbar "Export ▾": Markdown (with metadata) / single-file HTML / plain transcript; "Export all" zips the library |
+| Save up links | Paste many links on the home page, or subscribe to shows on the Subscriptions page |
+| Check what it cost | The usage pill in the top bar (click for the breakdown); each article shows its own measured cost |
 
 **Delete**: the ✕ on a card removes a record, with two levels — "delete the whole record" (article + audio + transcript, and it tells you how much space is freed; an episode is often 50-200 MB) or "delete the article only" (keeps audio and transcript so it can be regenerated).
 
-**Categories**: the library has a folder-style sidebar (All / Uncategorised / your own categories, each with a count). Create one with "＋", then **press and drag a card onto a sidebar folder** to file it (works with mouse, trackpad and touch — the card follows your pointer and the target highlights). You can also click a card's category label and pick from a menu. Categories can be renamed or deleted (deleting one never deletes articles — they return to "Uncategorised"), and clicking a category filters the grid.
+**Categories**: the library has a folder-style sidebar (All / Uncategorised / smart lists / your own categories, each with a count). Create one with "＋", then **press and drag a card onto a sidebar folder** to file it (works with mouse, trackpad and touch — the card follows your pointer and the target highlights). You can also click a card's category label and pick from a menu. Categories can be renamed or deleted (deleting one never deletes articles — they return to "Uncategorised"), and clicking a category filters the grid.
 
 The **⚙ Settings** button (top right) manages your profile, credentials and generation preferences:
 
@@ -185,8 +206,9 @@ The **⚙ Settings** button (top right) manages your profile, credentials and ge
 | API keys | DeepSeek / Notion — **write-only** (the API only ever reports whether a key is configured, plus a masked value), with one-click connection tests |
 | Publish targets | Notion database / parent page ID |
 | Generation defaults | Article model (flash / pro), default length mode, default language, ASR backend, ASR model, direct-read limit, force-ASR flag, auto-review |
+| Subscriptions | Background check interval, whether new episodes auto-generate, which category they land in |
 | MCP servers | See below |
-| Storage | Output directory, episode count and size, local models, config file paths |
+| Storage & usage | Output directory and size, local models, config paths; cumulative tokens / cost / cache hit rate (broken down per model) |
 
 > Leaving a credential field blank keeps the stored value — it can never be wiped by accident. New values are written into `.env` with existing comments preserved.
 
@@ -270,12 +292,131 @@ Placeholders: `{{title}}` `{{podcast}}` `{{date}}` `{{duration}}` `{{url}}` `{{c
 
 > The built-in Notion integration and the MCP route coexist: the former is a single REST call, the latter reuses the MCP ecosystem you already have configured elsewhere.
 
+## 🗂 The library: search, status, export
+
+An article isn't finished when it's generated — **what actually matters is finding it, finishing it, and getting it out.**
+
+### Full-text search
+
+It searches **article bodies *and* full transcripts**, not just titles. Hits come with a context snippet and highlighted keyword; when the hit is in the transcript, the timestamp on that line plays the audio — going from "I think he said something about this" to "found it and heard it" takes one click.
+
+```
+Search: "sewed the name onto the fish"
+
+📄 49. Why Fish Don't Exist (David Starr Jordan)
+   body        …chaos would come again, so what he [sewed onto the fish] had to survive…
+   transcript  [00:44:03] …I sewed the name onto the fish just so I'd recognise it next time…  ← click to hear
+```
+
+Query syntax: space = all terms required; `|` = OR (`reinforcement learning|RL`); `"two words"` = one phrase.
+
+### Reading status
+
+Four states: **unread / reading / read / read later**. Opening an article advances it from unread to reading; the rest are manual (hover a card for shortcuts, or drag a card onto the matching sidebar row). The four smart lists are one-click filters, and they sit alongside your category folders:
+
+```
+Library                        ＋
+🔍 Search articles and transcripts…
+──────────────────────────────
+☰ All articles              24
+◷ Uncategorised              3
+──────────────────────────────
+● Unread                    11
+● Reading                    2
+● Read                       8
+● Read later                 3
+──────────────────────────────
+📁 AI engineering            7
+📁 Business interviews       4
+＋ New category
+──────────────────────────────
+▤ Queue                     (3)
+◎ Subscriptions             (2)
+⚙ Settings
+```
+
+### Export
+
+| Format | Use |
+|---|---|
+| Markdown (YAML front matter) | Drop into Obsidian / Logseq, or keep editing |
+| Self-contained HTML | Inline styles, no external references — **safe to send to anyone** |
+| Plain transcript | The raw timestamped transcript, for your own corpus |
+| Library zip | Bundle everything at once (optionally with transcripts), filtered by the current category |
+
+## 🚚 Batch queue & subscriptions
+
+**Transcription is heavy local work** (a 100-minute episode takes over ten minutes), so the real workflow isn't babysitting one link at a time — it's "throw in everything I've saved up and collect articles later".
+
+- **Batch**: paste many links on the home page and they queue up (stored in `queue.json` — closing the browser or restarting the server loses nothing). Reorder, delete individually, retry failures.
+- **Subscriptions**: subscribe to RSS or Apple Podcasts feeds. A background check runs on your chosen interval, and new episodes are queued automatically (optionally filed into a category you pick).
+
+> The queue runs **one episode at a time** (transcription saturates the GPU; concurrency just slows everything down), but you can close the page whenever.
+
+There's one non-obvious design point for feed stability: enqueuing captures a **full snapshot of that episode** rather than "the 3rd episode in the feed". Feeds shift every time they update, so relative positions would silently redirect a queued job to a different episode.
+
 ## 💰 Cost
 
 | Stage | How | Cost |
 |---|---|---|
 | Transcription | Local mlx-whisper | **Free** |
 | Article writing | DeepSeek API | ~**a few cents** per 2-hour episode |
+
+Cost isn't estimated, it's **recorded**: every call reads `prompt_tokens` / `prompt_cache_hit_tokens` / `completion_tokens` from the API's `usage`. Pricing follows DeepSeek's official table (CNY per million tokens) and is **time-of-day aware** (peak = Mon-Fri 09:00-12:00 and 14:00-18:00 Beijing time, at twice the off-peak rate):
+
+| Model | Input (cache hit) | Input (cache miss) | Output |
+|---|---|---|---|
+| `deepseek-flash` | 0.02 / 0.04 | 1.0 / 2.0 | 4.0 / 8.0 |
+| `deepseek-v4-pro` | 0.15 / 0.30 | 4.5 / 9.0 | 13.5 / 27.0 |
+
+(off-peak / peak. Source: [api-docs.deepseek.com](https://api-docs.deepseek.com/quick_start/pricing) — check the official page for the latest.)
+
+**Cache hits are what make this cheap**: section-by-section writing places the transcript as a fixed prefix at the front of every message, so DeepSeek's context cache hits it — cached input costs **1/50** of uncached input. That's why 8-12 calls don't bill the full transcript 8-12 times. The "cache hit rate" shown in the UI is the direct readout of that optimisation.
+
+## 🛠 Environment variables
+
+| Variable | Purpose |
+|---|---|
+| `PA_PORT` | Web port (default 8787) |
+| `PA_OUTPUT_DIR` | Output root (default `./output`) |
+| `PA_LIBRARY_FILE` | Categories and reading status (default `./library.json`) |
+| `PA_QUEUE_FILE` / `PA_FEEDS_FILE` | Batch queue / subscriptions |
+| `PA_SCHEDULER=0` | Disable the background scheduler (feed checks + queue execution) |
+| `PA_DOWNLOAD_RETRIES` | Download retry count (default 3) |
+| `PA_DOWNLOAD_BACKOFF` | Retry backoff seconds (default `2,5`) |
+| `DEEPSEEK_API_KEY` / `DEEPSEEK_MODEL` | Credentials and model for article writing |
+
+## 📱 LAN access & autostart
+
+By default it listens on `127.0.0.1` only (**there is no authentication — never expose it to the public internet**). To use it from your phone:
+
+```bash
+uv run python webapp.py --host 0.0.0.0 --port 8787
+# open http://<your-LAN-IP>:8787 on the phone
+```
+
+Narrow screens collapse into a drawer sidebar and a single-column layout. To keep it running on macOS (which also makes background feed checks work), use launchd:
+
+```bash
+cat > ~/Library/LaunchAgents/com.kevin.podcast-article.plist <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.kevin.podcast-article</string>
+  <key>WorkingDirectory</key><string>/ABSOLUTE/PATH/TO/podcast-article</string>
+  <key>ProgramArguments</key>
+  <array><string>/opt/homebrew/bin/uv</string><string>run</string><string>python</string>
+    <string>webapp.py</string><string>--port</string><string>8787</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/tmp/podcast-article.log</string>
+  <key>StandardErrorPath</key><string>/tmp/podcast-article.err</string>
+</dict></plist>
+PLIST
+
+# replace /ABSOLUTE/PATH/TO/podcast-article with the real path (use pwd), then:
+launchctl load ~/Library/LaunchAgents/com.kevin.podcast-article.plist
+```
 
 ## 🔧 Troubleshooting
 
@@ -307,23 +448,37 @@ Automatic retries (5×, exponential backoff) are built in. Persistent failures a
 <details>
 <summary><b>Xiaoyuzhou download speed fluctuates</b></summary>
 
-Their CDN speed varies (1–7 min observed). Just re-run — nothing downloads twice.
+Their CDN speed varies (1–7 min observed). Downloads now **resume and retry**: a dropped connection continues from the breakpoint with a `Range` header, and retryable errors back off and retry 3× (`PA_DOWNLOAD_RETRIES` / `PA_DOWNLOAD_BACKOFF`). A failed attempt leaves `audio.mp3.part` behind and the next run continues from there.
+</details>
+
+<details>
+<summary><b>"Generate" seems to do nothing / "a task is already running"</b></summary>
+
+**Only one pipeline runs at a time** (transcription saturates the GPU; concurrency only slows both down). When a job is already running the API returns 409, the UI tells you which link is running and reattaches to its progress — a page refresh doesn't lose it either (`/api/jobs/current`).
+</details>
+
+<details>
+<summary><b>Subscriptions don't generate articles automatically</b></summary>
+
+Automatic checks only happen while **`python webapp.py` is running as a daemon** (closing the browser is fine). Check three things: "background checks" is on in Settings → Subscriptions, the interval isn't 0, and you didn't start with `--no-scheduler`. You can always hit **Check now** on the Subscriptions page.
 </details>
 
 ## ✅ Tests
 
 ```bash
-uv run pytest tests/ -q        # backend: post-processing fixers, category store, publish templates, MCP config, settings, HTTP API
-bash tests/ui/run.sh           # UI: jsdom drives the real page against a real server, then shuts it down
+uv run pytest tests/ -q        # backend: 254 tests
+bash tests/ui/run.sh           # UI: jsdom against a real server (9 files)
 ```
 
-UI tests cover real interactions (dispatched events, not mocked assertions): drag-to-categorise,
-deleting records (both scopes), the styled modal, closing articles with layered Esc, and
-**clicking a timestamp to replay the local audio**.
+| Scope | Coverage |
+|---|---|
+| Backend | Post-processing fixers, outline writing, category & reading-status store, queue, feeds, export, usage pricing, search, publish templates, MCP config, settings & `.env` semantics, every HTTP endpoint (including audio Range requests and path-traversal guards), background scheduler |
+| UI | Drag-to-categorise, drag-to-change-status, deleting records (both scopes), styled modals, closing articles with layered Esc, timestamp playback, full-text search & highlighting, batch enqueue, subscription management, export URLs |
 
-Both suites run against **temporary directories and a temporary library file**
-(`PA_OUTPUT_DIR` / `PA_LIBRARY_FILE`) — your real `output/` and `library.json` are never touched.
-CI lives in `.github/workflows/ci.yml` and runs both on every push.
+Both suites run against **temporary directories and temporary data files**
+(`PA_OUTPUT_DIR` / `PA_LIBRARY_FILE` / `PA_QUEUE_FILE` / `PA_FEEDS_FILE`) — your real `output/`
+and personal data are never touched. CI lives in `.github/workflows/ci.yml` and runs both on every
+push (Linux + Python 3.12).
 
 > Note: `tests/ui/runview.test.js` needs a real download and transcription (network-dependent), so it
 > stays out of CI and is run manually when needed.
@@ -333,25 +488,35 @@ CI lives in `.github/workflows/ci.yml` and runs both on every push.
 ```
 podcast_article/
 ├── cli.py            # CLI entry
-├── pipeline.py       # Orchestration + per-directory caching
+├── pipeline.py       # Orchestration + per-directory caching + download retry/resume
 ├── sources/          # Link resolution: Xiaoyuzhou / RSS / Apple / yt-dlp
 ├── subtitles.py      # Subtitle download & VTT/SRT parsing (rolling-dedup)
 ├── transcribe.py     # Local ASR + tqdm progress parsing
 ├── summarize.py      # DeepSeek close-reading & article generation (3 modes + prompts)
 ├── outline.py        # Outline + per-section writing (length-controlled)
 ├── postprocess.py    # Deterministic formatting pass (paragraphs/punctuation/filler)
-├── library.py        # Article categories and assignments
+├── usage.py          # Token & cost accounting (peak/off-peak pricing, cache hit rate)
+├── search.py         # Full-text search (articles + transcripts, no index file)
+├── library.py        # Categories and reading status
+├── export.py         # Markdown / self-contained HTML / library zip export
+├── queue.py          # Batch queue (persistent, reorderable, retryable)
+├── feeds.py          # RSS subscriptions and new-episode discovery
 ├── notion.py         # markdown → Notion blocks (with retries)
 ├── mcp_server.py     # MCP server (stdio)
-├── settings.py       # Settings store (profile / defaults / .env I/O)
+├── settings.py       # Settings store (profile / defaults / subscriptions / .env I/O)
 ├── mcp_config.py     # MCP server config store
 ├── mcp_client.py     # MCP stdio client
 ├── publish.py        # Publish dispatch (built-in Notion / any MCP tool)
 ├── config.py         # .env configuration
 └── util.py           # Utilities
 
-webapp.py             # Web server (Flask + SSE, port 8787)
-web/index.html        # Single-file frontend (no build step, self-hosted Inter)
+webapp.py             # Web server (Flask + SSE + audio Range stream + scheduler, port 8787)
+web/index.html        # Page skeleton
+web/app.js            # Frontend logic (no build step, no framework)
+web/app.css           # Styles (OpenAI-style light theme, self-hosted Inter)
+
+tests/                # pytest: backend and HTTP API
+tests/ui/             # jsdom UI tests (harness.js is the shared skeleton)
 ```
 
 ## License

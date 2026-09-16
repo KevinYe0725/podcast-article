@@ -258,3 +258,34 @@ def retry_failed() -> int:
     if n:
         _save(data)
     return n
+
+
+# 进程被杀时留下的 running 条目，最多自动重排这么多次，避免「一跑就崩」的任务无限循环
+MAX_AUTO_RECOVER = 2
+
+
+def recover_running() -> int:
+    """把卡在 running 的条目归位（服务重启/进程被杀之后调用）。
+
+    服务是单进程单任务的：进程起来时如果还有 running，那一定是上次没跑完就死了，
+    而队列只挑 pending —— 不归位的话整条队列会被一条永远跑不完的任务堵死。
+    连续失败 MAX_AUTO_RECOVER 次的条目直接标失败，把问题暴露给用户而不是反复空转。
+    """
+    data = _load()
+    changed = 0
+    for it in data["items"]:
+        if it.get("state") != "running":
+            continue
+        tries = int(it.get("recovered") or 0) + 1
+        it["recovered"] = tries
+        if tries > MAX_AUTO_RECOVER:
+            it["state"] = "error"
+            it["error"] = "服务重启前这条任务没跑完，连续中断多次，已停止自动重试"
+        else:
+            it["state"] = "pending"
+            it["started_at"] = None
+            it["error"] = ""
+        changed += 1
+    if changed:
+        _save(data)
+    return changed

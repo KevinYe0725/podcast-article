@@ -32,6 +32,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import feedparser
+import requests
 
 from .config import PROJECT_ROOT
 
@@ -104,8 +105,15 @@ def _require(data: dict, fid: str) -> dict:
 # ------------------------------------------------------------------ feed 解析
 
 def _fetch(url: str, timeout: float = 25.0):
-    """唯一的网络出口（测试里用 monkeypatch 替换掉它就不会联网）。"""
-    return feedparser.parse(url, request_headers={"User-Agent": _UA}, request_timeout=timeout)
+    """唯一的网络出口（测试里用 monkeypatch 替换掉它就不会联网）。
+
+    注意：**不能**给 feedparser.parse 传 request_timeout —— 它没有这个参数（传了直接
+    TypeError，订阅会整体不可用；实测踩过）。feedparser 走 urllib、无法设超时，
+    所以这里先用 requests 带超时把内容取回来，再交给 feedparser 解析。
+    """
+    resp = requests.get(url, headers={"User-Agent": _UA}, timeout=(10.0, timeout))
+    resp.raise_for_status()
+    return feedparser.parse(resp.content)
 
 
 def _parsed_or_raise(url: str, parsed) -> None:

@@ -10,6 +10,9 @@ OUT="$TMP/output"
 mkdir -p "$OUT"
 export PA_OUTPUT_DIR="$OUT"
 export PA_LIBRARY_FILE="$TMP/library.json"   # 分类数据也要隔离，别碰真实 library.json
+export PA_QUEUE_FILE="$TMP/queue.json"       # 批量队列（后台调度会读写它）
+export PA_FEEDS_FILE="$TMP/feeds.json"       # 订阅
+export PA_SCHEDULER=0                        # 关掉后台自动跑队列，让测试可控（手动触发用 /api/queue/run）
 export PA_BASE="http://127.0.0.1:$PORT"
 
 # 端口必须空闲：否则会静默连到上一次残留的服务上，测出莫名其妙的结果
@@ -23,6 +26,7 @@ fi
 node seed.js
 
 ( cd "$REPO" && PA_OUTPUT_DIR="$OUT" PA_LIBRARY_FILE="$PA_LIBRARY_FILE" \
+    PA_QUEUE_FILE="$PA_QUEUE_FILE" PA_FEEDS_FILE="$PA_FEEDS_FILE" PA_SCHEDULER=0 \
     uv run python webapp.py --port "$PORT" >/tmp/pa-ui-test-server.log 2>&1 ) &
 SERVER_PID=$!
 
@@ -44,10 +48,16 @@ if ! kill -0 "$SERVER_PID" 2>/dev/null; then
 fi
 
 # 注：runview.test.js 需要真实下载/转写（依赖网络），不进 CI，需要时手动跑
+# 每个测试都套 timeout：jsdom 里某个 promise 挂住时，宁可红掉也不要让 CI 卡死
 FAILED=0
-for t in close.test.js modal.test.js sidebar.test.js delete.test.js audio.test.js; do
+for t in close.test.js modal.test.js sidebar.test.js delete.test.js audio.test.js \
+         search.test.js status.test.js queue.test.js feeds.test.js export.test.js; do
   echo "── $t"
-  node "$t" || FAILED=1
+  if command -v timeout >/dev/null 2>&1; then
+    timeout 120 node "$t" || FAILED=1
+  else
+    node "$t" || FAILED=1          # macOS 没有 timeout，run.sh 自身受 CI 超时保护
+  fi
 done
 [ "$FAILED" = 0 ] && echo "✓ UI 测试全部通过" || echo "✕ 存在失败的 UI 测试"
 exit "$FAILED"

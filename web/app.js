@@ -99,6 +99,7 @@ async function enqueueLinks(links) {
   if (!resp.ok) { toast("⚠ " + esc(d.error || "入队失败")); return; }
   $("url").value = "";
   updateComposerHint();
+  autoGrow();
   toast(`✦ 已排入队列 ${d.added.length} 条，后台会依次生成`);
   showView("queue");
   renderQueueView(d.queue);
@@ -132,8 +133,15 @@ function updateComposerHint() {
     $("hint").innerHTML = `检测到 ${n} 条链接 —— 点按钮会全部排队，后台依次跑完；不想排队就只留一条。`;
   } else {
     btn.textContent = "生成文章";
-    $("hint").innerHTML = "⌘/Ctrl + Enter 直接开始 · Esc 关闭文章 / 退出设置 · 产物会缓存，重新生成文章不必重新转写";
+    $("hint").innerHTML = "⌘/Ctrl + Enter 直接开始（批量时一行一条链接）· Esc 关闭文章 / 退出设置 · 产物会缓存，重新生成文章不必重新转写";
   }
+}
+
+/** 输入框随内容长高（最多 6 行左右），因为要支持一次粘多条链接 */
+function autoGrow() {
+  const el = $("url");
+  el.style.height = "auto";
+  el.style.height = Math.min(el.scrollHeight, 160) + "px";
 }
 
 function beginJob(id) {
@@ -346,11 +354,12 @@ async function pushArticle() {
 /* ---------------- 设置 ---------------- */
 const SECRET_KEYS = ["DEEPSEEK_API_KEY", "DEEPSEEK_MODEL", "NOTION_TOKEN", "NOTION_DATABASE_ID", "NOTION_PARENT_PAGE_ID"];
 
-async function openSettings() {
+async function openSettings(tab) {
   $("main").style.display = "none";
   $("settings").style.display = "block";
   window.scrollTo({ top: 0 });
   await loadSettings();
+  if (tab) switchTab(tab);
   loadMcp();
 }
 
@@ -397,8 +406,59 @@ async function loadSettings() {
     ["本地模型", (s.models || []).join("、") || "—"],
     ["设置文件", s.settings_path], ["环境变量", s.env_path],
   ].map(([k, v]) => `<div class="inforow"><span class="k">${esc(k)}</span><span class="v">${esc(String(v))}</span></div>`).join("");
+
+  // 订阅调度
+  const sub = d.subscriptions || {};
+  $("sub_enabled").checked = sub.enabled !== false;
+  $("sub_interval").value = sub.interval_minutes ?? 120;
+  $("sub_auto").checked = sub.auto_generate !== false;
+  renderDestOptions(sub.auto_dest || "");
+  loadUsageBox();
+
   applyDefaultsToComposer(g);
   clearDirty();
+}
+
+/** 「自动生成的文章归入」下拉：未分类 + 现有分类 */
+function renderDestOptions(selected) {
+  const sel = $("sub_dest");
+  if (!sel) return;
+  sel.innerHTML = `<option value="">未分类</option>` +
+    libCats.map((c) => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join("");
+  sel.value = selected || "";
+}
+
+/** 设置页的用量面板 */
+async function loadUsageBox() {
+  const box = $("usagebox");
+  if (!box) return;
+  box.innerHTML = `<div class="inforow"><span class="k">正在统计…</span><span class="v"></span></div>`;
+  try {
+    const d = await (await fetch("/api/usage")).json();
+    const t = d.total || {};
+    if (!t.episodes) {
+      box.innerHTML = `<div class="inforow"><span class="k">还没有用量记录</span>
+        <span class="v">生成第一篇文章后，这里会出现 token 与费用明细</span></div>`;
+      $("usage_state").textContent = "";
+      return;
+    }
+    $("usage_state").textContent = `${t.episodes} 篇有记录`;
+    $("usage_state").className = "fstate ok";
+    const rows = [
+      ["累计费用（估算）", fmtCost(t.cost_cny)],
+      ["总计 tokens", `${t.total_tokens.toLocaleString()}（输入 ${t.input_tokens.toLocaleString()} / 输出 ${t.out_tokens.toLocaleString()}）`],
+      ["缓存命中", `${t.hit_tokens.toLocaleString()} tokens · ${t.cache_hit_rate}%（命中部分单价只有 1/50）`],
+      ["模型调用次数", `${t.calls} 次`],
+      ["平均每篇", t.episodes ? `${fmtCost(t.cost_cny / t.episodes)} · ${Math.round(t.total_tokens / t.episodes).toLocaleString()} tokens` : "—"],
+    ];
+    Object.entries(t.by_model || {}).forEach(([model, u]) => {
+      rows.push([`　${model}`, `${u.episodes || ""}${u.episodes ? " 篇 · " : ""}${fmtCost(u.cost_cny)} · ${fmtTokens(u.total_tokens)} tokens`]);
+    });
+    box.innerHTML = rows.map(([k, v]) =>
+      `<div class="inforow"><span class="k">${esc(k)}</span><span class="v">${esc(String(v))}</span></div>`).join("");
+  } catch (e) {
+    box.innerHTML = `<div class="inforow"><span class="k">统计失败</span><span class="v">${esc(String(e))}</span></div>`;
+  }
 }
 
 function applyDefaultsToComposer(g) {
@@ -425,6 +485,12 @@ async function saveSettings() {
       length_mode: $("g_mode").value,
       llm_model: $("g_llm").value,
       auto_polish: $("g_polish").checked,
+    },
+    subscriptions: {
+      enabled: $("sub_enabled").checked,
+      interval_minutes: parseInt($("sub_interval").value, 10) || 0,
+      auto_generate: $("sub_auto").checked,
+      auto_dest: $("sub_dest").value,
     },
     secrets: {},
   };
@@ -490,14 +556,15 @@ function setPlayIcon(playing) {
   $("picon-pause").style.display = playing ? "block" : "none";
 }
 
-/** 从某一秒开始播放当前这集的本地音频 */
-function playAt(sec, el) {
-  if (!curWorkdir) return;
+/** 从某一秒开始播放某一集的本地音频（dir 省略时用当前打开的文章） */
+function playAt(sec, el, dir) {
+  const target = dir || curWorkdir;
+  if (!target) return;
   const a = pa();
-  if (audioDir !== curWorkdir) {
-    audioDir = curWorkdir;
-    a.src = "/api/audio/" + encodeURIComponent(curWorkdir);
-    $("ptitle").textContent = episodeTitle(curWorkdir);
+  if (audioDir !== target) {
+    audioDir = target;
+    a.src = "/api/audio/" + encodeURIComponent(target);
+    $("ptitle").textContent = episodeTitle(target);
     $("pfill").style.width = "0%";
     $("pnow").textContent = fmtClock(sec);
     $("ptotal").textContent = "0:00";
@@ -791,7 +858,9 @@ function closeResult() {
   $("transcript").classList.remove("show");
   $("transcript").textContent = ""; $("transcript").dataset.loaded = "";
   $("tbtn").textContent = "查看文字稿";
-  curWorkdir = null; curUrl = null;
+  curWorkdir = null; curUrl = null; curUsage = null;
+  hidePopmenus();
+  renderCostPill();
   audioDir = null;
   pa().pause();
   pa().removeAttribute("src");
@@ -823,9 +892,11 @@ async function loadLibrary() {
   libStatusLabels = d.status_labels || {};
   libUsageTotal = d.usage_total || null;
   renderCatbar();
-  renderGrid();
   renderUsagePill();
   setNavCount("navqcount", d.queue_active || 0);
+  // 搜索状态下刷新库时，重新跑一次当前查询（结果里的费用/状态也会跟着更新）
+  if (searchQuery) await runSearch(searchQuery);
+  else renderGrid();
 }
 
 /** 顶栏的累计用量胶囊 */
@@ -908,10 +979,10 @@ function matchesFilter(it) {
 }
 
 function renderGrid() {
+  if (searchQuery) return;    // 搜索模式下由 renderSearch 负责渲染，别把结果覆盖掉
   const shown = libItems.filter(matchesFilter);
   const empty = $("empty-lib");
-  if (searchQuery) { /* 搜索模式由 renderSearch 负责 */ }
-  else if (!libItems.length) { empty.textContent = "还没有生成过任何文章。"; empty.style.display = "block"; }
+  if (!libItems.length) { empty.textContent = "还没有生成过任何文章。"; empty.style.display = "block"; }
   else if (!shown.length) {
     empty.textContent = isSmart(activeCat)
       ? `「${statusLabel(activeCat)}」里还没有文章 —— 打开一篇文章后在工具条里标记即可。`
@@ -1279,27 +1350,40 @@ async function openEpisode(dirEnc) {
   }
   $("result").classList.add("show");
   $("result").scrollIntoView({ behavior: "smooth", block: "start" });
+  // 打开即从「未读」推进到「在读」，并把这一集的累计花费显示出来
+  const item = libItems.find((i) => i.dir === dir);
+  curUsage = (item && item.usage) || null;
+  renderCostPill();
+  syncReadButton();
+  autoMarkReading(dir);
 }
 
-$("url").addEventListener("keydown", (e) => {
-  if (e.key === "Enter") startRun();
-});
+// 注：输入框的 Enter / input 处理统一放在文件末尾的初始化段（见 autoGrow 的注释）
 document.addEventListener("keydown", (e) => {
   if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && !$("go").disabled) { e.preventDefault(); startRun(); }
 });
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
+  // 分层退出：弹窗 > 下拉菜单 > 设置 > 文字稿 > 文章 > 侧边栏抽屉
   if ($("modal").classList.contains("show")) { closeModal(); return; }
+  if (document.querySelector(".popmenu:not([hidden])")) { hidePopmenus(); return; }
+  if ($("appside").classList.contains("open")) { closeSide(); return; }
   if ($("settings").style.display === "block") { closeSettings(); return; }
   if ($("result").classList.contains("withTranscript")) { toggleTranscript(); return; }
   if ($("result").classList.contains("show")) closeResult();
 });
-// 时间戳回听（只绑定一次）
+// 时间戳回听（只绑定一次）：文章/文字稿里的时间戳靠这里冒泡上来处理。
+// 搜索结果里的时间戳不用这条路（它在 .sr 卡片内部，冒泡会顺带打开文章），
+// 而是内联调用 playFromTs()，见 searchCardHTML。
+function playFromTs(el) {
+  playAt(parseInt(el.dataset.sec, 10), el, el.dataset.dir || curWorkdir);
+}
+
 document.addEventListener("click", (e) => {
   const ts = e.target.closest(".ts");
   if (!ts) return;
   e.preventDefault();
-  playAt(parseInt(ts.dataset.sec, 10), ts);
+  playFromTs(ts);
 });
 $("pbar").addEventListener("click", (e) => {
   const a = pa();
@@ -1334,6 +1418,450 @@ $("libgrid").addEventListener("pointerdown", (e) => {
   if (card) beginDrag(e, card.dataset.dir, card);
 });
 
+/* ---------------- 视图切换（文章库 / 队列 / 订阅）---------------- */
+let activeView = "lib";
+
+function showView(name) {
+  activeView = name;
+  $("lib").style.display = name === "lib" ? "" : "none";
+  $("queueview").style.display = name === "queue" ? "" : "none";
+  $("feedsview").style.display = name === "feeds" ? "" : "none";
+  $("navqueue").classList.toggle("on", name === "queue");
+  $("navfeeds").classList.toggle("on", name === "feeds");
+  if (name === "queue") loadQueue();
+  if (name === "feeds") loadFeeds();
+  closeSide();
+}
+
+/* ---------------- 侧边栏抽屉（窄屏）---------------- */
+function toggleSide() {
+  const side = $("appside");
+  const open = side.classList.toggle("open");
+  let back = document.querySelector(".sideback");
+  if (!back) {
+    back = document.createElement("div");
+    back.className = "sideback";
+    back.addEventListener("click", closeSide);
+    document.body.appendChild(back);
+  }
+  back.classList.toggle("open", open);
+}
+
+function closeSide() {
+  $("appside").classList.remove("open");
+  const back = document.querySelector(".sideback");
+  if (back) back.classList.remove("open");
+}
+
+/* ---------------- 下拉菜单（导出 / 状态）---------------- */
+function togglePopmenu(id, btn) {
+  const menu = $(id);
+  const willShow = menu.hidden;
+  hidePopmenus();
+  menu.hidden = !willShow;
+  if (willShow) setTimeout(() => document.addEventListener("pointerdown", outsidePopmenu, true), 0);
+}
+
+function hidePopmenus() {
+  document.querySelectorAll(".popmenu").forEach((m) => { m.hidden = true; });
+  document.removeEventListener("pointerdown", outsidePopmenu, true);
+}
+
+function outsidePopmenu(e) {
+  if (!e.target.closest(".popmenu") && !e.target.closest(".menuwrap")) hidePopmenus();
+}
+
+function toggleExportMenu(ev) { ev.stopPropagation(); togglePopmenu("exportmenu", ev.currentTarget); }
+
+/* ---------------- 导出 ---------------- */
+/** 导出下载地址（单独抽出来，测试可以直接断言这个 URL） */
+function exportUrl(fmt, dir) {
+  const d = dir || curWorkdir;
+  return `/api/export/${encodeURIComponent(d)}?fmt=${encodeURIComponent(fmt)}`;
+}
+
+function bundleUrl() {
+  const cat = isSmart(activeCat) || activeCat === "all" || activeCat === "none" ? "" : activeCat;
+  return "/api/export?transcript=1" + (cat ? `&category=${encodeURIComponent(cat)}` : "");
+}
+
+function triggerDownload(url) {
+  const a = document.createElement("a");
+  a.href = url;
+  a.setAttribute("download", "");
+  a.style.display = "none";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+function exportOne(fmt, dir) {
+  hidePopmenus();
+  const d = dir || curWorkdir;
+  if (!d) return;
+  triggerDownload(exportUrl(fmt, d));
+  toast(fmt === "html"
+    ? "✦ 正在导出 HTML 单文件（内联样式，可以直接发给别人）"
+    : fmt === "txt" ? "✦ 正在导出纯文字稿" : "✦ 正在导出 Markdown");
+}
+
+/** 整库打包：勾选当前筛选范围（某个分类时只打包那个分类） */
+function exportAll() {
+  const cat = isSmart(activeCat) || activeCat === "all" || activeCat === "none" ? "" : activeCat;
+  const c = cat ? catById(cat) : null;
+  showModal({
+    title: "打包导出全部文章？",
+    desc: c ? `只打包分类「${c.name}」里的文章。` : "把当前所有文章打包成一个 zip。",
+    withInput: false,
+    okText: "打包下载",
+    bodyHtml: `<label class="opt"><input type="checkbox" id="ziptrans" checked>
+      <span><span class="ot">包含文字稿</span><span class="od">每篇的 transcript.txt 一起放进去（文件会大一些）</span></span></label>`,
+    onOk: () => {
+      const withT = !$("ziptrans") || $("ziptrans").checked;
+      triggerDownload(bundleUrl().replace("transcript=1", "transcript=" + (withT ? "1" : "0")));
+      toast("✦ 正在打包，文件较大时需要几秒");
+    },
+  });
+}
+
+async function copyArticle() {
+  hidePopmenus();
+  const text = ($("article").innerText || "").trim();
+  if (!text) return;
+  try {
+    await navigator.clipboard.writeText(text);
+    toast("✦ 正文已复制到剪贴板");
+  } catch (e) {
+    toast("⚠ 浏览器不允许直接写剪贴板，请手动选中复制");
+  }
+}
+
+/* ---------------- 全文检索 ---------------- */
+let searchQuery = "", searchTimer = null;
+
+function onSearchInput() {
+  const v = $("q").value.trim();
+  $("q").parentElement.classList.toggle("has-text", !!v);
+  clearTimeout(searchTimer);
+  // 输入停顿 260ms 再查，避免每个字都打一次接口
+  searchTimer = setTimeout(() => { if (v) runSearch(v); else clearSearch(); }, 260);
+}
+
+async function runSearch(q) {
+  searchQuery = q;
+  showView("lib");
+  const d = await (await fetch("/api/search?q=" + encodeURIComponent(q))).json();
+  renderSearch(d);
+}
+
+function clearSearch(keepFilter) {
+  searchQuery = "";
+  $("q").value = "";
+  $("q").parentElement.classList.remove("has-text");
+  showView("lib");
+  if (!keepFilter) renderCatbar();
+  renderGrid();
+}
+
+const tsToSec = (ts) => (ts || "").split(":").reduce((a, b) => a * 60 + Number(b || 0), 0);
+
+function searchCardHTML(it) {
+  const hits = (it.hits || []).map((h) => {
+    const field = h.field === "transcript" ? "文字稿" : h.field === "title" ? "标题" : "正文";
+    const ts = h.ts
+      // 这里必须内联处理：stopPropagation 会连 document 上的委托监听一起挡掉，
+      // 所以不能只写 stopPropagation 把播放交给全局委托（那样点了不会出声）。
+      ? `<a class="ts" data-sec="${tsToSec(h.ts)}" data-dir="${esc(it.dir)}" title="跳到音频此处"
+            onclick="event.stopPropagation();playFromTs(this)">[${esc(h.ts)}]</a> `
+      : "";
+    return `<div class="srhit"><span class="srfield">${field}</span>${ts}<span class="srtext">${esc(h.before)}<mark>${esc(h.match)}</mark>${esc(h.after)}</span></div>`;
+  }).join("");
+  return `
+  <div class="sr" data-dir="${esc(it.dir)}" onclick="openEpisode('${encodeURIComponent(it.dir)}')">
+    <div class="srhead">
+      <div class="srtitle">${esc(it.title)}</div>
+      <span class="srmeta">${[it.podcast, `${it.match_count} 处命中`, statusLabel(it.status || "unread")].filter(Boolean).map(esc).join(" · ")}</span>
+    </div>
+    ${hits}
+  </div>`;
+}
+
+function renderSearch(d) {
+  const items = d.items || [];
+  // 搜索时左侧筛选不参与，去掉高亮避免误导
+  document.querySelectorAll("#catnav .folder.on").forEach((f) => f.classList.remove("on"));
+  document.querySelectorAll("#quicktabs button").forEach((b) => b.classList.remove("on"));
+  $("libtitle").textContent = `搜索「${d.query}」`;
+  $("libcount").textContent = items.length
+    ? `命中 ${items.length} 篇 · 已索引 ${(d.stats || {}).indexed || 0} 集`
+    : "";
+  const empty = $("empty-lib");
+  if (!items.length) {
+    $("libgrid").innerHTML = "";
+    empty.textContent = `没有找到「${d.query}」。试试更短的词；用 | 表示「或」（例如 强化学习|RL）。`;
+    empty.style.display = "block";
+    return;
+  }
+  empty.style.display = "none";
+  $("libgrid").innerHTML = items.map(searchCardHTML).join("");
+}
+
+/* ---------------- 批量队列 ---------------- */
+let queueState = null;
+
+async function loadQueue() {
+  try {
+    renderQueueView(await (await fetch("/api/queue")).json());
+  } catch (e) { /* 服务暂时不可用时不打断界面 */ }
+}
+
+function renderQueueView(d) {
+  queueState = d;
+  setNavCount("navqcount", d.active || 0);
+  const items = d.items || [];
+  $("empty-queue").style.display = items.length ? "none" : "block";
+  $("queuelist").innerHTML = items.map(queueRowHTML).join("");
+}
+
+function queueRowHTML(it) {
+  const labels = (queueState && queueState.labels) || {};
+  const acts = [];
+  if (it.state === "pending") {
+    acts.push(`<button class="btn mini" title="上移" onclick="queueMove('${it.id}',-1)">↑</button>`);
+    acts.push(`<button class="btn mini" title="下移" onclick="queueMove('${it.id}',1)">↓</button>`);
+  }
+  if (it.dir) acts.push(`<button class="btn mini" onclick="openEpisode('${encodeURIComponent(it.dir)}')">看文章</button>`);
+  acts.push(`<button class="btn mini" onclick="queueRemove('${it.id}')">删除</button>`);
+  return `
+  <div class="qrow" data-id="${esc(it.id)}">
+    <span class="qstate ${esc(it.state)}">${esc(labels[it.state] || it.state)}</span>
+    <div class="qmain">
+      <div class="qtitle">${esc(it.title || it.url)}</div>
+      <div class="qurl">${esc(it.url)}${it.pick > 1 ? `　（第 ${it.pick} 集）` : ""}</div>
+      ${it.error ? `<div class="qerr">${esc(it.error)}</div>` : ""}
+    </div>
+    <div class="qacts">${acts.join("")}</div>
+  </div>`;
+}
+
+async function queueRun() {
+  const resp = await fetch("/api/queue/run", { method: "POST" });
+  const d = await resp.json();
+  if (!resp.ok) { await loadQueue(); return; }   // 有任务在跑 / 队列空，都不算错误
+  if (d.job_id) beginJob(d.job_id);
+  loadQueue();
+}
+
+async function queueRemove(id) {
+  await fetch("/api/queue/" + encodeURIComponent(id), { method: "DELETE" });
+  loadQueue();
+}
+
+async function queueMove(id, delta) {
+  await fetch(`/api/queue/${encodeURIComponent(id)}/move`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ delta }),
+  });
+  loadQueue();
+}
+
+async function queueRetry() {
+  const d = await (await fetch("/api/queue/retry", { method: "POST" })).json();
+  renderQueueView(d.queue);
+  toast(d.retried ? `✦ ${d.retried} 条失败的已重新排队` : "没有失败的条目");
+  if (d.retried) queueRun();
+}
+
+function queueClear(keepFailed) {
+  showModal({
+    title: "清空队列？",
+    desc: keepFailed ? "只清掉已完成的，失败的会留着。" : "清掉已完成与失败的条目；排队中和正在生成的会保留。",
+    withInput: false,
+    danger: true,
+    okText: "清空",
+    onOk: async () => {
+      const d = await (await fetch("/api/queue/clear", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ keep_failed: !!keepFailed }),
+      })).json();
+      renderQueueView(d.queue);
+      toast(d.removed ? `✦ 已清掉 ${d.removed} 条` : "没有可清理的条目");
+    },
+  });
+}
+
+/** 弹窗里一次粘多条链接 */
+function openBatch() {
+  showModal({
+    title: "批量添加链接",
+    desc: "一行一条，从聊天记录里直接粘一串也可以。会按顺序依次生成。",
+    withInput: false,
+    okText: "加入队列",
+    bodyHtml: `<textarea id="batchtext" class="modaltarea" spellcheck="false"
+      placeholder="https://www.xiaoyuzhoufm.com/episode/…&#10;https://www.youtube.com/watch?v=…&#10;podcasts.apple.com/…/id…"></textarea>
+      <p class="modalhint">每条都会走完整流程：抓元信息 → 下载音频 → 获取文字稿 → 成文。
+      文字稿会缓存，之后重新生成文章不必重新转写。</p>`,
+    onOk: async () => {
+      const text = ($("batchtext") || {}).value || "";
+      await enqueueLinks([text]);
+    },
+  });
+}
+
+/* ---------------- 订阅 ---------------- */
+let feedState = null;
+
+function relTime(ts) {
+  if (!ts) return "从未";
+  const s = Math.max(0, Date.now() / 1000 - ts);
+  if (s < 60) return "刚刚";
+  if (s < 3600) return `${Math.floor(s / 60)} 分钟前`;
+  if (s < 86400) return `${Math.floor(s / 3600)} 小时前`;
+  return `${Math.floor(s / 86400)} 天前`;
+}
+
+async function loadFeeds() {
+  try {
+    renderFeeds(await (await fetch("/api/feeds")).json());
+  } catch (e) { /* 静默 */ }
+}
+
+function renderFeeds(d) {
+  feedState = d;
+  const feeds = d.feeds || [];
+  setNavCount("navfcount", feeds.length);
+  $("empty-feeds").style.display = feeds.length ? "none" : "block";
+  $("feedlist").innerHTML = feeds.map(feedRowHTML).join("");
+}
+
+function feedRowHTML(f) {
+  const bits = [`上次检查：${relTime(f.last_checked)}`, `已知 ${f.seen_count || 0} 集`];
+  if (f.backfill) bits.push(`首次补跑 ${f.backfill} 集`);
+  return `
+  <div class="frow" data-id="${esc(f.id)}">
+    <div class="fmain">
+      <div class="ftitle">${esc(f.title || f.url)}
+        <span class="ftag">${f.auto ? "自动生成" : "仅发现新单集"}</span></div>
+      <div class="furl">${esc(f.url)}</div>
+      <div class="fmeta">${esc(bits.join(" · "))}</div>
+      ${f.last_error ? `<div class="ferr">上次抓取失败：${esc(f.last_error)}</div>` : ""}
+    </div>
+    <div class="facts">
+      <label class="fswitch">自动生成
+        <input type="checkbox" ${f.auto ? "checked" : ""} onchange="toggleFeedAuto('${f.id}', this.checked)"></label>
+      <button class="btn mini" onclick="delFeed('${f.id}')">删除</button>
+    </div>
+  </div>`;
+}
+
+function openAddFeed() {
+  showModal({
+    title: "添加订阅",
+    desc: "填 RSS 链接或 Apple Podcasts 节目链接。",
+    withInput: true,
+    placeholder: "https://feeds.example.com/show.xml 或 podcasts.apple.com/…/id123",
+    okText: "订阅",
+    bodyHtml: `<label class="opt"><input type="number" id="feedbackfill" min="0" max="20" value="0" style="width:78px">
+      <span><span class="ot">同时补跑最新 N 集</span>
+      <span class="od">0 = 只关注之后更新的新单集，不追溯历史</span></span></label>`,
+    onOk: async (url) => addFeed(url),
+  });
+}
+
+async function addFeed(url) {
+  const el = $("feedbackfill");
+  const backfill = Math.max(0, Math.min(20, parseInt((el && el.value) || "0", 10) || 0));
+  const resp = await fetch("/api/feeds", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url, backfill, auto: true }),
+  });
+  const d = await resp.json();
+  if (!resp.ok) { toast("⚠ " + esc(d.error || "订阅失败")); return; }
+  toast(`✦ 已订阅：${esc((d.feed || {}).title || url)}${d.enqueued ? ` · 已排队 ${d.enqueued} 集` : ""}`);
+  renderFeeds(d.feeds);
+  if (d.enqueued) queueRun();
+}
+
+async function toggleFeedAuto(id, on) {
+  const resp = await fetch("/api/feeds/" + encodeURIComponent(id), {
+    method: "PATCH", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ auto: on }),
+  });
+  const d = await resp.json();
+  if (!resp.ok) { toast("⚠ " + esc(d.error || "修改失败")); loadFeeds(); return; }
+  renderFeeds(d.feeds);
+}
+
+function delFeed(id) {
+  const f = ((feedState || {}).feeds || []).find((x) => x.id === id) || {};
+  showModal({
+    title: `取消订阅「${f.title || id}」？`,
+    desc: "只是不再检查这个节目，已经生成的文章不受影响。",
+    withInput: false,
+    danger: true,
+    okText: "取消订阅",
+    onOk: async () => {
+      const d = await (await fetch("/api/feeds/" + encodeURIComponent(id), { method: "DELETE" })).json();
+      renderFeeds(d);
+      toast("✦ 已取消订阅");
+    },
+  });
+}
+
+async function checkFeeds(btn) {
+  if (btn) { btn.disabled = true; btn.textContent = "检查中…"; }
+  try {
+    const d = await (await fetch("/api/feeds/check", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enqueue: true }),
+    })).json();
+    if (d.error) { toast("⚠ " + esc(d.error)); return; }
+    toast(d.found
+      ? `✦ 发现 ${d.found} 集新内容${d.enqueued ? `，已排队 ${d.enqueued} 集` : "（未自动排队）"}`
+      : "✦ 没有新单集");
+    if (d.feeds) renderFeeds(d.feeds);
+    else loadFeeds();
+    if (d.enqueued) queueRun();
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "立即检查"; }
+  }
+}
+
+/* ---------------- 初始化 ---------------- */
+// 首页输入框是 textarea：<input type="text"> 按规范会**丢掉换行**，
+// 一次粘多条链接会被粘成一条（实测被 UI 测试抓到），所以必须用多行控件。
+$("url").addEventListener("input", () => { updateComposerHint(); autoGrow(); });
+$("url").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); startRun(); }   // Shift+Enter 才换行
+});
+$("q").addEventListener("input", onSearchInput);
+$("q").addEventListener("keydown", (e) => {
+  if (e.key !== "Enter") return;
+  clearTimeout(searchTimer);
+  const v = $("q").value.trim();
+  if (v) runSearch(v); else clearSearch();
+});
+
+/** 页面刷新时如果后台还在跑，直接接上进度（不然用户会以为任务没了） */
+async function pollCurrentJob() {
+  try {
+    const d = await (await fetch("/api/jobs/current")).json();
+    if (d.status === "running" && d.job_id) beginJob(d.job_id);
+  } catch (e) { /* 静默 */ }
+}
+
 loadLibrary();
 loadMcp();
 loadSettings();
+loadQueue();
+loadFeeds();
+pollCurrentJob();
+updateComposerHint();
+autoGrow();
+
+// 队列页开着时轻量刷新；侧边栏计数也顺带更新
+setInterval(async () => {
+  if (activeView !== "queue") return;
+  loadQueue();
+}, 5000);
+setInterval(() => loadLibrary(), 30000);
