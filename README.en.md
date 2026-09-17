@@ -199,6 +199,16 @@ First run:
 uv run podcast-article "https://www.xiaoyuzhoufm.com/episode/xxxx"
 ```
 
+> **Restart the web service after changing code**: `webapp.py` is the backend, so it needs a restart;
+> the frontend under `web/` is read from disk on every request. That combination produces the classic
+> "code is new, running process is old" state — the page looks fine but new endpoints 404 and
+> timestamps stop working. Use:
+>
+> ```bash
+> bash scripts/dev.sh          # kill the stale listener → start current code → wait → print the URL
+> bash scripts/dev.sh --stop   # just stop it
+> ```
+
 > The transcription model downloads on first use (~1.5 GB). On flaky networks see [Troubleshooting](#-troubleshooting).
 
 ## 🖥 Three ways to use it

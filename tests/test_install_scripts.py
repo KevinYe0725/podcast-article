@@ -69,3 +69,16 @@ def test_readme_documents_the_installer():
     for text in (zh, en):
         for needle in ("scripts/install.sh", "install.ps1", "install.bat", "--cn", "PA_GH_PROXY"):
             assert needle in text, f"README 里缺少 {needle}（一键安装的用法要写全，含 Windows 与国内网络）"
+
+
+def test_dev_script_restarts_cleanly():
+    """scripts/dev.sh 守的是「代码是新的、跑着的进程是旧的」这个坑（实测踩过：
+    本机跑了 4 小时前的进程，/api/config 404、文章里的时间区间点不动）。"""
+    p = SCRIPTS / "dev.sh"
+    assert p.stat().st_mode & 0o111, "dev.sh 要有可执行位"
+    r = subprocess.run(["bash", "-n", str(p)], capture_output=True, text=True)
+    assert r.returncode == 0, f"dev.sh 语法错误：{r.stderr}"
+    s = p.read_text(encoding="utf-8")
+    assert "webapp.py" in s, "只该杀本项目的进程"
+    assert "不是本项目的 webapp.py" in s, "占端口的是别人的进程时要拒绝，不能乱杀"
+    assert "/api/config" in s, "用新端点的返回值判断就绪（能顺带确认进程是新版）"

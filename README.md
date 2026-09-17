@@ -196,6 +196,15 @@ cp .env.example .env   # 填入 DEEPSEEK_API_KEY
 uv run podcast-article "https://www.xiaoyuzhoufm.com/episode/xxxx"
 ```
 
+> **改了代码要重启 Web 服务**：`webapp.py` 是后端，改了必须重启；`web/` 下的前端是每次请求
+> 从磁盘读的，所以很容易出现「代码是新的、跑着的进程是旧的」—— 页面看着正常，但新加的接口
+> 404、时间戳点不动。用这个脚本重启最省事：
+>
+> ```bash
+> bash scripts/dev.sh          # 杀掉占端口的旧进程 → 用当前代码启动 → 等就绪 → 打印地址
+> bash scripts/dev.sh --stop   # 只停
+> ```
+
 > 转写模型首次使用需下载（约 1.5GB）。国内网络遇到 SSL 中断时，见[故障排查](#-故障排查)。
 
 ## 🖥 三种用法
