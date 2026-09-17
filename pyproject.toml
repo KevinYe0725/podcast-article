@@ -14,10 +14,17 @@ dependencies = [
     "flask>=3.1.3",
     "markdown>=3.10.3",
     "mcp<2",
+    # 知识库：jieba 给 FTS5 做中文分词（SQLite 自带的分词器不切中文），
+    # numpy 做向量检索（个人级书库直接暴力算余弦就够，不需要向量数据库）
+    "jieba>=0.42.1",
+    "numpy>=1.26",
 ]
 
 [project.optional-dependencies]
 faster = ["faster-whisper>=1.0.0"]
+# 语义检索用的嵌入模型（ONNX 运行时，**不需要 torch**；模型约 100MB，首次用时下载）。
+# 不装也能用：知识库会退回纯词法检索（FTS5/BM25），功能不残缺，只是不懂近义改写。
+kb = ["fastembed>=0.4.0"]
 
 [project.scripts]
 podcast-article = "podcast_article.cli:main"

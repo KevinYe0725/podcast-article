@@ -34,6 +34,10 @@
         <svg class="ficon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h9"></path><circle cx="19" cy="18" r="2.2"></circle></svg>
         <span class="fname">批量队列</span><span class="fcount" id="navqcount"></span>
       </button>
+      <button class="folder" id="navkb" onclick="showView('kb')">
+        <svg class="ficon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4.5h9a3 3 0 0 1 3 3V20a2.5 2.5 0 0 0-2.5-2.5H5z"></path><path d="M20 4.5v15"></path></svg>
+        <span class="fname">知识库</span><span class="fcount" id="navkbcount"></span>
+      </button>
       <button class="folder" id="navfeeds" onclick="showView('feeds')">
         <svg class="ficon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 19a14 14 0 0 1 14-14"></path><path d="M5 12a7 7 0 0 1 7-7"></path><circle cx="6" cy="18" r="1.6"></circle></svg>
         <span class="fname">订阅</span><span class="fcount" id="navfcount"></span>
@@ -146,6 +150,44 @@
     </div>
     <div id="queuelist"></div>
     <div id="empty-queue" class="viewempty">队列是空的。把攒下来的链接丢进来吧 —— 首页支持一次粘贴多条。</div>
+  </div>
+
+  <div id="kbview" style="display:none">
+    <div class="viewhead">
+      <div>
+        <h2>知识库</h2>
+        <p class="vhint" id="kbstat">正在读取状态…</p>
+      </div>
+      <div class="vacts">
+        <button class="btn mini" onclick="kbReindex(false)">增量索引</button>
+        <button class="btn mini" onclick="kbReindex(true)">重建索引</button>
+      </div>
+    </div>
+
+    <div class="kbask">
+      <textarea id="kbq" rows="2" placeholder="问整个书库：这些播客里关于 AI 安全都说了什么？（⌘/Ctrl + Enter 发送）" spellcheck="false"></textarea>
+      <div class="row">
+        <button class="btn primary" id="kbgobtn" onclick="kbAsk()">提问</button>
+        <label class="achip"><input type="checkbox" id="kbonlysearch"> 只检索，不问模型</label>
+        <span class="fstate" id="kbaskstate"></span>
+      </div>
+      <div id="kbanswer" class="kbanswer" style="display:none"></div>
+    </div>
+
+    <div class="kbsplit">
+      <div class="kbcol">
+        <div class="searchbox kbsb">
+          <input id="kbs" type="search" placeholder="跨集检索：谁说过什么…" autocomplete="off">
+          <button class="btn mini" onclick="kbSearch()">检索</button>
+        </div>
+        <div id="kbhits"></div>
+      </div>
+      <div class="kbcol">
+        <div class="kbtabs" id="kbtabs"></div>
+        <div id="kbents"></div>
+        <div id="kbentdetail"></div>
+      </div>
+    </div>
   </div>
 
   <div id="feedsview" class="col" style="display:none">
@@ -271,6 +313,7 @@
     <button class="tab" data-tab="subs" onclick="switchTab('subs')">订阅调度</button>
     <button class="tab" data-tab="assist" onclick="switchTab('assist')">阅读助手</button>
     <button class="tab" data-tab="tts" onclick="switchTab('tts')">朗读</button>
+    <button class="tab" data-tab="memory" onclick="switchTab('memory')">记忆</button>
     <button class="tab" data-tab="mcp" onclick="switchTab('mcp')">MCP 服务器</button>
     <button class="tab" data-tab="storage" onclick="switchTab('storage')">存储与用量</button>
   </div>
@@ -522,6 +565,29 @@
       </div>
       <audio id="t_preview" preload="none" style="display:none"></audio>
       <p class="fhint">先保存设置再试听：否则试的是旧配置。</p>
+    </div>
+  </section>
+
+  <section class="pane" id="pane-memory" style="display:none">
+    <div class="field" style="border-top:none">
+      <div class="fhead"><label class="flabel">记忆条目</label><span class="fstate" id="mem_state"></span></div>
+      <p class="fhint">
+        这里的每条记忆都会在「跨集问答」时被读进上下文（置顶的永远参与）。<b>只写不猜</b>：
+        新增要么是你手写的，要么是你在文章/对话里点「记住这条」存的，程序不会偷偷记。
+      </p>
+      <div class="memadd">
+        <input type="text" id="mem_text" placeholder="例如：用户偏好开篇用具体场景切入，不要简报式开头" spellcheck="false">
+        <select id="mem_kind"></select>
+        <label class="achip"><input type="checkbox" id="mem_pin"> 置顶</label>
+        <button class="btn mini" onclick="memAdd()">记住</button>
+      </div>
+      <div id="memlist"></div>
+    </div>
+    <div class="field">
+      <div class="fhead"><label class="flabel">知识库索引</label></div>
+      <p class="fhint" id="kb_setstate">—</p>
+      <div class="row"><button class="btn mini" onclick="kbReindex(false)">增量索引</button>
+      <button class="btn mini" onclick="kbReindex(true)">重建索引（会重算所有切片）</button></div>
     </div>
   </section>
 

@@ -29,12 +29,14 @@ from podcast_article import usage as usage_mod
 from podcast_article import cover as cover_mod
 from podcast_article import export as export_mod
 from podcast_article import feeds as feeds_mod
+from podcast_article import kb as kb_mod
 from podcast_article import links as links_mod
 from podcast_article import queue as queue_mod
 from podcast_article import search as search_mod
 from podcast_article import timestamps as timestamps_mod
 from podcast_article import tts as tts_mod
 from podcast_article.config import PROJECT_ROOT
+from podcast_article.util import ts_clock
 from podcast_article.pipeline import Pipeline
 
 # 输出根目录，可用 PA_OUTPUT_DIR 覆盖（测试用独立目录，避免碰真实数据）
@@ -731,6 +733,186 @@ def api_episode_delete(job_dir: str):
     except OSError as exc:
         return jsonify({"error": f"删除失败：{exc}"}), 500
     return jsonify({"ok": True, "scope": scope, "freed": freed, "dir": job_dir})
+
+
+# ---------------------------------------------------------------- 知识库与记忆
+#
+# 为什么要有：书库是「一篇一篇」的 —— 检索只在正文里找词，助手只认当前这一集。
+# 知识库把跨集检索、实体索引、用户记忆补上，全部落在本地一个 SQLite 文件里
+# （派生数据，删了能重建），不需要任何外部服务。
+_KB_LOCK = threading.Lock()
+_KB_JOB: dict = {"state": "idle", "done": 0, "total": 0, "note": "", "error": "",
+                 "result": None}
+
+
+@app.get("/api/kb/status")
+def api_kb_status():
+    try:
+        st = kb_mod.stats()
+    except Exception as exc:
+        return jsonify({"error": f"{type(exc).__name__}: {exc}"[:200]}), 500
+    st["indexing"] = _KB_JOB
+    st["episodes_on_disk"] = len([d for d in OUTPUT_ROOT.iterdir()
+                                  if d.is_dir() and not d.name.startswith(".")]) if OUTPUT_ROOT.exists() else 0
+    return jsonify(st)
+
+
+@app.post("/api/kb/reindex")
+@_readonly_guard
+def api_kb_reindex():
+    """重建索引（派生数据，force 会重算切片）。后台跑，前端轮询 status。"""
+    with _KB_LOCK:
+        if _KB_JOB.get("state") == "running":
+            return jsonify({"error": "已经在索引了", "indexing": _KB_JOB}), 409
+        _KB_JOB.update({"state": "running", "done": 0, "total": 0, "note": "准备中",
+                        "error": "", "result": None})
+
+    def work(force: bool) -> None:
+        def progress(done: int, total: int, note: str) -> None:
+            _KB_JOB.update({"done": done, "total": total, "note": note})
+        try:
+            r = kb_mod.index_all(OUTPUT_ROOT, force=force, progress=progress)
+            _KB_JOB.update({"state": "done", "result": r, "note": ""})
+        except Exception as exc:
+            _KB_JOB.update({"state": "error", "error": f"{type(exc).__name__}: {exc}"[:200]})
+
+    force = bool((request.get_json(force=True, silent=True) or {}).get("force"))
+    threading.Thread(target=work, args=(force,), daemon=True).start()
+    return jsonify({"state": "running", "indexing": _KB_JOB})
+
+
+@app.get("/api/kb/search")
+def api_kb_search():
+    """跨集检索。返回带出处的切片（哪一集、小标题、时间戳）。"""
+    q = (request.args.get("q") or "").strip()
+    if not q:
+        return jsonify({"error": "缺少 q"}), 400
+    k = min(30, max(1, int(request.args.get("k") or 8)))
+    mode = (request.args.get("mode") or "auto").lower()
+    dirs = [d for d in (request.args.get("dir") or "").split(",") if d] or None
+    try:
+        res = kb_mod.search(q, k=k, mode=mode, dirs=dirs)
+    except Exception as exc:
+        return jsonify({"error": f"{type(exc).__name__}: {exc}"[:200]}), 500
+    res["hits"] = [kb_mod._hit_public(h) for h in res["hits"]]
+    return jsonify(res)
+
+
+@app.post("/api/kb/ask")
+@_readonly_guard
+def api_kb_ask():
+    """跨集问答：先检索，再让模型**只依据检索到的原文**回答，并给出处。
+
+    跟单集助手的区别：证据来自整个书库。回答里每一条都要能对上 [n] 编号的出处，
+    编号由服务端按检索结果生成（不让模型自己编号，否则一定会瞎编）。
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    q = (data.get("question") or "").strip()
+    if len(q) < 2:
+        return jsonify({"error": "问题太短"}), 400
+    k = min(12, max(3, int(data.get("k") or 6)))
+    try:
+        res = kb_mod.search(q, k=k)
+    except Exception as exc:
+        return jsonify({"error": f"{type(exc).__name__}: {exc}"[:200]}), 500
+    hits = [kb_mod._hit_public(h, limit=700) for h in res["hits"]]
+    if not hits:
+        return jsonify({"answer": "书库里没有检索到相关内容。可以先重建索引，或换个说法。",
+                        "sources": [], "mode": res["mode"]})
+
+    lines = []
+    for i, h in enumerate(hits, 1):
+        where = f"{h['title']}（{h['podcast']}）" if h.get("podcast") else (h.get("title") or "")
+        if h.get("start_sec") is not None:
+            where += f" · {ts_clock(h['start_sec'])}"
+        if h.get("heading"):
+            where += f" · {h['heading']}"
+        if h.get("doc_kind") == "transcript":
+            where += " · 文字稿"
+        lines.append(f"[{i}] {where}\n{h['text']}")
+    context = "\n\n".join(lines)
+
+    from podcast_article import summarize
+    memories = kb_mod.memory_for_prompt(q)
+    mem_text = ""
+    if memories:
+        mem_text = "\n\n【关于这位读者的已知信息】\n" + "\n".join(
+            f"- {m['text']}" for m in memories)
+    system = (
+        "你是这位读者私人播客书库的研究助手。只依据下面提供的资料片段回答问题，"
+        "不要引入资料之外的事实；资料里没有的，直接说「资料里没有」。"
+        "回答用中文，先给结论再给依据，每条依据标注对应的编号（如 [2]）。"
+        "不要复述资料原文的长度，也不要点评资料本身；直接回答问题。"
+    )
+    user = f"读者的问题：{q}{mem_text}\n\n【资料片段】\n{context}"
+    try:
+        answer = summarize._chat(
+            [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            model=None, max_tokens=1200, temperature=0.3)
+    except Exception as exc:
+        # 模型不可用时把检索结果给出去 —— 有出处的原文比一句报错有用
+        return jsonify({"answer": "", "sources": hits, "mode": res["mode"],
+                        "error": f"模型调用失败：{type(exc).__name__}: {str(exc)[:160]}"})
+    return jsonify({"answer": (answer or "").strip(), "sources": hits, "mode": res["mode"],
+                    "memory_used": [m["text"] for m in memories]})
+
+
+@app.get("/api/kb/entities")
+def api_kb_entities():
+    etype = (request.args.get("type") or "").strip() or None
+    limit = min(200, max(1, int(request.args.get("limit") or 60)))
+    min_count = max(1, int(request.args.get("min_count") or 2))
+    return jsonify({"entities": kb_mod.entities(limit=limit, etype=etype, min_count=min_count),
+                    "types": list(kb_mod.ENTITY_TYPES)})
+
+
+@app.get("/api/kb/entity/<path:name>")
+def api_kb_entity(name: str):
+    d = kb_mod.entity_detail(name)
+    if not d.get("found"):
+        return jsonify({"error": "没有这个实体"}), 404
+    return jsonify(d)
+
+
+# ---------------------------------------------------------------- 记忆
+
+@app.get("/api/memory")
+def api_memory_list():
+    q = (request.args.get("q") or "").strip()
+    kind = (request.args.get("kind") or "").strip() or None
+    items = kb_mod.memory_list(kind=kind, query=q)
+    return jsonify({"items": items, "kinds": list(kb_mod.MEMORY_KINDS)})
+
+
+@app.post("/api/memory")
+@_readonly_guard
+def api_memory_add():
+    data = request.get_json(force=True, silent=True) or {}
+    try:
+        item = kb_mod.memory_add(
+            data.get("text") or "", kind=data.get("kind") or "fact",
+            tags=data.get("tags") or "", source_dir=data.get("dir") or "",
+            source_kind=data.get("source") or "user", pinned=bool(data.get("pinned")))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify(item)
+
+
+@app.patch("/api/memory/<int:mid>")
+@_readonly_guard
+def api_memory_update(mid: int):
+    data = request.get_json(force=True, silent=True) or {}
+    item = kb_mod.memory_update(mid, **{k: v for k, v in data.items()
+                                        if k in ("text", "kind", "tags", "pinned")})
+    if not item:
+        return jsonify({"error": "没有这条记忆"}), 404
+    return jsonify(item)
+
+
+@app.delete("/api/memory/<int:mid>")
+@_readonly_guard
+def api_memory_delete(mid: int):
+    return jsonify({"ok": kb_mod.memory_delete(mid)})
 
 
 # ---------------------------------------------------------------- 朗读（TTS）

@@ -3,6 +3,9 @@ __pycache__/
 *.pyc
 .env
 output/
+kb.sqlite*
+kb.sqlite-wal
+kb.sqlite-shm
 .DS_Store
 
 # MCP 服务器配置（可能含密钥）

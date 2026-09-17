@@ -35,7 +35,7 @@ def tmp_output(tmp_path, monkeypatch):
     out.mkdir()
     monkeypatch.setenv("PA_OUTPUT_DIR", str(out))
 
-    from podcast_article import feeds, library, mcp_config, queue
+    from podcast_article import feeds, kb, library, mcp_config, queue
     from podcast_article import settings as st
 
     monkeypatch.setattr(library, "STORE_PATH", tmp_path / "library.json")
@@ -43,6 +43,7 @@ def tmp_output(tmp_path, monkeypatch):
     monkeypatch.setattr(st, "ENV_PATH", tmp_path / ".env")
     monkeypatch.setattr(queue, "QUEUE_PATH", tmp_path / "queue.json")
     monkeypatch.setattr(feeds, "FEEDS_PATH", tmp_path / "feeds.json")
+    monkeypatch.setattr(kb, "DB_PATH", tmp_path / "kb.sqlite")
     if hasattr(mcp_config, "SERVERS_PATH"):
         monkeypatch.setattr(mcp_config, "SERVERS_PATH", tmp_path / "mcp_servers.json")
     return out

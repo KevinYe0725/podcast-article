@@ -48,6 +48,207 @@ function toast(html) {
   clearTimeout(toastTimer); toastTimer = setTimeout(() => $("toast").classList.remove("show"), 6000);
 }
 
+/* ---------------- 知识库（跨集检索 / 问答 / 实体）----------------
+   后端是 podcast_article/kb.py：SQLite FTS5 + jieba 分词（中文必须自己切词），
+   有嵌入模型时再加向量检索做混合排序。前端只负责把「命中 + 出处」摆清楚：
+   每条结果都要能回答「这话出自哪一集、第几分钟、哪个小标题」。 */
+
+let kbEntityType = "person";
+
+const mmssShort = (sec) => (sec == null ? "" :
+  `${Math.floor(sec / 60)}:${String(Math.round(sec % 60)).padStart(2, "0")}`);
+
+async function loadKb() {
+  try {
+    const d = await (await fetch("/api/kb/status")).json();
+    const mode = d.semantic ? "混合检索（词法 + 向量）" : "词法检索（FTS5 + jieba 分词）";
+    $("kbstat").innerHTML = `已索引 <b>${d.docs}</b> 篇文档 / <b>${d.passages}</b> 条切片 · `
+      + `<b>${d.entities}</b> 个实体 · <b>${d.memory}</b> 条记忆 · ${(d.size_bytes / 1048576).toFixed(1)}MB<br>`
+      + `检索方式：${mode}${d.semantic ? "" : "（装 fastembed 后自动升级为语义检索）"}`
+      + (d.embed_error && !d.semantic
+        ? `<br><span class="dimtext">语义检索暂不可用：${esc(String(d.embed_error).slice(0, 120))}</span>` : "");
+    setNavCount("navkbcount", d.passages || 0);
+    if ($("kb_setstate")) {
+      $("kb_setstate").textContent = `${d.docs} 篇 · ${d.passages} 条切片 · ${d.semantic ? "混合检索" : "词法检索"}`;
+    }
+    if (d.indexing && d.indexing.state === "running") {
+      $("kbstat").innerHTML += ` <span class="fstate">正在索引 ${d.indexing.done}/${d.indexing.total}…</span>`;
+      setTimeout(loadKb, 1500);
+    }
+  } catch (e) { $("kbstat").textContent = "读取状态失败：" + e; }
+  await loadKbEntities();
+}
+
+async function kbReindex(force) {
+  if (force && !confirm("重建索引会重新切片并重算向量，可能要一会儿。继续？")) return;
+  const resp = await fetch("/api/kb/reindex", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ force: !!force }),
+  });
+  const d = await resp.json();
+  if (!resp.ok) { toast("⚠ " + esc(d.error || "索引失败")); return; }
+  toast("✦ 开始索引，完成后会自动刷新");
+  setTimeout(loadKb, 1200);
+}
+
+function kbHitHTML(h, i) {
+  const ts = h.start_sec != null
+    ? `<a class="ts" data-sec="${Math.round(h.start_sec)}" data-dir="${esc(h.dir)}" role="button" tabindex="0"
+         title="跳到音频此处" onclick="event.stopPropagation();playFromTs(this)">[${mmssShort(h.start_sec)}]</a> `
+    : "";
+  return `<div class="kbhit">
+    <div class="kbhhead">
+      ${h.sources ? "" : ""}<span class="kbidx">[${i}]</span>
+      <span class="kbtitle" title="${esc(h.title || "")}">${esc((h.title || "").slice(0, 40))}</span>
+      ${h.podcast ? `<span class="dimtext">${esc(h.podcast)}</span>` : ""}
+      ${h.doc_kind === "transcript" ? `<span class="dimtext">文字稿</span>` : ""}
+      <span style="flex:1"></span>
+      ${ts}
+    </div>
+    ${h.heading ? `<div class="kbhead2">${esc(h.heading)}</div>` : ""}
+    <div class="kbtext">${esc(h.text || "")}</div>
+    <div class="kbacts"><button class="ttslink" onclick="openEpisode('${encodeURIComponent(h.dir)}')">打开这一篇 →</button></div>
+  </div>`;
+}
+
+async function kbSearch() {
+  const q = ($("kbs").value || "").trim();
+  if (!q) { $("kbhits").innerHTML = ""; return; }
+  $("kbhits").innerHTML = `<div class="viewempty">检索中…</div>`;
+  const d = await (await fetch("/api/kb/search?q=" + encodeURIComponent(q) + "&k=8")).json();
+  if (d.error) { $("kbhits").innerHTML = `<div class="viewempty">✕ ${esc(d.error)}</div>`; return; }
+  $("kbhits").innerHTML = d.hits.length
+    ? `<div class="dimtext" style="margin:6px 0 10px">${d.hits.length} 条命中 · ${d.mode === "hybrid" ? "混合检索" : d.mode === "semantic" ? "向量检索" : "词法检索"}</div>`
+      + d.hits.map((h, i) => kbHitHTML(h, i)).join("")
+    : `<div class="viewempty">没有命中。可以换个说法，或先「重建索引」。</div>`;
+}
+
+async function kbAsk() {
+  const q = ($("kbq").value || "").trim();
+  if (q.length < 2) return;
+  const onlySearch = $("kbonlysearch").checked;
+  $("kbgobtn").disabled = true;
+  $("kbaskstate").textContent = onlySearch ? "检索中…" : "检索并整理…";
+  $("kbanswer").style.display = "";
+  $("kbanswer").innerHTML = `<div class="dimtext">正在书库里找相关段落…</div>`;
+  try {
+    if (onlySearch) {
+      const d = await (await fetch("/api/kb/search?q=" + encodeURIComponent(q) + "&k=8")).json();
+      $("kbanswer").innerHTML = `<div class="kbansbody">${(d.hits || []).map((h, i) => kbHitHTML(h, i)).join("")}</div>`;
+      $("kbaskstate").textContent = `${(d.hits || []).length} 条命中`;
+      return;
+    }
+    const resp = await fetch("/api/kb/ask", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question: q, k: 6 }),
+    });
+    const d = await resp.json();
+    if (d.error && !d.answer) {
+      $("kbanswer").innerHTML = `<div class="viewempty">✕ ${esc(d.error)}</div>`
+        + (d.sources || []).map((h, i) => kbHitHTML(h, i)).join("");
+      $("kbaskstate").textContent = "模型不可用，已给出检索结果";
+      return;
+    }
+    const mem = (d.memory_used || []).length
+      ? `<div class="dimtext" style="margin-top:8px">本次参考了 ${d.memory_used.length} 条记忆</div>` : "";
+    $("kbanswer").innerHTML = `<div class="kbansbody">${mdLite(d.answer || "")}</div>${mem}`
+      + `<details class="kbsrc"><summary>出处（${(d.sources || []).length} 条，时间戳可点回听）</summary>`
+      + (d.sources || []).map((h, i) => kbHitHTML(h, i)).join("") + `</details>`;
+    $("kbaskstate").textContent = "完成";
+  } catch (e) {
+    $("kbanswer").innerHTML = `<div class="viewempty">✕ ${esc(String(e))}</div>`;
+    $("kbaskstate").textContent = "失败";
+  } finally { $("kbgobtn").disabled = false; }
+}
+
+async function loadKbEntities() {
+  const types = [["person", "人物"], ["org", "机构"], ["media", "书影音"],
+                 ["place", "地点"], ["topic", "主题"]];
+  if ($("kbtabs")) {
+    $("kbtabs").innerHTML = types.map(([t, label]) =>
+      `<button class="${kbEntityType === t ? "on" : ""}" onclick="kbEntityType='${t}';loadKbEntities()">${label}</button>`).join("");
+  }
+  const d = await (await fetch(`/api/kb/entities?type=${kbEntityType}&limit=40&min_count=2`)).json();
+  const list = d.entities || [];
+  $("kbents").innerHTML = list.length
+    ? `<div class="entlist">` + list.map((e) => {
+        const safe = esc(e.name).replace(/'/g, "&#39;");
+        return `<button class="ent" onclick="kbEntity(this.dataset.n)" data-n="${safe}">
+          <span class="entname">${esc(e.name)}</span><span class="entcount">${e.count}</span></button>`;
+      }).join("") + `</div>`
+    : `<div class="viewempty">这个类型下还没有实体。先索引一下书库。</div>`;
+}
+
+async function kbEntity(name) {
+  const d = await (await fetch("/api/kb/entity/" + encodeURIComponent(name))).json();
+  if (!d.found) { $("kbentdetail").innerHTML = `<div class="viewempty">没有这个实体的记录</div>`; return; }
+  const byDir = {};
+  (d.passages || []).forEach((p) => { (byDir[p.dir] = byDir[p.dir] || []).push(p); });
+  const groups = Object.entries(byDir).map(([dir, ps]) => `
+    <div class="entgroup">
+      <div class="kbtitle">${esc(ps[0].title || dir)}</div>
+      ${ps.slice(0, 6).map((p) => `<div class="entpass">${p.start_sec != null
+        ? `<a class="ts" data-sec="${Math.round(p.start_sec)}" data-dir="${esc(p.dir)}" role="button" tabindex="0"
+             onclick="event.stopPropagation();playFromTs(this)">[${mmssShort(p.start_sec)}]</a> ` : ""}${esc((p.text || "").slice(0, 150))}</div>`).join("")}
+      <button class="ttslink" onclick="openEpisode('${encodeURIComponent(dir)}')">打开这一篇 →</button>
+    </div>`).join("");
+  $("kbentdetail").innerHTML = `<div class="entcard">
+      <div class="entcardhead"><b>${esc(d.name)}</b><span class="dimtext">${esc(d.type)} · 共 ${d.count} 处</span></div>
+      ${groups}</div>`;
+}
+
+/* ---------------- 记忆 ----------------
+   每条记忆都会在跨集问答时被读进上下文（置顶的永远参与）。
+   只写不猜：要么手写，要么显式点「记住这条」，程序不偷偷记。 */
+
+async function loadMemory() {
+  const sel = $("mem_kind");
+  const d = await (await fetch("/api/memory")).json();
+  if (sel && !sel.options.length) {
+    const labels = { preference: "偏好", fact: "事实", entity: "实体", decision: "决定", insight: "洞见" };
+    sel.innerHTML = (d.kinds || []).map((k) => `<option value="${k}">${labels[k] || k}</option>`).join("");
+  }
+  const items = d.items || [];
+  $("mem_state").textContent = items.length ? `${items.length} 条` : "还没有记忆";
+  $("memlist").innerHTML = items.length ? items.map((m) => `
+    <div class="memitem ${m.pinned ? "pinned" : ""}">
+      <span class="memkind">${esc(m.kind)}</span>
+      <span class="memtext">${esc(m.text)}</span>
+      <span class="memacts">
+        <button class="ttslink" onclick="memPin(${m.id}, ${m.pinned ? 0 : 1})">${m.pinned ? "取消置顶" : "置顶"}</button>
+        <button class="ttslink" onclick="memDelete(${m.id})">删除</button>
+      </span>
+    </div>`).join("")
+    : `<div class="viewempty">还没有记忆。上面填一条试试 —— 跨集问答时它会被读进上下文。</div>`;
+}
+
+async function memAdd() {
+  const text = ($("mem_text").value || "").trim();
+  if (text.length < 2) { toast("⚠ 内容太短"); return; }
+  const resp = await fetch("/api/memory", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text, kind: $("mem_kind").value || "fact", pinned: $("mem_pin").checked }),
+  });
+  const d = await resp.json();
+  if (!resp.ok) { toast("⚠ " + esc(d.error || "保存失败")); return; }
+  $("mem_text").value = ""; $("mem_pin").checked = false;
+  toast("✦ 记住了");
+  loadMemory();
+}
+
+async function memPin(id, pinned) {
+  await fetch(`/api/memory/${id}`, {
+    method: "PATCH", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ pinned: !!pinned }),
+  });
+  loadMemory();
+}
+
+async function memDelete(id) {
+  await fetch(`/api/memory/${id}`, { method: "DELETE" });
+  loadMemory();
+}
+
 /* ---------------- 朗读（把文章念出来）----------------
    后端在 podcast_article/tts.py：清洗正文 → 分块 → 逐块调 TTS → 落盘。
    这里负责界面：生成时轮询进度，生成完把音频接到播放条上。
@@ -688,8 +889,14 @@ async function openSettings(tab) {
   $("main").style.display = "none";
   $("settings").style.display = "block";
   window.scrollTo({ top: 0 });
-  await loadSettings();
-  if (tab) switchTab(tab);
+  $("feedsview").style.display = name === "feeds" ? "" : "none";
+  if ($("kbview")) $("kbview").style.display = name === "kb" ? "block" : "none";
+  $("navqueue").classList.toggle("on", name === "queue");
+  $("navfeeds").classList.toggle("on", name === "feeds");
+  if ($("navkb")) $("navkb").classList.toggle("on", name === "kb");
+  if (name === "queue") loadQueue();
+  if (name === "feeds") loadFeeds();
+  if (name === "kb") loadKb();
   loadMcp();
 }
 
@@ -1989,6 +2196,14 @@ async function showArticle(dir, opts) {
   syncTts(false);
 }
 
+// 知识库提问框：⌘/Ctrl + Enter 发送；检索框回车即检索
+document.addEventListener("keydown", (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && document.activeElement === $("kbq")) {
+    e.preventDefault(); kbAsk();
+  }
+  if (e.key === "Enter" && document.activeElement === $("kbs")) { e.preventDefault(); kbSearch(); }
+});
+
 // 注：输入框的 Enter / input 处理统一放在文件末尾的初始化段（见 autoGrow 的注释）
 document.addEventListener("keydown", (e) => {
   if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && !$("go").disabled) { e.preventDefault(); startRun(); }
@@ -2075,10 +2290,13 @@ function showView(name) {
   $("lib").style.display = name === "lib" ? "" : "none";
   $("queueview").style.display = name === "queue" ? "" : "none";
   $("feedsview").style.display = name === "feeds" ? "" : "none";
+  if ($("kbview")) $("kbview").style.display = name === "kb" ? "block" : "none";
   $("navqueue").classList.toggle("on", name === "queue");
   $("navfeeds").classList.toggle("on", name === "feeds");
+  if ($("navkb")) $("navkb").classList.toggle("on", name === "kb");
   if (name === "queue") loadQueue();
   if (name === "feeds") loadFeeds();
+  if (name === "kb") loadKb();
   closeSide();
 }
 
