@@ -258,7 +258,13 @@ echo
 if [ "$CHECK_ONLY" = 1 ]; then
   echo "${G}${B}环境检查完成${N}（没有改动任何东西）"
   echo
-  echo "  去掉 --check 再跑一次就是真装：bash scripts/install.sh"
+  if [ -f "$0" ]; then
+    echo "  去掉 --check 再跑一次就是真装：bash $0"
+  else
+    # 一行命令（curl | bash）时没有本地文件，给回那条命令本身
+    echo "  去掉 --check 再跑一次就是真装："
+    echo "    curl -fsSL https://raw.githubusercontent.com/KevinYe0725/podcast-article/main/scripts/install.sh | bash"
+  fi
   exit 0
 fi
 echo "${G}${B}装好了${N} —— 目录：$INSTALL_DIR"
