@@ -24,6 +24,7 @@ MANAGED_KEYS = (
     "NOTION_TOKEN",
     "NOTION_DATABASE_ID",
     "NOTION_PARENT_PAGE_ID",
+    "TTS_API_KEY",
 )
 
 PROFILE_DEFAULTS: dict = {
@@ -58,11 +59,26 @@ ASSISTANT_DEFAULTS: dict = {
     "length_mode": "concise",  # 回答篇幅：concise（只答所问）/ detail（展开相关要点）
 }
 
+# 朗读（把文章读出来）的默认值。provider=off 表示没启用。
+# macos 用系统自带的 say：零配置、离线、免费；openai 泛指任何兼容
+# OpenAI /v1/audio/speech 的服务（填 base_url 即可接 OpenAI、硅基流动、Groq、中转站）。
+TTS_DEFAULTS: dict = {
+    "provider": "off",
+    "base_url": "",
+    "model": "",
+    "voice": "",
+    "speed": 1.0,
+    "format": "mp3",
+    "chunk_chars": 700,
+}
+
+
 DEFAULTS: dict = {
     "profile": PROFILE_DEFAULTS,
     "generation": GENERATION_DEFAULTS,
     "subscriptions": SUBSCRIPTION_DEFAULTS,
     "assistant": ASSISTANT_DEFAULTS,
+    "tts": TTS_DEFAULTS,
 }
 
 
@@ -78,12 +94,14 @@ def load() -> dict:
         "generation": {**GENERATION_DEFAULTS, **(data.get("generation") or {})},
         "subscriptions": {**SUBSCRIPTION_DEFAULTS, **(data.get("subscriptions") or {})},
         "assistant": {**ASSISTANT_DEFAULTS, **(data.get("assistant") or {})},
+        "tts": {**TTS_DEFAULTS, **(data.get("tts") or {})},
     }
     return merged
 
 
 def save(profile: dict | None = None, generation: dict | None = None,
-         subscriptions: dict | None = None, assistant: dict | None = None) -> dict:
+         subscriptions: dict | None = None, assistant: dict | None = None,
+         tts: dict | None = None) -> dict:
     current = load()
     if profile:
         current["profile"].update({k: v for k, v in profile.items() if k in PROFILE_DEFAULTS})
@@ -99,6 +117,21 @@ def save(profile: dict | None = None, generation: dict | None = None,
         for k, v in assistant.items():
             if k in ASSISTANT_DEFAULTS:
                 current["assistant"][k] = v
+    if tts:
+        for k, v in tts.items():
+            if k in TTS_DEFAULTS:
+                current["tts"][k] = v
+        for key in ("chunk_chars",):
+            if isinstance(current["tts"].get(key), str):
+                try:
+                    current["tts"][key] = int(current["tts"][key] or TTS_DEFAULTS[key])
+                except ValueError:
+                    current["tts"][key] = TTS_DEFAULTS[key]
+        if isinstance(current["tts"].get("speed"), str):
+            try:
+                current["tts"]["speed"] = max(0.5, min(2.0, float(current["tts"]["speed"] or 1.0)))
+            except ValueError:
+                current["tts"]["speed"] = TTS_DEFAULTS["speed"]
     if isinstance(current["generation"].get("max_chars"), str):
         try:
             current["generation"]["max_chars"] = int(current["generation"]["max_chars"])
@@ -186,6 +219,7 @@ def secret_status() -> dict:
         ("NOTION_DATABASE_ID", "Notion 数据库 ID"),
         ("NOTION_PARENT_PAGE_ID", "Notion 父页面 ID"),
         ("DEEPSEEK_MODEL", "DeepSeek 模型"),
+        ("TTS_API_KEY", "朗读接口密钥"),
     ):
         value = env.get(key, "")
         out[key] = {"label": label, "configured": bool(value), "masked": mask(value)}

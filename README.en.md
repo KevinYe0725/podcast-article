@@ -41,6 +41,7 @@ podcast-article hands that job to the machine: local speech-to-text plus LLM clo
 | 🚚 **Batch queue** | Paste 20 links at once into a persistent queue; the daemon works through them. Closing the browser or restarting loses nothing |
 | 🔔 **Feed subscriptions** | Subscribe to RSS / Apple Podcasts; new episodes are discovered on a schedule and queued automatically |
 | 🤖 **Reading assistant** | Select any passage → a drawer explains it using the episode transcript (timestamped, click to replay) plus web results |
+| 🔊 **Read aloud (TTS)** | Have the article spoken: macOS built-in `say` (free, offline, no key) or any OpenAI-compatible `/v1/audio/speech` endpoint. The text is cleaned and chunked, chunks retry individually, and the cache key covers content + voice — so nothing is re-billed unless it actually changed |
 | 💰 **Visible cost** | Tokens, exact cost (official peak/off-peak price table) and cache hit rate per article |
 | ☁️ **One-click Notion** | Markdown → native blocks (tables/quotes/inline styles), metadata auto-filled into database properties |
 | 🔌 **MCP support** | Runs as an MCP server for Claude Desktop & friends — conversational access to everything |
@@ -210,6 +211,33 @@ uv run podcast-article "https://www.xiaoyuzhoufm.com/episode/xxxx"
 > ```
 
 > The transcription model downloads on first use (~1.5 GB). On flaky networks see [Troubleshooting](#-troubleshooting).
+
+### Have the article read aloud (TTS)
+
+The reader toolbar has a **🔊 Read aloud** button: it synthesizes the article, shows progress
+(chunk *i* of *n*), and then reveals a player bar (play/pause, click-to-seek, 0.75-2× speed,
+regenerate, delete).
+
+Pick a backend in **Settings → Read aloud**:
+
+| Backend | What you need | Notes |
+|---|---|---|
+| **macOS local** | nothing | Uses the built-in `say`: free, offline, no key. Chinese voices like Tingting / Sinji / Meijia are listed in settings as one-click chips |
+| **OpenAI-compatible** | `base_url` + API key + model/voice | Any service implementing `POST /v1/audio/speech`: OpenAI, SiliconFlow, Groq, proxies… The key is write-only and stored as `TTS_API_KEY` in `.env` |
+
+Design choices worth knowing:
+
+- **Chunked generation**: TTS APIs cap a single request (4096 chars is common), so the text is split
+  into ~700-char chunks at paragraph/sentence boundaries. The real win is retries: if chunk 8 fails,
+  the seven chunks you already paid for are not re-synthesized.
+- **Content-hash caching**: the cache key covers cleaned text + backend + model + voice + speed, so
+  editing one word never re-reads the whole article.
+- **Merged vs chunked playback**: with ffmpeg the chunks are concatenated into one seekable file;
+  without it they play in sequence — same experience, no extra dependency.
+- **Saving money**: preview the voice first (there is a "试听" button in settings). Changing the voice
+  re-synthesizes once, but changing playback speed does not (it is client-side).
+- On a read-only mirror (public deployment) the generation endpoints are disabled since they need a
+  key and cost money — existing audio still plays.
 
 ## 🖥 Three ways to use it
 

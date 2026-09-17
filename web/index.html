@@ -188,6 +188,7 @@
           <button class="btn primary" id="nbtn" onclick="pushArticle()">✦ 发布</button>
         </div>
         <button class="btn" id="tbtn" onclick="toggleTranscript()">查看文字稿</button>
+        <button class="btn" id="ttsbtn" onclick="toggleTtsBar()" title="让 AI 把这篇念出来">🔊 朗读</button>
         <button class="btn" onclick="regenArticle()">重新生成文章</button>
         <div class="menuwrap">
           <button class="btn" id="expbtn" onclick="toggleExportMenu(event)">导出 ▾</button>
@@ -222,6 +223,28 @@
       </details>
     </div>
 
+    <div id="ttsbar" class="ttsbar" style="display:none">
+      <button class="ttsplay" id="ttsplay" onclick="ttsToggle()" aria-label="播放 / 暂停">▶</button>
+      <div class="ttsmain">
+        <div class="ttsline">
+          <span class="ttsstate" id="ttsstate">准备中…</span>
+          <span style="flex:1"></span>
+          <span class="ttscount" id="ttscount"></span>
+        </div>
+        <div class="ttsprog" id="ttsprogwrap" title="点一下跳到对应位置"><i id="ttsprog"></i></div>
+      </div>
+      <select class="ttsspeed" id="ttsspeed" onchange="ttsSetRate()" title="播放速度">
+        <option value="0.75">0.75×</option>
+        <option value="1" selected>1×</option>
+        <option value="1.25">1.25×</option>
+        <option value="1.5">1.5×</option>
+        <option value="2">2×</option>
+      </select>
+      <button class="ttslink" onclick="ttsStart(true)" title="重新生成（会重新调用语音接口，可能产生费用）">重新生成</button>
+      <button class="ttslink" onclick="ttsDelete()" title="删掉这篇的朗读音频">删除</button>
+    </div>
+    <audio id="ttsaudio" preload="metadata"></audio>
+
     <article id="article"></article>
     <div id="readdone" class="readdone">
       <button class="btn primary" id="readdonebtn" onclick="finishReading()">✓ 读完了</button>
@@ -247,6 +270,7 @@
     <button class="tab" data-tab="gen" onclick="switchTab('gen')">生成默认值</button>
     <button class="tab" data-tab="subs" onclick="switchTab('subs')">订阅调度</button>
     <button class="tab" data-tab="assist" onclick="switchTab('assist')">阅读助手</button>
+    <button class="tab" data-tab="tts" onclick="switchTab('tts')">朗读</button>
     <button class="tab" data-tab="mcp" onclick="switchTab('mcp')">MCP 服务器</button>
     <button class="tab" data-tab="storage" onclick="switchTab('storage')">存储与用量</button>
   </div>
@@ -442,6 +466,62 @@
         <input type="checkbox" id="as_off" style="width:auto" onchange="markDirty()"> 设 PA_SEARCH=0，助手只读原文
       </label>
       <p class="fhint">写回 .env。适合完全不想让任何内容外发的场景。</p>
+    </div>
+  </section>
+
+  <section class="pane" id="pane-tts" style="display:none">
+    <div class="field" style="border-top:none">
+      <div class="fhead"><label class="flabel" for="t_provider">语音后端</label><span class="fstate" id="t_state"></span></div>
+      <select id="t_provider" onchange="onTtsProviderChange()">
+        <option value="off">关（不使用朗读）</option>
+        <option value="macos">macOS 本地（系统 say，免费·离线·不需要密钥）</option>
+        <option value="openai">OpenAI 兼容接口（填 base_url，可接 OpenAI / 硅基流动 / Groq / 中转站）</option>
+      </select>
+      <p class="fhint">
+        朗读会把文章念成音频，生成在每篇的 <code>tts/</code> 目录里，阅读页上多出一个播放条。
+        <b>macOS 本地</b>零配置、不花钱、断网也能用（音色见下）；想用更自然的声音就选第二种，
+        任何兼容 <code>POST /v1/audio/speech</code> 的服务都能接。
+      </p>
+    </div>
+
+    <div class="field" id="t_openai_box" style="display:none">
+      <div class="fhead"><label class="flabel" for="t_base">接口地址（base_url）</label></div>
+      <input type="text" id="t_base" placeholder="https://api.openai.com/v1" spellcheck="false" autocomplete="off">
+      <p class="fhint">填到 <code>/v1</code> 为止即可，程序会自己拼 <code>/audio/speech</code>。留空按 OpenAI 官方地址算。</p>
+      <div class="fhead" style="margin-top:14px"><label class="flabel" for="t_model">模型</label></div>
+      <input type="text" id="t_model" placeholder="tts-1 / gpt-4o-mini-tts / FunAudioLLM/CosyVoice2-0.5B" spellcheck="false" autocomplete="off">
+      <div class="fhead" style="margin-top:14px"><label class="flabel" for="t_voice">音色</label></div>
+      <input type="text" id="t_voice" placeholder="alloy / alex / FunAudioLLM/CosyVoice2-0.5B:anna" spellcheck="false" autocomplete="off">
+    </div>
+
+    <div class="field" id="t_macos_box" style="display:none">
+      <div class="fhead"><label class="flabel" for="t_voice_mac">音色</label></div>
+      <input type="text" id="t_voice_mac" placeholder="Tingting（默认留空即用系统默认）" spellcheck="false" autocomplete="off">
+      <div class="vchips" id="t_voice_chips"></div>
+      <p class="fhint">上面是这台机器上可用的中文音色，点一下即可填入。</p>
+    </div>
+
+    <div class="field" id="t_key_box" style="display:none">
+      <div class="fhead"><label class="flabel" for="k_TTS_API_KEY">API 密钥</label><span class="fstate" id="st_TTS_API_KEY">未配置</span></div>
+      <input type="password" id="k_TTS_API_KEY" placeholder="留空 = 保持原值" spellcheck="false" autocomplete="off">
+      <p class="fhint">只写不读：接口只回报「是否已配置」与打码值，明文不会回到浏览器。保存在 <code>.env</code> 的 <code>TTS_API_KEY</code>。</p>
+    </div>
+
+    <div class="field">
+      <div class="fhead"><label class="flabel" for="t_speed">语速</label></div>
+      <div class="speedrow">
+        <input type="range" id="t_speed" min="0.5" max="2" step="0.05" value="1" oninput="$('t_speed_val').textContent = Number(this.value).toFixed(2) + '×'">
+        <span class="fstate" id="t_speed_val">1.00×</span>
+      </div>
+      <div class="fhead" style="margin-top:14px"><label class="flabel" for="t_chunk">每块字数</label></div>
+      <input type="text" id="t_chunk" size="6" placeholder="700" spellcheck="false" autocomplete="off">
+      <p class="fhint">TTS 接口普遍有单次字数上限（常见 4096），分块还能单块重试 —— 第 8 块失败时前 7 块不用重读（也就不会重复计费）。</p>
+      <div class="row" style="margin-top:14px">
+        <button class="btn mini" id="t_testbtn" onclick="ttsPreview(this)">试听一句</button>
+        <span class="vres" id="t_testres"></span>
+      </div>
+      <audio id="t_preview" preload="none" style="display:none"></audio>
+      <p class="fhint">先保存设置再试听：否则试的是旧配置。</p>
     </div>
   </section>
 

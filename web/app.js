@@ -48,6 +48,253 @@ function toast(html) {
   clearTimeout(toastTimer); toastTimer = setTimeout(() => $("toast").classList.remove("show"), 6000);
 }
 
+/* ---------------- 朗读（把文章念出来）----------------
+   后端在 podcast_article/tts.py：清洗正文 → 分块 → 逐块调 TTS → 落盘。
+   这里负责界面：生成时轮询进度，生成完把音频接到播放条上。
+   有 ffmpeg 时后端会拼成整篇（单个 <audio>，可以拖进度）；没有就按块连播。 */
+
+let ttsState = null;      // 服务器返回的状态
+let ttsPoll = null;       // 生成中的轮询
+let ttsChunkIdx = 0;      // 无合并文件时，当前播到第几块
+let ttsRate = 1;
+
+/** 设置页里那一组字段 → 提交给后端的对象（音色取当前后端对应的那个输入框） */
+function ttsFormValues() {
+  const provider = ($("t_provider") || {}).value || "off";
+  const isMac = provider === "macos";
+  return {
+    provider,
+    base_url: (($("t_base") || {}).value || "").trim(),
+    model: (($("t_model") || {}).value || "").trim(),
+    voice: ((isMac ? ($("t_voice_mac") || {}).value : ($("t_voice") || {}).value) || "").trim(),
+    speed: Number((($("t_speed") || {}).value) || 1),
+    chunk_chars: parseInt((($("t_chunk") || {}).value) || "700", 10) || 700,
+  };
+}
+
+/** 换了后端就显示对应的输入框（音色含义不同，不能混用） */
+function onTtsProviderChange(quiet) {
+  const provider = ($("t_provider") || {}).value || "off";
+  const isMac = provider === "macos", isOpenai = provider === "openai";
+  const show = (id, on) => { const el = $(id); if (el) el.style.display = on ? "" : "none"; };
+  show("t_macos_box", isMac);
+  show("t_openai_box", isOpenai);
+  show("t_key_box", isOpenai);
+  if (!quiet) markDirty();          // 载入设置时不算改动
+}
+
+/** 试听一句：先保存设置再生成（否则试的是旧配置） */
+async function ttsPreview(btn) {
+  const out = $("t_testres"), audio = $("t_preview");
+  btn.disabled = true;
+  out.className = "vres"; out.textContent = "生成中…";
+  try {
+    await saveSettings({ quiet: true });
+    const d = await (await fetch("/api/tts/preview", { method: "POST" })).json();
+    if (!d.ok) { out.className = "vres bad"; out.textContent = "✕ " + (d.error || "失败"); return; }
+    out.className = "vres ok";
+    out.textContent = `✓ ${d.provider === "macos" ? "macOS 本地" : d.provider}`
+      + (d.voice ? ` · ${d.voice}` : "") + (d.seconds ? ` · ${d.seconds} 秒` : "");
+    audio.style.display = "";
+    audio.src = d.url;
+    audio.play().catch(() => {});
+  } catch (e) {
+    out.className = "vres bad"; out.textContent = "✕ " + String(e);
+  } finally { btn.disabled = false; }
+}
+
+/** 阅读页的朗读条 */
+function toggleTtsBar() {
+  const bar = $("ttsbar");
+  if (bar.style.display !== "none") {
+    bar.style.display = "none";
+    ttsStopAudio();
+    return;
+  }
+  bar.style.display = "";
+  syncTts(true);
+}
+
+function ttsStopAudio() {
+  const a = $("ttsaudio");
+  a.pause();
+  clearInterval(ttsPoll);
+  ttsPoll = null;
+}
+
+function ttsRenderStatus() {
+  const st = ttsState || {};
+  const bar = $("ttsbar"), a = $("ttsaudio");
+  const state = st.state || "idle";
+  const label = {
+    idle: "还没生成", running: "生成中", ready: "可以听了", error: "出错了",
+  }[state] || state;
+
+  if (state === "error") {
+    $("ttsstate").innerHTML = `<span class="ttserr">✕ ${esc(st.error || "生成失败")}</span>`;
+  } else if (state === "running") {
+    const total = st.total || 0;
+    $("ttsstate").textContent = total
+      ? `生成中 ${st.done || 0}/${total} 块${st.note ? " · " + st.note : ""}`
+      : (st.note || "准备中…");
+  } else if (state === "ready") {
+    if (st.fresh === false) {
+      $("ttsstate").textContent = "文章改过了，音频是旧的 —— 点「重新生成」";
+    } else {
+      $("ttsstate").textContent = `${st.provider === "macos" ? "macOS 本地" : st.provider}`
+        + (st.voice ? ` · ${st.voice}` : "") + (st.chars ? ` · ${st.chars} 字` : "");
+    }
+  } else {
+    $("ttsstate").textContent = st.enabled === false
+      ? "还没启用朗读：设置 → 朗读"
+      : "还没生成，点上面的「🔊 朗读」开始";
+  }
+
+  const total = st.total || (st.chunks || []).length || 0;
+  const nChunks = (st.chunks || []).length;
+  $("ttscount").textContent = state === "ready"
+    ? (st.merged ? (st.seconds ? `${Math.round(st.seconds / 60)} 分钟` : "整篇")
+                 : `第 ${ttsChunkIdx + 1}/${nChunks} 段`)     // 分段模式：直接说清在第几段
+    : (total ? `${total} 块` : "");
+
+  // 进度条：生成中显示已完成比例；播放时由 timeupdate 更新
+  if (state === "running" && total) {
+    $("ttsprog").style.width = Math.round((st.done || 0) / total * 100) + "%";
+  } else if (state !== "ready") {
+    $("ttsprog").style.width = "0%";
+  }
+
+  // 接上音频源：整篇优先，否则按块
+  const merged = st.merged;
+  const chunks = st.chunks || [];
+  if (state === "ready" && merged && a.dataset.src !== merged) {
+    a.dataset.mode = "merged";
+    a.dataset.src = merged;
+    a.src = merged;
+    ttsChunkIdx = 0;
+  } else if (state === "ready" && !merged && chunks.length && a.dataset.mode !== "chunks") {
+    a.dataset.mode = "chunks";
+    a.dataset.src = "";
+    ttsChunkIdx = 0;
+    a.src = chunks[0].url;
+  }
+  $("ttsplay").textContent = a.paused ? "▶" : "❚❚";
+  return bar;
+}
+
+async function syncTts(openBar) {
+  if (!curWorkdir) return;
+  const dir = encodeURIComponent(curWorkdir);
+  try {
+    const resp = await fetch(`/api/tts/${dir}/status`);
+    if (!resp.ok) return;
+    ttsState = await resp.json();
+  } catch (e) { return; }
+  if (openBar) $("ttsbar").style.display = "";
+  ttsRenderStatus();
+}
+
+async function ttsStart(force) {
+  if (!curWorkdir) return;
+  if (ttsState && ttsState.enabled === false) {
+    toast("⚠ 还没启用朗读：设置 → 朗读，选一个语音后端（macOS 本地免费）");
+    return;
+  }
+  const dir = encodeURIComponent(curWorkdir);
+  $("ttsbar").style.display = "";
+  $("ttsstate").textContent = "提交中…";
+  try {
+    const resp = await fetch(`/api/tts/${dir}`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ force: !!force }),
+    });
+    const d = await resp.json();
+    if (!resp.ok) {
+      $("ttsstate").innerHTML = `<span class="ttserr">✕ ${esc(d.error || "启动失败")}</span>`;
+      return;
+    }
+    ttsState = d.tts || ttsState;
+    ttsRenderStatus();
+    clearInterval(ttsPoll);
+    ttsPoll = setInterval(async () => {
+      await syncTts();
+      const st = ttsState || {};
+      if (st.state !== "running") {
+        clearInterval(ttsPoll); ttsPoll = null;
+        if (st.state === "ready") toast("✦ 朗读生成好了，点播放条听吧");
+      }
+    }, 1200);
+  } catch (e) {
+    $("ttsstate").innerHTML = `<span class="ttserr">✕ ${esc(String(e))}</span>`;
+  }
+}
+
+function ttsToggle() {
+  const a = $("ttsaudio");
+  if (!a.src) { ttsStart(false); return; }
+  if (a.paused) a.play().catch(() => {}); else a.pause();
+}
+
+function ttsSetRate() {
+  ttsRate = Number($("ttsspeed").value) || 1;
+  $("ttsaudio").playbackRate = ttsRate;
+}
+
+async function ttsDelete() {
+  if (!curWorkdir) return;
+  const dir = encodeURIComponent(curWorkdir);
+  const resp = await fetch(`/api/tts/${dir}`, { method: "DELETE" });
+  if (!resp.ok) { toast("⚠ 删除失败"); return; }
+  const a = $("ttsaudio");
+  a.pause(); a.removeAttribute("src"); a.dataset.src = ""; a.dataset.mode = "";
+  ttsState = null;
+  $("ttsbar").style.display = "none";
+  toast("✦ 已删除这篇的朗读音频（文章不受影响）");
+}
+
+/* 播放：整篇就是一个 <audio>；按块时播完自动接下一块 */
+function ttsWireAudio() {
+  const a = $("ttsaudio");
+  if (a.dataset.wired) return;
+  a.dataset.wired = "1";
+  a.addEventListener("play", () => { $("ttsplay").textContent = "❚❚"; });
+  a.addEventListener("pause", () => { $("ttsplay").textContent = "▶"; });
+  a.addEventListener("timeupdate", () => {
+    const st = ttsState || {};
+    if (a.dataset.mode === "merged") {
+      const pct = a.duration ? (a.currentTime / a.duration) * 100 : 0;
+      $("ttsprog").style.width = pct.toFixed(1) + "%";
+      $("ttscount").textContent = `${fmtClock(a.currentTime)} / ${fmtClock(a.duration || 0)}`;
+    } else {
+      const chunks = st.chunks || [];
+      const total = chunks.length || 1;
+      const pct = a.duration ? (a.currentTime / a.duration) : 0;
+      $("ttsprog").style.width = (((ttsChunkIdx + pct) / total) * 100).toFixed(1) + "%";
+      $("ttscount").textContent = `第 ${ttsChunkIdx + 1}/${total} 段`;
+    }
+  });
+  a.addEventListener("ended", () => {
+    const st = ttsState || {}, chunks = st.chunks || [];
+    if (a.dataset.mode === "chunks" && ttsChunkIdx + 1 < chunks.length) {
+      ttsChunkIdx += 1;
+      a.src = chunks[ttsChunkIdx].url;
+      a.playbackRate = ttsRate;
+      a.play().catch(() => {});
+    } else {
+      $("ttsprog").style.width = "100%";
+    }
+  });
+  // 点进度条：整篇可以任意跳；分块只能跳当前块内（跨块要等它自己播过去）
+  $("ttsprogwrap").addEventListener("click", (e) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    const ratio = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
+    if (!a.duration) return;
+    if (a.dataset.mode === "merged") a.currentTime = ratio * a.duration;
+    else a.currentTime = Math.min(a.duration, (ratio * (ttsState.total || 1) - ttsChunkIdx) * a.duration);
+  });
+  ttsSetRate();
+}
+
 /* ---------------- 只读镜像（公网部署）----------------
    服务器上那台只负责「看」：生成 / 转写 / AI 助手都在 Mac 上跑（算力与密钥都留在家里）。
    启动时问一次 /api/config，然后收起输入框、悬浮球与发布入口，并写清原因 ——
@@ -431,7 +678,7 @@ async function pushArticle() {
 }
 
 /* ---------------- 设置 ---------------- */
-const SECRET_KEYS = ["DEEPSEEK_API_KEY", "DEEPSEEK_MODEL", "NOTION_TOKEN", "NOTION_DATABASE_ID", "NOTION_PARENT_PAGE_ID"];
+const SECRET_KEYS = ["DEEPSEEK_API_KEY", "DEEPSEEK_MODEL", "NOTION_TOKEN", "NOTION_DATABASE_ID", "NOTION_PARENT_PAGE_ID", "TTS_API_KEY"];
 
 async function openSettings(tab) {
   closeAssist();                 // 抽屉会盖住设置页
@@ -487,6 +734,30 @@ async function loadSettings() {
     if (!tag) continue;
     tag.textContent = v.configured ? "已配置 " + v.masked : "未配置";
     tag.className = "fstate" + (v.configured ? " ok" : "");
+  }
+  const t = d.tts || {};
+  if ($("t_provider")) {
+    $("t_provider").value = t.provider || "off";
+    $("t_base").value = t.base_url || "";
+    $("t_model").value = t.model || "";
+    const isMac = (t.provider || "off") === "macos";
+    // macOS 与 OpenAI 兼容两种后端的「音色」是两个概念（系统音色名 vs 接口音色名），
+    // 所以用两个输入框，按后端显示其中一个，保存时取当前显示的那个
+    $("t_voice").value = isMac ? "" : (t.voice || "");
+    $("t_voice_mac").value = isMac ? (t.voice || "") : "";
+    $("t_speed").value = t.speed || 1;
+    $("t_speed_val").textContent = Number(t.speed || 1).toFixed(2) + "×";
+    $("t_chunk").value = t.chunk_chars || 700;
+    const chips = $("t_voice_chips");
+    if (chips) {
+      const voices = d.tts_voices || [];
+      chips.innerHTML = voices.length
+        ? voices.map((v) => `<button type="button" class="vchip" onclick="$('t_voice_mac').value='${esc(v)}';markDirty()">${esc(v)}</button>`).join("")
+        : `<span class="fhint">这台机器上没有可用的中文音色（macOS 的 say 只在本机可用）</span>`;
+    }
+    onTtsProviderChange(true);
+    $("t_state").textContent = ["off", ""].includes(t.provider) ? "未启用" : "已启用";
+    $("t_state").className = "fstate" + (["off", ""].includes(t.provider) ? "" : " ok");
   }
   $("g_language").value = g.language || "";
   $("g_backend").value = g.backend || "mlx";
@@ -604,6 +875,7 @@ async function saveSettings() {
       web_default: $("as_web").checked,
       length_mode: $("as_mode").value,
     },
+    tts: ttsFormValues(),
     secrets: {},
   };
   // 密钥留空 = 不改动，因此只提交真正输入的字段
@@ -1015,6 +1287,7 @@ function closeResult(opts) {
   renderCostPill();
   if (assistOpen) closeAssist();
   $("selbtn").classList.remove("show");
+  if ($("ttsbar")) { ttsStopAudio(); $("ttsbar").style.display = "none"; }
   audioDir = null;
   pa().pause();
   pa().removeAttribute("src");
@@ -1704,6 +1977,16 @@ async function showArticle(dir, opts) {
   resetAssist();
   if (assistOpen) restoreAssistThread();
   syncFab();
+  // 朗读：换文章就把播放条收起来并清掉上下文（避免上一篇的音频接着响）
+  ttsStopAudio();
+  if ($("ttsbar")) {
+    $("ttsbar").style.display = "none";
+    const a = $("ttsaudio");
+    a.removeAttribute("src"); a.dataset.src = ""; a.dataset.mode = "";
+    ttsWireAudio();
+  }
+  ttsChunkIdx = 0;
+  syncTts(false);
 }
 
 // 注：输入框的 Enter / input 处理统一放在文件末尾的初始化段（见 autoGrow 的注释）

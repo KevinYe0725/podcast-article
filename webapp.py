@@ -33,6 +33,7 @@ from podcast_article import links as links_mod
 from podcast_article import queue as queue_mod
 from podcast_article import search as search_mod
 from podcast_article import timestamps as timestamps_mod
+from podcast_article import tts as tts_mod
 from podcast_article.config import PROJECT_ROOT
 from podcast_article.pipeline import Pipeline
 
@@ -439,6 +440,9 @@ def api_settings_get():
         "generation": current["generation"],
         "subscriptions": current["subscriptions"],
         "assistant": current["assistant"],
+        "tts": current["tts"],
+        "tts_voices": tts_mod.macos_voices(),      # macOS 上可用的中文音色（给设置页做提示）
+        "tts_available": bool(shutil.which("say")) or tts_mod.DEFAULTS["provider"] != "off",
         "secrets": settings_mod.secret_status(),
         "storage": settings_mod.storage_info(),
     })
@@ -455,7 +459,8 @@ def api_settings_post():
     saved = settings_mod.save(profile=data.get("profile"),
                               generation=data.get("generation"),
                               subscriptions=data.get("subscriptions"),
-                              assistant=data.get("assistant"))
+                              assistant=data.get("assistant"),
+                              tts=data.get("tts"))
     changed = settings_mod.update_env(data.get("secrets") or {})
     if changed:
         # 让当前进程立即用上新值
@@ -466,6 +471,7 @@ def api_settings_post():
         "generation": saved["generation"],
         "subscriptions": saved["subscriptions"],
         "assistant": saved["assistant"],
+        "tts": saved["tts"],
         "secrets": settings_mod.secret_status(),
         "env_changed": changed,
     })
@@ -725,6 +731,203 @@ def api_episode_delete(job_dir: str):
     except OSError as exc:
         return jsonify({"error": f"删除失败：{exc}"}), 500
     return jsonify({"ok": True, "scope": scope, "freed": freed, "dir": job_dir})
+
+
+# ---------------------------------------------------------------- 朗读（TTS）
+#
+# 把文章念出来。设计要点：
+#   · 生成是**后台线程 + 轮询状态**（不是 SSE）：长文分 6-10 块、每块一次接口调用，
+#     总共几十秒到几分钟，前端每 1.2 秒问一次状态就够，实现也简单得多。
+#   · 音频按块存盘（output/<dir>/tts/000.mp3 …），有 ffmpeg 再拼成整篇 article.<ext>。
+#     分块的价值在于单块可重试：第 8 块失败时，前 7 块（已经花钱了）不用重来。
+#   · 内容与音色一起哈希，没变就复用，不重复付费。
+_TTS_LOCK = threading.Lock()
+_TTS_JOBS: dict[str, dict] = {}          # dir 名 -> {state, done, total, note, error}
+TTS_PREVIEW_STEM = Path(tempfile.gettempdir()) / "podcast-article-tts-preview"
+
+
+def _tts_cfg() -> dict:
+    s = settings_mod.load().get("tts") or {}
+    cfg = dict(tts_mod.DEFAULTS)
+    cfg.update({k: v for k, v in s.items() if k in tts_mod.DEFAULTS})
+    return cfg
+
+
+def _tts_key() -> str:
+    return (settings_mod.read_env().get("TTS_API_KEY") or "").strip()
+
+
+def _tts_payload(job_dir: str, base: Path) -> dict:
+    """给前端的朗读状态：能不能用、跑到哪了、有哪些块。"""
+    cfg = _tts_cfg()
+    idx = tts_mod.load_index(base)
+    job = _TTS_JOBS.get(job_dir) or {}
+    state = job.get("state") or ("ready" if idx and idx.get("chunks") else "idle")
+    fresh = False
+    article = base / "article.md"
+    if idx and article.exists():
+        try:
+            fresh = idx.get("text_sha") == tts_mod.text_sha(
+                tts_mod.prepare_text(article.read_text(encoding="utf-8")), cfg)
+        except Exception:
+            fresh = False
+    enc = quote(job_dir, safe="")
+    merged = None
+    if idx and tts_mod.merged_path(base):
+        merged = f"/api/tts/{enc}/audio"
+    return {
+        "state": state,
+        "enabled": cfg.get("provider") not in ("", "off"),
+        "provider": cfg.get("provider") or "off",
+        "voice": cfg.get("voice") or "",
+        "model": cfg.get("model") or "",
+        "speed": cfg.get("speed") or 1.0,
+        "done": job.get("done", 0),
+        "total": job.get("total") or (len(idx["chunks"]) if idx else 0),
+        "note": job.get("note", ""),
+        "error": job.get("error", ""),
+        "fresh": fresh,
+        "chars": (idx or {}).get("chars"),
+        "seconds": (idx or {}).get("seconds"),
+        "merged": merged,
+        "chunks": [
+            {"url": f"/api/tts/{enc}/chunk/{i}", "chars": c.get("chars")}
+            for i, c in enumerate((idx or {}).get("chunks") or [])
+        ] if (idx and not merged) else [],
+    }
+
+
+def _run_tts(job_dir: str, base: Path, article: str, cfg: dict, force: bool) -> None:
+    """后台线程：跑完就更新 _TTS_JOBS，前端轮询看到状态变化。"""
+
+    def progress(done: int, total: int, note: str) -> None:
+        with _TTS_LOCK:
+            _TTS_JOBS[job_dir] = {"state": "running", "done": done, "total": total, "note": note}
+
+    try:
+        idx = tts_mod.synthesize(base, article, cfg, api_key=_tts_key(),
+                                 progress=progress, log=lambda m: _log_tts(job_dir, m), force=force)
+        n = len(idx.get("chunks") or [])
+        # 完成时 total 要保留真实块数（写成 0 会让前端进度归零）
+        with _TTS_LOCK:
+            _TTS_JOBS[job_dir] = {"state": "ready", "done": n, "total": n, "note": ""}
+    except Exception as exc:
+        with _TTS_LOCK:
+            _TTS_JOBS[job_dir] = {"state": "error", "error": f"{type(exc).__name__}: {exc}"[:300]}
+
+
+def _log_tts(job_dir: str, message: str) -> None:
+    """朗读日志并进任务日志（文章页的「详细日志」里能看到），同时写后台日志文件。"""
+    print(f"[tts:{job_dir}] {message}", flush=True)
+
+
+@app.get("/api/tts/<job_dir>/status")
+def api_tts_status(job_dir: str):
+    base = _safe_dir(job_dir)
+    if not base:
+        return jsonify({"error": "目录不存在"}), 404
+    return jsonify(_tts_payload(job_dir, base))
+
+
+@app.post("/api/tts/<job_dir>")
+@_readonly_guard
+def api_tts_start(job_dir: str):
+    """开始（或强制重新）朗读这一篇。"""
+    base = _safe_dir(job_dir)
+    if not base:
+        return jsonify({"error": "目录不存在"}), 404
+    article_path = base / "article.md"
+    if not article_path.exists():
+        return jsonify({"error": "这一集还没有文章"}), 400
+    cfg = _tts_cfg()
+    if cfg.get("provider") in ("", "off"):
+        return jsonify({"error": "还没有启用朗读：设置 → 朗读，选一个语音后端"
+                                 "（macOS 本地免费，或任何兼容 OpenAI 的语音接口）"}), 400
+    with _TTS_LOCK:
+        if (_TTS_JOBS.get(job_dir) or {}).get("state") == "running":
+            return jsonify({"error": "这一篇正在生成朗读，稍等", "tts": _tts_payload(job_dir, base)}), 409
+        _TTS_JOBS[job_dir] = {"state": "running", "done": 0, "total": 0, "note": "准备中"}
+    force = bool((request.get_json(force=True, silent=True) or {}).get("force"))
+    article = article_path.read_text(encoding="utf-8")
+    threading.Thread(target=_run_tts, args=(job_dir, base, article, cfg, force), daemon=True).start()
+    return jsonify({"state": "running", "tts": _tts_payload(job_dir, base)})
+
+
+@app.delete("/api/tts/<job_dir>")
+@_readonly_guard
+def api_tts_delete(job_dir: str):
+    base = _safe_dir(job_dir)
+    if not base:
+        return jsonify({"error": "目录不存在"}), 404
+    tts_mod.remove(base)
+    with _TTS_LOCK:
+        _TTS_JOBS.pop(job_dir, None)
+    return jsonify({"ok": True, "freed": tts_mod.TTS_DIR})
+
+
+def _tts_file(base: Path, relative: str) -> Path | None:
+    d = tts_mod.tts_dir(base).resolve()
+    p = (d / relative).resolve()
+    return p if p.is_file() and d in p.parents else None
+
+
+@app.get("/api/tts/<job_dir>/audio")
+def api_tts_audio(job_dir: str):
+    """整篇音频（有 ffmpeg 拼过才有）；带 Range，能拖进度条。"""
+    base = _safe_dir(job_dir)
+    if not base:
+        return jsonify({"error": "目录不存在"}), 404
+    path = tts_mod.merged_path(base)
+    if not path:
+        return jsonify({"error": "还没有拼成整篇（可能没装 ffmpeg，按分段播放即可）"}), 404
+    return send_file(path, conditional=True, mimetype=_audio_mime(path.suffix))
+
+
+@app.get("/api/tts/<job_dir>/chunk/<int:index>")
+def api_tts_chunk(job_dir: str, index: int):
+    """分段音频。没有 ffmpeg 时前端就按顺序连播这些块。"""
+    base = _safe_dir(job_dir)
+    if not base:
+        return jsonify({"error": "目录不存在"}), 404
+    idx = tts_mod.load_index(base) or {}
+    chunks = idx.get("chunks") or []
+    if index < 0 or index >= len(chunks):
+        return jsonify({"error": "没有这一段"}), 404
+    path = _tts_file(base, chunks[index]["file"])
+    if not path:
+        return jsonify({"error": "音频文件不见了"}), 404
+    return send_file(path, conditional=True, mimetype=_audio_mime(path.suffix))
+
+
+def _audio_mime(suffix: str) -> str:
+    return {".mp3": "audio/mpeg", ".m4a": "audio/mp4", ".wav": "audio/wav",
+            ".opus": "audio/ogg", ".ogg": "audio/ogg"}.get(suffix.lower(), "application/octet-stream")
+
+
+@app.post("/api/tts/preview")
+@_readonly_guard
+def api_tts_preview():
+    """试听：用当前设置读一句短话（保存设置后点一下就知道能不能用）。"""
+    cfg = _tts_cfg()
+    if cfg.get("provider") in ("", "off"):
+        return jsonify({"ok": False, "error": "先选一个语音后端"}), 400
+    try:
+        info = tts_mod.preview(cfg, _tts_key(), TTS_PREVIEW_STEM)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": f"{type(exc).__name__}: {exc}"[:300]})
+    return jsonify({"ok": True, "url": f"/api/tts/preview?ts={int(time.time())}",
+                    "seconds": info.get("seconds"), "bytes": info.get("bytes"),
+                    "provider": cfg.get("provider"), "voice": cfg.get("voice")})
+
+
+@app.get("/api/tts/preview")
+def api_tts_preview_get():
+    """试听音频本身。"""
+    for suffix in (".m4a", ".mp3", ".wav", ".opus"):
+        p = TTS_PREVIEW_STEM.with_suffix(suffix)
+        if p.exists():
+            return send_file(p, conditional=True, mimetype=_audio_mime(suffix))
+    return jsonify({"error": "还没有试听音频"}), 404
 
 
 @app.get("/api/audio/<job_dir>")
