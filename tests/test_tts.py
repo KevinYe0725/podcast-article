@@ -6,6 +6,7 @@ Linux CI 上没有 `say`，就自动退回「错误路径」的断言（后端�
 """
 from __future__ import annotations
 
+import json
 import shutil
 import time
 from pathlib import Path
@@ -222,3 +223,122 @@ def test_settings_carries_tts_section(client):
     d = client.get("/api/settings").get_json()
     assert "tts" in d and d["tts"]["provider"] == "off"
     assert "tts_voices" in d, "设置页要能给出 macOS 可用音色"
+
+
+# ---------------------------------------------------- OpenAI 兼容后端（用户最可能用这条）
+
+class _FakeTtsServer:
+    """最小的假 TTS 服务：按 OpenAI /v1/audio/speech 的契约回一段假音频。
+
+    为什么值得这么测：用户最可能填的就是「OpenAI 兼容接口」，而这条路之前只测了
+    macOS 本地后端 —— 请求路径、鉴权头、payload 字段、把响应字节落盘，任何一处错了
+    都会让用户对着一个看不懂的 400/404 发愁。
+    """
+
+    def __init__(self):
+        import http.server
+        import threading
+
+        self.requests: list[dict] = []
+        outer = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):                      # noqa: N802
+                length = int(self.headers.get("Content-Length") or 0)
+                body = self.rfile.read(length).decode("utf-8") if length else ""
+                outer.requests.append({
+                    "path": self.path,
+                    "auth": self.headers.get("Authorization") or "",
+                    "ctype": self.headers.get("Content-Type") or "",
+                    "body": json.loads(body) if body else {},
+                })
+                payload = b"ID3\x03\x00\x00\x00" + b"\x00" * 500      # 看起来像 mp3 的假数据
+                self.send_response(200)
+                self.send_header("Content-Type", "audio/mpeg")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, *args):            # 别把测试日志刷满
+                pass
+
+        self.httpd = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        self.url = f"http://127.0.0.1:{self.httpd.server_port}"
+        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.thread.start()
+
+    def close(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+
+@pytest.fixture()
+def fake_tts():
+    srv = _FakeTtsServer()
+    yield srv
+    srv.close()
+
+
+def test_openai_compatible_request_shape(fake_tts, tmp_path):
+    """请求要打对路径、带 Bearer 鉴权、payload 字段符合 OpenAI 契约。"""
+    out = tmp_path / "000.mp3"
+    cfg = {"provider": "openai", "base_url": fake_tts.url, "model": "cosyvoice",
+           "voice": "FunAudioLLM/CosyVoice2-0.5B:alex", "speed": 1.25, "format": "mp3"}
+    tts.synthesize_chunk("你好，这是正文。", cfg, "sk-test-key", out)
+
+    assert out.exists() and out.stat().st_size > 500, "响应字节要落盘"
+    req = fake_tts.requests[0]
+    assert req["path"] == "/v1/audio/speech", f"路径不对：{req['path']}"
+    assert req["auth"] == "Bearer sk-test-key", "鉴权头不对"
+    assert req["ctype"].startswith("application/json")
+    assert req["body"]["input"] == "你好，这是正文。"
+    assert req["body"]["model"] == "cosyvoice"
+    assert req["body"]["voice"] == "FunAudioLLM/CosyVoice2-0.5B:alex"
+    assert req["body"]["response_format"] == "mp3"
+    assert req["body"]["speed"] == 1.25, "语速要透传给接口"
+
+
+def test_openai_base_url_normalisation(fake_tts, tmp_path):
+    """base_url 填到 /v1 为止、或者只填域名，都要能拼对。"""
+    for raw in (fake_tts.url, f"{fake_tts.url}/", f"{fake_tts.url}/v1", f"{fake_tts.url}/v1/"):
+        fake_tts.requests.clear()
+        tts.synthesize_chunk("测", {"provider": "openai", "base_url": raw}, "k", tmp_path / "x.mp3")
+        assert fake_tts.requests[-1]["path"] == "/v1/audio/speech", f"{raw} 拼错了路径"
+
+
+def test_openai_error_is_readable():
+    """key 不对 / 路径不对时，报错要说清是接口返回了什么，而不是一个光秃秃的异常。"""
+    cfg = {"provider": "openai", "base_url": "http://127.0.0.1:1", "model": "m", "voice": "v"}
+    with pytest.raises(Exception) as exc:
+        tts.synthesize_chunk("测", cfg, "k", Path("/tmp/should-not-exist.mp3"))
+    assert "语音接口" in str(exc.value) or "Connection" in str(exc.value)
+
+
+def test_openai_requires_key(tmp_path):
+    cfg = {"provider": "openai", "base_url": "http://127.0.0.1:1", "model": "m", "voice": "v"}
+    with pytest.raises(RuntimeError) as exc:
+        tts.synthesize_chunk("测", cfg, "", tmp_path / "y.mp3")
+    assert "API key" in str(exc.value) or "密钥" in str(exc.value)
+
+
+def test_full_openai_run_writes_index_and_merges(fake_tts, tmp_path):
+    """整篇生成：多块 → index.json 落盘 → 块文件都在（拼接看本机有没有 ffmpeg）。"""
+    workdir = tmp_path / "ep"
+    workdir.mkdir()
+    (workdir / "article.md").write_text("# 标题\n\n" + "这是一段正文。" * 200, encoding="utf-8")
+    cfg = {"provider": "openai", "base_url": fake_tts.url, "model": "m", "voice": "v",
+           "chunk_chars": 300, "format": "mp3"}
+    idx = tts.synthesize(workdir, (workdir / "article.md").read_text(encoding="utf-8"), cfg,
+                         api_key="k", log=lambda *_a: None)
+
+    assert len(idx["chunks"]) > 1, "这篇应该被切成多块"
+    assert len(fake_tts.requests) == len(idx["chunks"]), "每块一次请求，不多不少"
+    assert (tts.tts_dir(workdir) / "index.json").exists()
+    for c in idx["chunks"]:
+        assert (tts.tts_dir(workdir) / c["file"]).exists()
+    # 内容没变 → 再来一次不重复请求（省钱的关键）
+    fake_tts.requests.clear()
+    idx2 = tts.synthesize(workdir, (workdir / "article.md").read_text(encoding="utf-8"), cfg,
+                          api_key="k", log=lambda *_a: None)
+    assert fake_tts.requests == [], "内容与音色都没变，不该再调接口"
+    assert idx2["text_sha"] == idx["text_sha"]
