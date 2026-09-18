@@ -531,7 +531,7 @@ def _vec_invalidate() -> None:
     —— 表现为「刚生成的文章一进库，跨集搜索就 500」。实测踩过，见 test_memory_flow。
     """
     _VEC_CACHE.update({"model": "", "ids": None, "mat": None, "db": ""})
-    # 同一个写入点：切片一变，向量的 df 缓存也必须一起失效（见 _df_invalidate）。
+    # 同一个写入点：切片一变，集级 df 缓存也必须一起失效（见 _df_invalidate）。
     # 放在这里而不是让每个调用方自己记得调两次 —— 忘了任何一次都会吃到过期的 df，
     # 而「过期 df」不会报错，只会让排序悄悄错掉，是那种最难发现的坏。
     _df_invalidate()
@@ -540,81 +540,110 @@ def _vec_invalidate() -> None:
 # ---------------------------------------------------------------- 词频统计（IDF 用）
 
 # 为什么需要它：覆盖率如果**按词计数**，两个词在公式里权重一模一样，而「命中哪几个词」
-# 才是真正的差别。真库实测（问「孙正义是怎么押注 AI 的？」，N=5612 条切片）：
-#   `ai`     df=382  idf=2.75
-#   `孙正义` df= 79  idf=4.27
-#   `押注`   df=  8  idf=6.44
-# 等权口径下「只命中一个词」一律拿 0.33，于是只谈「押注」却与孙正义毫无关系的段落
-# （Bloomberg 那集讲 Dario Amodei）拿到与实质证据同档的覆盖率，混进 top-10 挤掉答案。
-# 加权之后，命中稀有词的切片才拿得到高覆盖率。
+# 才是真正的差别。
 #
-# 注意：`押注` 的 df 比 `孙正义` 还小（8 vs 79）—— **加权并不保证「专名一定赢泛词」**，
-# 它保证的是「命中更稀有的词拿更高分」。真库上这层加权对 Q1 的收益有限（top-10 里
-# 含「孙正义」的条数主要由每集上限那一层决定），真正被它救回来的是 Q2（见测试）。
+# **df 必须按「集」统计，不能按「切片」统计** —— 切片级口径对专名是反的。真库实测
+# （12 集 / 5612 条切片，问「孙正义是怎么押注 AI 的？」）：
+#   词        切片级 df   集级 df
+#   `孙正义`      79          1
+#   `押注`         8          3
+#   `ai`         382         12
+# 切片级口径下 `押注`（8 条切片）比 `孙正义`（79 条切片）还「稀有」，于是含答案的那条
+# 115 字正文加权覆盖率只有 0.52，而一条跟孙正义毫无关系、只是小标题里带了「押注」的
+# 116 字条目拿到 0.68 —— IDF 在把正确答案往下压。换成集级口径，同一对变成 0.65 vs 0.51，
+# 方向才正过来（见 tests/test_kb.py 里那两条锚点测试）。
 #
-# 缓存策略（参照 _VEC_CACHE）：进程内一张 dict，键是查询词，值是「含这个词的切片数」，
-# 切片总数一并记在 _DF_CACHE["total"]（_rerank 要拿它算 idf 的分母）。
-# 全库统计**只在第一次用到时做一次**，之后每次搜索只是查表。
+# 集级口径也更符合直觉：一个词在多少**集**里被讨论，才代表它有多能定位话题。某人在一集
+# 里被提 76 次，恰恰说明那一集就是关于他的，而不是「这个词很常见」。
+#
+# 缓存策略（参照 _VEC_CACHE）：进程内一张 dict，键是查询词，值是「含这个词的集数」，
+# 集总数一并记在 _DF_CACHE["episodes"]（_rerank 要拿它算 idf 的分母）。
+# **只算查询里那几个词**（一次搜索 3~5 个），之后每次搜索只是查表；不为全库 11890 个词
+# 建整张表 —— 上一版用 fts5vocab 建全表是切片级口径，改成集级之后那个方案既算不对，
+# 也没必要（真库实测：每个词一次 COUNT(DISTINCT) 是 0.02~0.8ms）。
 # 失效有两条独立的路，缺一不可：
 #   1. 进程内写入（index_dir / embed_pending / reindex）→ 走 _vec_invalidate() 顺手清
 #   2. 别的进程改了库（CLI 索引完、Web 正在跑）→ 每次搜索比一下 (切片数, last_index)，
-#      对不上就重算。只看进程内标志会吃到过期数据，只比库指纹则每次搜索都要 COUNT。
-_DF_CACHE: dict = {"db": "", "total": -1, "stamp": "", "df": None}
+#      对不上就整张清掉重算。只看进程内标志会吃到过期数据，只比库指纹则每次搜索都要 COUNT。
+_DF_CACHE: dict = {"db": "", "passages": -1, "episodes": -1, "stamp": "", "df": {}}
+
+# 集级 df：含该词 token 的**不同集数**。词用引号包住交给 FTS5（跟 _lexical 一个姿势）。
+_EPISODE_DF_SQL = ("SELECT COUNT(DISTINCT d.dir) FROM passages_fts "
+                   "JOIN passages p ON p.id = passages_fts.rowid "
+                   "JOIN docs d ON d.id = p.doc_id WHERE passages_fts MATCH ?")
 
 
 def _df_invalidate() -> None:
-    """让进程内的 df（文档频率）缓存失效。"""
-    _DF_CACHE.update({"db": "", "total": -1, "stamp": "", "df": None})
+    """让进程内的集级 df（文档频率）缓存失效。"""
+    _DF_CACHE.update({"db": "", "passages": -1, "episodes": -1, "stamp": "", "df": {}})
 
 
-def _df_table(conn: sqlite3.Connection) -> dict | None:
-    """全库文档频率表 {词: 含该词的切片数}；拿不到（空库/异常）返回 None。
-
-    用 FTS5 自己的 `fts5vocab` 虚拟表来算 —— 它直接读索引，不用把 5612 条切片的分词串
-    全读进 Python 再 set 一遍（真库实测：vocab 全表 11890 个词、8ms；全表取文本 + jieba
-    重切一遍是 712ms，差两个数量级）。
-    虚拟表建在 temp 里并立刻 drop：它是**只读视图**，不占库文件，也不会留下过期状态。
-    """
+def _library_fingerprint(conn: sqlite3.Connection) -> tuple[int, str] | None:
+    """库指纹 `(切片数, meta.last_index)`；库是空的或读不动就返回 None。"""
     try:
-        total = int(conn.execute("SELECT COUNT(*) FROM passages").fetchone()[0] or 0)
+        passages = int(conn.execute("SELECT COUNT(*) FROM passages").fetchone()[0] or 0)
     except sqlite3.Error:
         return None
-    if not total:
+    if not passages:
         return None
-    stamp = ""
     try:
         row = conn.execute("SELECT value FROM meta WHERE key='last_index'").fetchone()
         stamp = str(row[0]) if row else ""
     except sqlite3.Error:
         stamp = ""
-    if (_DF_CACHE["df"] is not None and _DF_CACHE["db"] == str(db_path())
-            and _DF_CACHE["total"] == total and _DF_CACHE["stamp"] == stamp):
-        return _DF_CACHE["df"]
-    name = "_pa_vocab"
-    try:
-        conn.execute(f"DROP TABLE IF EXISTS temp.{name}")
-        conn.execute(f"CREATE VIRTUAL TABLE temp.{name} "
-                     f"USING fts5vocab('main', 'passages_fts', 'row')")
-        df = {r[0]: int(r[1] or 0) for r in conn.execute(f"SELECT term, doc FROM temp.{name}")}
-    except Exception:
-        # 拿不到 df 不是错误，只是少一路信号：_coverage 会退回等权覆盖率。
+    return passages, stamp
+
+
+def _episode_df(conn: sqlite3.Connection,
+                terms) -> tuple[dict, int] | None:
+    """查询词各自的集级 df：返回 `({词: 含该词的集数}, 集总数)`；拿不到返回 None。
+
+    拿不到 df 不是错误，只是少一路信号：调用方会退回等权覆盖率（`_coverage`），搜索
+    绝不能因为少一路信号就炸掉或排不出序。
+    """
+    terms = sorted({t for t in terms if t})
+    if not terms:
         return None
-    finally:
+    fp = _library_fingerprint(conn)
+    if fp is None:
+        return None
+    passages, stamp = fp
+    if not (_DF_CACHE["db"] == str(db_path()) and _DF_CACHE["passages"] == passages
+            and _DF_CACHE["stamp"] == stamp):
+        _DF_CACHE.update({"db": str(db_path()), "passages": passages, "stamp": stamp,
+                          "episodes": -1, "df": {}})
+    if _DF_CACHE["episodes"] < 0:
         try:
-            conn.execute(f"DROP TABLE IF EXISTS temp.{name}")
+            episodes = int(conn.execute("SELECT COUNT(DISTINCT dir) FROM docs").fetchone()[0] or 0)
         except sqlite3.Error:
-            pass
-    if not df:
-        return None
-    _DF_CACHE.update({"db": str(db_path()), "total": total, "stamp": stamp, "df": df})
-    return df
+            _df_invalidate()
+            return None
+        if not episodes:
+            _df_invalidate()
+            return None
+        _DF_CACHE["episodes"] = episodes
+    df = _DF_CACHE["df"]
+    for t in terms:
+        if t in df:
+            continue
+        try:
+            n = int(conn.execute(_EPISODE_DF_SQL, (f'"{t}"',)).fetchone()[0] or 0)
+        except sqlite3.Error:
+            # 单个词查不动（FTS 语法不认 / 表缺失）不该拖垮整次搜索：记 0 =「没有一集含它」。
+            # 万一所有词都查不动，idf 会全部相等，加权覆盖率自然退化成等权覆盖率。
+            n = 0
+        df[t] = n
+    return df, int(_DF_CACHE["episodes"])
 
 
-def _idf(tok: str, df: dict | None, total: int) -> float:
-    """`idf(t) = log(1 + N / (1 + df(t)))`：越稀有越大，永不小于 log(1+N/(1+N))=0.69…"""
-    if not df or total <= 0:
+def _idf(tok: str, df: dict | None, episodes: int) -> float:
+    """`idf(t) = log(1 + N / (1 + df(t)))`，N=集数、df=含该词的集数：越稀有越大。
+
+    永不小于 `log(1+N/(1+N))`（每个词在每一集里都出现时取到）。
+    """
+    if not df or episodes <= 0:
         return 1.0
-    return math.log(1.0 + total / (1.0 + int(df.get(tok, 0))))
+    return math.log(1.0 + episodes / (1.0 + int(df.get(tok, 0))))
 
 
 def embedder(model_name: str | None = None, *, allow_download: bool = True):
@@ -960,25 +989,24 @@ def _coverage(qset: set[str], pset: set[str]) -> float:
 
 
 def _coverage_idf(qset: set[str], pset: set[str], df: dict | None,
-                  total: int) -> float | None:
-    """IDF 加权覆盖率：`Σ_{t∈Q∩P} idf(t) / Σ_{t∈Q} idf(t)`。
+                  episodes: int) -> float | None:
+    """IDF 加权覆盖率：`Σ_{t∈Q∩P} idf(t) / Σ_{t∈Q} idf(t)`（df 是**集级**，见 _episode_df）。
 
     为什么必须按信息量加权（而不是数词）：查询「孙正义是怎么押注 AI 的？」里，
-    `ai` 出现在 382 条切片、`孙正义` 79 条、`押注` 8 条。等权口径下「只命中一个词」
-    一律拿 0.33，于是只谈「押注」而与孙正义无关的段落（Bloomberg 那集讲 Dario Amodei）
-    拿到与实质证据同档的覆盖率，混进 top-10 挤掉真正的答案。加权之后，命中稀有词
-    （`押注` idf=6.44）与只命中泛词（`ai` idf=2.75）才分得开。
+    `ai` 出现在 12 集、`孙正义` 1 集、`押注` 3 集。等权口径下「只命中一个词」一律拿
+    0.33，于是只在小标题里带了「押注」而与孙正义无关的段落拿到与实质证据同档的覆盖率，
+    混进 top-10 挤掉真正的答案。加权之后，命中专名的段落才拿得到高覆盖率。
     取不到 df 或分母为 0 时返回 None —— 调用方退回 `_coverage`，绝不让搜索炸掉。
     """
-    if not qset or not df or total <= 0:
+    if not qset or not df or episodes <= 0:
         return None
     hit = qset & pset
     if not hit:
         return 0.0
-    denom = sum(_idf(t, df, total) for t in qset)
+    denom = sum(_idf(t, df, episodes) for t in qset)
     if denom <= 0:
         return None
-    return sum(_idf(t, df, total) for t in hit) / denom
+    return sum(_idf(t, df, episodes) for t in hit) / denom
 
 
 def _length_prior(n: int) -> float:
@@ -1019,14 +1047,14 @@ def _rerank(hits, query: str, k: int, *, per_dir: int = PER_DIR_MAX,
     `coverage_idf`。
     """
     qset = _token_set(query)
-    df = _df_table(conn) if conn is not None else None
-    total = int(_DF_CACHE["total"]) if (df and _DF_CACHE["df"] is df) else 0
+    stats = _episode_df(conn, qset) if conn is not None else None
+    df, episodes = stats if stats else (None, 0)
     scored: list[dict] = []
     for h in hits:
         text = re.sub(r"\s+", " ", h.get("text") or "").strip()
         pset = _token_set(f"{h.get('heading') or ''} {text}")
         cov = _coverage(qset, pset)
-        cov_idf = _coverage_idf(qset, pset, df, total)
+        cov_idf = _coverage_idf(qset, pset, df, episodes)
         h = dict(h)
         h["coverage"] = cov
         h["coverage_idf"] = cov if cov_idf is None else cov_idf   # 拿不到 df → 退回等权

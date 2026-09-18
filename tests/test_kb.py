@@ -374,53 +374,111 @@ def test_rerank_weights_do_not_exclude_transcript_only_episodes(kb_env):
     assert hits[0]["src_prior"] == pytest.approx(kb._SRC_TRANSCRIPT)
 
 
-# ------------------------------------------------------------------ IDF 加权覆盖率
+# ------------------------------------------------------------------ IDF 加权覆盖率（集级 df）
 
 # 为什么覆盖率要按词的信息量加权（而不是数命中几个词）：等权口径下「只命中一个泛词」
 # 与「命中一个稀有专名」拿到的覆盖率一模一样，于是只谈泛词的无关段落能和实质证据同档，
-# 混进 top-10 挤掉答案。真库实测（问「孙正义是怎么押注 AI 的？」）：`ai` 出现在 382 条
-# 切片、`孙正义` 79 条、`押注` 8 条 —— 等权口径下讲 Dario Amodei 的段落拿到 0.33，
-# 与含答案的正文只差一档，最后它排到了第 5。
+# 混进 top-10 挤掉答案。
 #
-# 下面用合成库把口径钉死：稀有词只在这一集的这一段里出现，查询 = 稀有词 + 泛词。
+# 而 df **必须按「集」统计，不能按「切片」统计** —— 切片级口径对专名是反的。真库实测
+# （12 集 / 5612 条切片，问「孙正义是怎么押注 AI 的？」）：
+#   词        切片级 df   集级 df
+#   `孙正义`      79          1
+#   `押注`         8          3
+#   `ai`         382         12
+# 切片级下 `押注` 比 `孙正义` 还「稀有」，于是含答案的 115 字正文加权覆盖率只有 0.52，
+# 而一条跟孙正义无关、只是小标题里带了「押注」的 116 字条目拿到 0.68（方向是反的）。
+#
+# 下面用**多集**合成库把口径钉死（一集里所有词的集级 df 都是 1，没有区分度，测不出来）：
+# 专名只出现在甲集、且**在甲集里被反复提及**（切片级 df 因此虚高）；泛词在乙丙丁三集
+# 各出现一次（切片级 df 反而更小）。查询 = 专名 + 泛词。
 
-def test_idf_coverage_prefers_the_passage_with_the_rare_word(kb_env):
-    """命中稀有词的段落必须排在只命中泛词的段落前面。"""
-    rare = "孙正义今天把仓位压在 OpenAI 和 ARM 两张牌上，这才是他真正的动作。"
-    common = "有人押注的方向是另一条路径，跟上面那件事没有关系。"
+# 甲集里那段「实质正文」：只命中专名，长度落在最佳区间（100–600 字）
+_RARE_BODY = (
+    "孙正义今天把仓位压在两张牌上，这才是他真正的动作：他清空了旧仓位，换来的是叙事，"
+    "仓位集中到什么程度，才是判断他这次到底赌了多大的唯一办法，而不是看他说了什么。"
+    "他在这一集里被反复提到，恰恰说明这一集就是关于他的。")
+# 甲集里另外 7 条同样含专名的碎片（把**切片级** df 顶上去，集级 df 仍是 1）
+_RARE_FRAGS = [
+    f"孙正义在这个阶段的第 {i} 个动作，片段本身很短。"
+    for i in range(7)
+]
+# 乙丙丁各一条只含泛词的段落（长度与实质正文相当，避免长度先验干扰对比）
+_COMMON_BODY = (
+    "有人押注的方向是另一条路径，跟上面那件事没有关系：这里的仓位、叙事与集中度都是"
+    "另一码事，讲的是别的人别的事，只是碰巧用了同一个词而已，与那位投资人无关。")
+
+
+def _write_idf_library(root):
+    """甲集（专名反复出现）+ 乙丙丁三集（各一条只含泛词）→ 4 集。"""
     filler = "这一集讲的是别的事情，用来把库撑大。" * 4
-    _write_episode(kb_env, "20240120-稀有", f"# 标题\n\n{rare}\n\n{filler}\n")
-    for j in range(4):
-        _write_episode(kb_env, f"2024012{j}-泛词", f"# 标题\n\n{common}\n\n{filler}\n")
+    _write_episode(root, "20240120-甲",
+                   "# 标题\n\n" + _RARE_BODY + "\n\n" + "\n\n".join(_RARE_FRAGS)
+                   + "\n\n" + filler + "\n")
+    for j in range(3):
+        _write_episode(root, f"2024013{j}-泛词", f"# 标题\n\n{_COMMON_BODY}\n\n{filler}\n")
+
+
+def test_episode_df_counts_episodes_not_passages(kb_env):
+    """df 的口径本身：**同一集里提 76 次不该让这个词变得「常见」**。
+
+    专名在甲集里被 8 条切片提到，但它只在 1 **集**里被讨论 —— 集级 df 必须还是 1；
+    泛词只在 3 条切片里出现，却横跨 3 集 —— 集级 df 必须更大。切片级口径恰好相反。
+    """
+    _write_idf_library(kb_env)
     kb.index_all(kb_env, embed=False)
 
     conn = kb.connect()
     try:
-        df = kb._df_table(conn)
+        stats = kb._episode_df(conn, {"孙正义", "押注"})
+        slices = conn.execute(
+            "SELECT COUNT(*) FROM passages_fts JOIN passages p ON p.id = passages_fts.rowid "
+            "WHERE passages_fts MATCH ?", ('"孙正义"',)).fetchone()[0]
+        episodes = conn.execute("SELECT COUNT(DISTINCT dir) FROM docs").fetchone()[0]
     finally:
         conn.close()
-    assert df, "df 表必须能算出来（拿不到时下面测的是退回路径，不是 IDF）"
-    N = kb._DF_CACHE["total"]
-    assert df.get("孙正义") == 1, f"稀有词只该出现在一处：df={df.get('孙正义')}"
-    assert df.get("押注") >= 4, f"泛词该到处都有：df={df.get('押注')}"
-    assert kb._idf("孙正义", df, N) > kb._idf("押注", df, N), "稀有词的 idf 必须更大"
+    assert stats, "集级 df 必须能算出来（拿不到时下面测的是退回路径，不是 IDF）"
+    df, n_episodes = stats
+    assert n_episodes == 4, f"合成库是 4 集：{n_episodes}"
+    assert slices >= 8, f"前提：专名在切片级上被顶得很高：{slices} 条切片"
+    assert df["孙正义"] == 1, \
+        f"专名只该算 1 集（它在甲集里被提了 {slices} 次，切片级口径会算成 {slices}）：{df}"
+    assert df["押注"] == 3, f"泛词横跨 3 集：{df}"
+    assert kb._idf("孙正义", df, n_episodes) > kb._idf("押注", df, n_episodes), \
+        "集级口径下专名更稀有 → idf 必须更大（切片级口径下这一条是反的）"
+
+
+def test_idf_coverage_prefers_the_passage_with_the_rare_word(kb_env):
+    """命中专名的段落必须排在只命中泛词的段落前面。
+
+    **这是本次修复的锚点**：切片级 df 下，专名在甲集里被反复提及（df 虚高），
+    泛词跨集但每条切片只出现一次（df 反而小）—— 排序恰好是反的。
+    """
+    _write_idf_library(kb_env)
+    kb.index_all(kb_env, embed=False)
+
+    conn = kb.connect()
+    try:
+        df, n_episodes = kb._episode_df(conn, {"孙正义", "押注"})
+    finally:
+        conn.close()
 
     q = "孙正义 押注"
     qset = kb._token_set(q)
-    assert kb._coverage(qset, kb._token_set(common)) == pytest.approx(
-        kb._coverage(qset, kb._token_set(rare))), "前提：等权口径下两者完全一样"
-    rare_idf = kb._coverage_idf(qset, kb._token_set(rare), df, N)
-    common_idf = kb._coverage_idf(qset, kb._token_set(common), df, N)
-    assert rare_idf > common_idf, f"加权口径下必须分得开：稀有 {rare_idf} vs 泛词 {common_idf}"
+    assert kb._coverage(qset, kb._token_set(_COMMON_BODY)) == pytest.approx(
+        kb._coverage(qset, kb._token_set(_RARE_BODY))), "前提：等权口径下两者完全一样"
+    rare_idf = kb._coverage_idf(qset, kb._token_set(_RARE_BODY), df, n_episodes)
+    common_idf = kb._coverage_idf(qset, kb._token_set(_COMMON_BODY), df, n_episodes)
+    assert rare_idf > common_idf, f"加权口径下必须分得开：专名 {rare_idf} vs 泛词 {common_idf}"
 
-    hits = kb.search(q, k=5)["hits"]
+    hits = kb.search(q, k=6)["hits"]
     ids = _passage_ids()
-    order = _hit_ids(kb.search(q, k=5))
-    assert ids[rare] in order and ids[common] in order, "两条都该被检索到"
-    assert order.index(ids[rare]) < order.index(ids[common]), \
-        "命中稀有词的那条必须排在只命中泛词的前面"
+    order = _hit_ids(kb.search(q, k=6))
+    assert ids[_RARE_BODY] in order and ids[_COMMON_BODY] in order, "两条都该被检索到"
+    assert order.index(ids[_RARE_BODY]) < order.index(ids[_COMMON_BODY]), \
+        "命中专名的那条必须排在只命中泛词的前面（切片级口径下这是反的）"
     top = hits[0]
-    assert top["id"] == ids[rare] and top["coverage_idf"] > top["coverage"] - 1e-9
+    assert top["id"] == ids[_RARE_BODY] and top["coverage_idf"] > top["coverage"] - 1e-9
     # coverage 保留等权口径（界面与既有断言按它读），加权口径另写在 coverage_idf 里
     assert top["coverage"] == pytest.approx(
         kb._coverage(qset, kb._token_set(f"{top.get('heading') or ''} {top['text']}")))
@@ -431,7 +489,7 @@ def test_idf_coverage_falls_back_when_df_is_unavailable(kb_env, monkeypatch):
     _write_episode(kb_env, "20240121-退回", "# 标题\n\n" + "这是一段讲推理成本的正文内容。" * 8)
     kb.index_all(kb_env, embed=False)
 
-    monkeypatch.setattr(kb, "_df_table", lambda conn: None)
+    monkeypatch.setattr(kb, "_episode_df", lambda conn, terms: None)
     hits = kb.search("推理成本", k=3)["hits"]
     assert hits, "df 拿不到也要能搜出结果"
     assert all(h["coverage_idf"] == pytest.approx(h["coverage"]) for h in hits), \
@@ -439,41 +497,64 @@ def test_idf_coverage_falls_back_when_df_is_unavailable(kb_env, monkeypatch):
 
 
 def test_df_cache_invalidates_when_the_library_grows(kb_env):
-    """索引后新增切片，df 必须重算 —— 吃到过期 df 不会报错，只会让排序悄悄错掉。"""
-    rare = "孙正义今天把仓位压在 OpenAI 和 ARM 两张牌上，这才是他真正的动作。"
-    common = "有人押注的方向是另一条路径，跟上面那件事没有关系。"
-    filler = "这一集讲的是别的事情，用来把库撑大。" * 4
-    _write_episode(kb_env, "20240122-旧", f"# 标题\n\n{rare}\n\n{filler}\n")
-    for j in range(3):
-        _write_episode(kb_env, f"2024013{j}-泛词", f"# 标题\n\n{common}\n\n{filler}\n")
+    """索引后新增一集，集级 df 必须重算 —— 吃到过期 df 不会报错，只会让排序悄悄错掉。"""
+    _write_idf_library(kb_env)
     kb.index_all(kb_env, embed=False)
 
     conn = kb.connect()
     try:
-        before = kb._df_table(conn).get("孙正义")
-        n_before = kb._DF_CACHE["total"]
+        before = kb._episode_df(conn, {"孙正义"})[0]["孙正义"]
     finally:
         conn.close()
-    hits = kb.search("孙正义 押注", k=5)["hits"]
-    score_before = next(h["rank_score"] for h in hits if h["text"] == rare)
+    hits = kb.search("孙正义 押注", k=6)["hits"]
+    score_before = next(h["rank_score"] for h in hits if h["text"] == _RARE_BODY)
 
-    # 新的一集也含这个稀有词 → df 变大 → 它的 idf 变小 → 覆盖率与排序分必须跟着变
-    _write_episode(kb_env, "20240123-新", f"# 标题\n\n{rare}\n\n{filler}\n")
+    # 新的一集也讨论这个专名 → 它不再只属于一集 → 集级 df 变大 → idf 变小
+    _write_episode(kb_env, "20240123-新", f"# 标题\n\n{_RARE_BODY}\n")
     kb.index_all(kb_env, embed=False)
 
     conn = kb.connect()
     try:
-        after = kb._df_table(conn).get("孙正义")
-        n_after = kb._DF_CACHE["total"]
+        after, n_episodes = kb._episode_df(conn, {"孙正义"})
     finally:
         conn.close()
-    assert before == 1 and after == 2, f"df 必须反映新数据：{before} → {after}"
-    assert n_after > n_before, f"切片总数也要跟着变：{n_before} → {n_after}"
+    assert before == 1 and after["孙正义"] == 2, f"df 必须反映新数据：{before} → {after}"
+    assert n_episodes == 5, f"集数也要跟着变：{n_episodes}"
 
-    hits = kb.search("孙正义 押注", k=5)["hits"]
-    score_after = next(h["rank_score"] for h in hits if h["text"] == rare)
+    hits = kb.search("孙正义 押注", k=6)["hits"]
+    score_after = next(h["rank_score"] for h in hits if h["text"] == _RARE_BODY)
     assert score_after < score_before, \
-        f"稀有词不再稀有后排序分必须下降（吃到过期 df 就会纹丝不动）：{score_before} → {score_after}"
+        f"专名不再只属于一集后排序分必须下降（吃到过期 df 就会纹丝不动）：{score_before} → {score_after}"
+
+
+def test_df_cache_invalidates_when_another_process_writes(kb_env):
+    """**别的进程**改了库也必须重算：只比进程内标志会吃到过期 df。
+
+    Web 正跑着、CLI 那边索引完一集 —— 这时没有谁会来调 `_vec_invalidate()`，
+    唯一的信号是库指纹 (切片数, meta.last_index) 变了。这里直接写库模拟那种情形。
+    """
+    _write_idf_library(kb_env)
+    kb.index_all(kb_env, embed=False)
+    kb.search("孙正义 押注", k=3)                     # 先把缓存填上
+
+    conn = kb.connect()
+    try:
+        before = kb._episode_df(conn, {"孙正义"})[0]["孙正义"]
+        # 绕过 kb 的写入路径，直接插一条新集 + 新切片（不会触发进程内失效）
+        did = conn.execute("INSERT INTO docs(dir, kind, title) VALUES(?,?,?)",
+                           ("20240124-别的进程", "article", "别的进程")).lastrowid
+        pid = conn.execute("INSERT INTO passages(doc_id, ord, kind, heading, text) "
+                           "VALUES(?,?,?,?,?)", (did, 0, "body", "", _RARE_BODY)).lastrowid
+        conn.execute("INSERT INTO passages_fts(rowid, tokens) VALUES(?,?)",
+                     (pid, kb.tokenize(_RARE_BODY)))
+        conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('last_index', ?)",
+                     (str(time.time() + 10),))
+        conn.commit()
+        after = kb._episode_df(conn, {"孙正义"})[0]["孙正义"]
+    finally:
+        conn.close()
+    assert before == 1 and after == 2, \
+        f"库指纹变了就必须重算集级 df（吃到过期值会纹丝不动）：{before} → {after}"
 
 
 # ------------------------------------------------------------------ 每集上限（自适应）
