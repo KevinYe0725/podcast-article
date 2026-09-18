@@ -48,48 +48,39 @@ function toast(html) {
   clearTimeout(toastTimer); toastTimer = setTimeout(() => $("toast").classList.remove("show"), 6000);
 }
 
-/* ---------------- 知识库（跨集检索 / 问答 / 实体）----------------
+/* ---------------- 知识库（AI 的底座，界面里不出现）----------------
    后端是 podcast_article/kb.py：SQLite FTS5 + jieba 分词（中文必须自己切词），
-   有嵌入模型时再加向量检索做混合排序。前端只负责把「命中 + 出处」摆清楚：
-   每条结果都要能回答「这话出自哪一集、第几分钟、哪个小标题」。 */
+   有嵌入模型时再加向量检索做混合排序。
 
-let kbEntityType = "person";
+   产品定位：知识库是**服务于 AI** 的，不是让人来搜索的，所以它不是用户的入口 ——
+   界面上没有「知识库」这个页面：粘链接就生成文章，打字提问就「问你的库」，AI 自己
+   去库里检索、把用户存过的记忆带上，回答里的时间戳可以直接回听。「切片 / 索引 /
+   实体」这些词一个都不该出现在用户面前，只有设置页里留了一个重建索引的折叠区。 */
+
+let kbStatusCache = null;       // GET /api/kb/status 的结果（问句提示与设置页共用）
+
+/** 书库规模：拿不到就返回 null，界面退化成只说「问你的库」，不报错也不假装知道。 */
+async function kbStatus(force) {
+  if (kbStatusCache && !force) return kbStatusCache;
+  try {
+    const d = await (await fetch("/api/kb/status")).json();
+    if (d && !d.error) kbStatusCache = d;
+  } catch (e) { /* 后端不可用：静默 */ }
+  return kbStatusCache;
+}
+
+/** 「（12 集 · 5612 条切片）」——规模本身就是「问你的库」值不值得问的依据 */
+function kbScaleText() {
+  const d = kbStatusCache;
+  if (!d) return "";
+  const parts = [];
+  if (d.episodes_on_disk != null) parts.push(`${d.episodes_on_disk} 集`);
+  if (d.passages != null) parts.push(`${d.passages} 条切片`);
+  return parts.length ? `（${parts.join(" · ")}）` : "";
+}
 
 const mmssShort = (sec) => (sec == null ? "" :
   `${Math.floor(sec / 60)}:${String(Math.round(sec % 60)).padStart(2, "0")}`);
-
-async function loadKb() {
-  try {
-    const d = await (await fetch("/api/kb/status")).json();
-    const mode = d.semantic ? "混合检索（词法 + 向量）" : "词法检索（FTS5 + jieba 分词）";
-    $("kbstat").innerHTML = `已索引 <b>${d.docs}</b> 篇文档 / <b>${d.passages}</b> 条切片 · `
-      + `<b>${d.entities}</b> 个实体 · <b>${d.memory}</b> 条记忆 · ${(d.size_bytes / 1048576).toFixed(1)}MB<br>`
-      + `检索方式：${mode}${d.semantic ? "" : "（装 fastembed 后自动升级为语义检索）"}`
-      + (d.embed_error && !d.semantic
-        ? `<br><span class="dimtext">语义检索暂不可用：${esc(String(d.embed_error).slice(0, 120))}</span>` : "");
-    setNavCount("navkbcount", d.passages || 0);
-    if ($("kb_setstate")) {
-      $("kb_setstate").textContent = `${d.docs} 篇 · ${d.passages} 条切片 · ${d.semantic ? "混合检索" : "词法检索"}`;
-    }
-    if (d.indexing && d.indexing.state === "running") {
-      $("kbstat").innerHTML += ` <span class="fstate">正在索引 ${d.indexing.done}/${d.indexing.total}…</span>`;
-      setTimeout(loadKb, 1500);
-    }
-  } catch (e) { $("kbstat").textContent = "读取状态失败：" + e; }
-  await loadKbEntities();
-}
-
-async function kbReindex(force) {
-  if (force && !confirm("重建索引会重新切片并重算向量，可能要一会儿。继续？")) return;
-  const resp = await fetch("/api/kb/reindex", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ force: !!force }),
-  });
-  const d = await resp.json();
-  if (!resp.ok) { toast("⚠ " + esc(d.error || "索引失败")); return; }
-  toast("✦ 开始索引，完成后会自动刷新");
-  setTimeout(loadKb, 1200);
-}
 
 function kbHitHTML(h, i) {
   const ts = h.start_sec != null
@@ -111,109 +102,123 @@ function kbHitHTML(h, i) {
   </div>`;
 }
 
-/** 记忆命中：同一个搜索框既搜资料、也搜他自己记过的东西。
-    块放在结果列表**上方** —— 「我记过这个吗」比多一条切片更该先看见。 */
-function kbMemHTML(list) {
-  if (!(list || []).length) return "";
-  return `<div class="kbmem">
-      <div class="kbmemhead">✦ 你记过的（${list.length} 条）</div>
-      ${list.map((m) => `
-        <div class="memitem ${m.pinned ? "pinned" : ""}">
-          <span class="memkind">${esc(memKindLabel(m.kind))}</span>
-          <span class="memtext">${esc(m.text || "")}</span>
-          ${m.pinned ? `<span class="memacts dimtext">置顶</span>` : ""}
-        </div>`).join("")}
-    </div>`;
+/* ---- 「问你的库」：一轮轮接下去的对话流 ----
+   两段式加载是这里的重点：检索很快，模型很慢。所以先把**出处**摆出来（用户马上
+   能核对、能点时间戳回听），答案那一趟回来再填进去 —— 不用对着空白等几十秒。 */
+
+function openAskPanel() {
+  const p = $("askpanel");
+  if (p) p.style.display = "block";
 }
 
-async function kbSearch() {
-  const q = ($("kbs").value || "").trim();
-  if (!q) { $("kbhits").innerHTML = ""; return; }
-  $("kbhits").innerHTML = `<div class="viewempty">检索中…</div>`;
-  const d = await (await fetch("/api/kb/search?q=" + encodeURIComponent(q) + "&k=8")).json();
-  if (d.error) { $("kbhits").innerHTML = `<div class="viewempty">✕ ${esc(d.error)}</div>`; return; }
-  const hits = d.hits || [];
-  const hitsHTML = hits.length
-    ? `<div class="dimtext" style="margin:6px 0 10px">${hits.length} 条命中 · ${d.mode === "hybrid" ? "混合检索" : d.mode === "semantic" ? "向量检索" : "词法检索"}</div>`
-      + hits.map((h, i) => kbHitHTML(h, i)).join("")
-    : `<div class="viewempty">没有命中。可以换个说法，或先「重建索引」。</div>`;
-  $("kbhits").innerHTML = kbMemHTML(d.memory) + hitsHTML;
+function closeAskPanel() {
+  const p = $("askpanel");
+  if (p) p.style.display = "none";
 }
 
-async function kbAsk() {
-  const q = ($("kbq").value || "").trim();
-  if (q.length < 2) return;
-  const onlySearch = $("kbonlysearch").checked;
-  $("kbgobtn").disabled = true;
-  $("kbaskstate").textContent = onlySearch ? "检索中…" : "检索并整理…";
-  $("kbanswer").style.display = "";
-  $("kbanswer").innerHTML = `<div class="dimtext">正在书库里找相关段落…</div>`;
+/** 新的一轮：先把问题与状态行摆出来，出处、答案、记忆随后各自填进自己的格子 */
+function appendAskTurn(question) {
+  const wrap = document.createElement("div");
+  wrap.className = "askturn";
+  wrap.innerHTML = `<div class="askq">${esc(question)}</div>
+    <div class="askstate dimtext">正在检索…</div>
+    <div class="asksrc"></div>
+    <div class="askans"></div>
+    <div class="askacts"></div>`;
+  openAskPanel();
+  $("askthread").appendChild(wrap);
+  return wrap;
+}
+
+/** 出处：默认收起的 <details>，时间戳仍然可以点回听（复用 kbHitHTML） */
+function askSourcesHTML(d) {
+  const hits = (d && d.hits) || [];
+  if (!hits.length) return "";
+  return `<details class="kbsrc"><summary>出处（${hits.length} 条，时间戳可点回听）</summary>`
+    + hits.map((h, i) => kbHitHTML(h, i)).join("") + `</details>`;
+}
+
+function renderAskAnswer(turn, d) {
+  const ans = turn.querySelector(".askans");
+  const acts = turn.querySelector(".askacts");
+  if (d.error && !d.answer) {           // 失败只影响答案，已经拿到的出处留在原地
+    ans.innerHTML = `<div class="askerr">✕ ${esc(d.error)}</div>`;
+    acts.innerHTML = "";
+    return;
+  }
+  // 「AI 记得的你」也收进折叠块：记忆跑偏时用户才需要去看，平时不必占着视线
+  ans.innerHTML = `<div class="kbansbody">${mdLite(d.answer || "")}</div>` + memNoteHTML(d.memory_used);
+  acts.innerHTML = `<div class="kbaacts"><button class="ttslink" data-dir="" onclick="rememberAnswer(this)">☆ 记住这个结论</button></div>`;
+  // 跨很多集，没有单一 dir，data-dir 写成空串（后端接口的 dir 允许为空）
+  wireAnswerBtn(turn, d.answer);
+}
+
+async function askLibrary() {
+  const question = ($("url").value || "").trim();
+  if (question.length < 2) return;
+  $("url").value = "";
+  updateComposerHint();
+  autoGrow();
+  const turn = appendAskTurn(question);
+  const state = turn.querySelector(".askstate");
+  const srcBox = turn.querySelector(".asksrc");
+
+  // 第一段：检索（快）—— 回来就立刻把出处渲染出来
   try {
-    if (onlySearch) {
-      const d = await (await fetch("/api/kb/search?q=" + encodeURIComponent(q) + "&k=8")).json();
-      $("kbanswer").innerHTML = `<div class="kbansbody">${(d.hits || []).map((h, i) => kbHitHTML(h, i)).join("")}</div>`;
-      $("kbaskstate").textContent = `${(d.hits || []).length} 条命中`;
-      return;
-    }
+    const d = await (await fetch("/api/kb/search?q=" + encodeURIComponent(question) + "&k=6")).json();
+    if (!d.error) srcBox.innerHTML = askSourcesHTML(d);
+  } catch (e) { /* 检索失败不拦住问答：模型那一趟自己也会检索 */ }
+  state.textContent = "正在回答…";
+
+  // 第二段：让模型基于检索到的原文作答（慢，几秒到几十秒）
+  try {
     const resp = await fetch("/api/kb/ask", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question: q, k: 6 }),
+      body: JSON.stringify({ question, k: 6 }),
     });
     const d = await resp.json();
-    if (d.error && !d.answer) {
-      $("kbanswer").innerHTML = `<div class="viewempty">✕ ${esc(d.error)}</div>`
-        + (d.sources || []).map((h, i) => kbHitHTML(h, i)).join("");
-      $("kbaskstate").textContent = "模型不可用，已给出检索结果";
-      return;
-    }
-    const mem = memNoteHTML(d.memory_used);
-    $("kbanswer").innerHTML = `<div class="kbansbody">${mdLite(d.answer || "")}</div>${mem}`
-      + `<div class="kbaacts"><button class="ttslink" data-dir="" onclick="rememberAnswer(this)">☆ 记住这个结论</button></div>`
-      + `<details class="kbsrc"><summary>出处（${(d.sources || []).length} 条，时间戳可点回听）</summary>`
-      + (d.sources || []).map((h, i) => kbHitHTML(h, i)).join("") + `</details>`;
-    // 知识库问答跨很多集，没有单一 dir，data-dir 写成空串（后端接口的 dir 允许为空）
-    wireAnswerBtn($("kbanswer"), d.answer);
-    $("kbaskstate").textContent = "完成";
+    renderAskAnswer(turn, d);
+    // 检索那一趟失败/没命中时兜底：问答返回里也带着出处，别让「出处」整块空着
+    if (!srcBox.innerHTML.trim()) srcBox.innerHTML = askSourcesHTML({ hits: d.sources });
+    state.textContent = d.error && !d.answer ? "模型不可用，上面是检索到的出处" : "完成";
   } catch (e) {
-    $("kbanswer").innerHTML = `<div class="viewempty">✕ ${esc(String(e))}</div>`;
-    $("kbaskstate").textContent = "失败";
-  } finally { $("kbgobtn").disabled = false; }
-}
-
-async function loadKbEntities() {
-  const types = [["person", "人物"], ["org", "机构"], ["media", "书影音"],
-                 ["place", "地点"], ["topic", "主题"]];
-  if ($("kbtabs")) {
-    $("kbtabs").innerHTML = types.map(([t, label]) =>
-      `<button class="${kbEntityType === t ? "on" : ""}" onclick="kbEntityType='${t}';loadKbEntities()">${label}</button>`).join("");
+    turn.querySelector(".askans").innerHTML = `<div class="askerr">✕ ${esc(String(e))}</div>`;
+    state.textContent = "失败";
   }
-  const d = await (await fetch(`/api/kb/entities?type=${kbEntityType}&limit=40&min_count=2`)).json();
-  const list = d.entities || [];
-  $("kbents").innerHTML = list.length
-    ? `<div class="entlist">` + list.map((e) => {
-        const safe = esc(e.name).replace(/'/g, "&#39;");
-        return `<button class="ent" onclick="kbEntity(this.dataset.n)" data-n="${safe}">
-          <span class="entname">${esc(e.name)}</span><span class="entcount">${e.count}</span></button>`;
-      }).join("") + `</div>`
-    : `<div class="viewempty">这个类型下还没有实体。先索引一下书库。</div>`;
 }
 
-async function kbEntity(name) {
-  const d = await (await fetch("/api/kb/entity/" + encodeURIComponent(name))).json();
-  if (!d.found) { $("kbentdetail").innerHTML = `<div class="viewempty">没有这个实体的记录</div>`; return; }
-  const byDir = {};
-  (d.passages || []).forEach((p) => { (byDir[p.dir] = byDir[p.dir] || []).push(p); });
-  const groups = Object.entries(byDir).map(([dir, ps]) => `
-    <div class="entgroup">
-      <div class="kbtitle">${esc(ps[0].title || dir)}</div>
-      ${ps.slice(0, 6).map((p) => `<div class="entpass">${p.start_sec != null
-        ? `<a class="ts" data-sec="${Math.round(p.start_sec)}" data-dir="${esc(p.dir)}" role="button" tabindex="0"
-             onclick="event.stopPropagation();playFromTs(this)">[${mmssShort(p.start_sec)}]</a> ` : ""}${esc((p.text || "").slice(0, 150))}</div>`).join("")}
-      <button class="ttslink" onclick="openEpisode('${encodeURIComponent(dir)}')">打开这一篇 →</button>
-    </div>`).join("");
-  $("kbentdetail").innerHTML = `<div class="entcard">
-      <div class="entcardhead"><b>${esc(d.name)}</b><span class="dimtext">${esc(d.type)} · 共 ${d.count} 处</span></div>
-      ${groups}</div>`;
+/* ---- 知识库的维护入口（设置 → 记忆，默认收起）----
+   界面里不再有知识库页面，但索引坏了必须有地方能修：状态行 + 重建索引 +
+   索引进度轮询都收在 #kbadmin 这一块里，打开时才拉状态。 */
+
+async function kbReindex(force) {
+  if (force && !confirm("重建索引会重新切片并重算向量，可能要一会儿。继续？")) return;
+  const resp = await fetch("/api/kb/reindex", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ force: !!force }),
+  });
+  const d = await resp.json();
+  if (!resp.ok) { toast("⚠ " + esc(d.error || "索引失败")); return; }
+  toast("✦ 开始索引，完成后会自动刷新");
+  setTimeout(() => { kbStatusCache = null; loadKbAdmin(); }, 1200);
+}
+
+async function loadKbAdmin() {
+  const el = $("kb_setstate");
+  if (!el) return;
+  el.textContent = "正在读取状态…";
+  const d = await kbStatus(true);
+  if (!d) { el.textContent = "读取状态失败（后端不可用）"; return; }
+  const mode = d.semantic ? "开" : "关";
+  el.innerHTML = `${d.episodes_on_disk ?? 0} 集 · ${d.passages ?? 0} 条切片 · `
+    + `${d.vectors ?? 0} 条向量 · 语义检索 ${mode}`
+    + (!d.semantic && d.embed_error
+      ? `<br><span class="dimtext">语义检索暂不可用：${esc(String(d.embed_error).slice(0, 120))}</span>` : "");
+  // 索引在跑：接着轮询，跑到完为止（这一块就是原来知识库页面的那条轮询）
+  if (d.indexing && d.indexing.state === "running") {
+    el.innerHTML += ` <span class="fstate">正在索引 ${d.indexing.done}/${d.indexing.total}…</span>`;
+    setTimeout(() => { kbStatusCache = null; loadKbAdmin(); }, 1500);
+  }
 }
 
 /* ---------------- 记忆 ----------------
@@ -360,12 +365,15 @@ function markRemembered(btn, text, label) {
 }
 
 /** 记忆块：「AI 记得的你」。空数组时返回空串 —— 不显示空标题，
-   否则用户会以为 AI 什么都没记住（跟「这次没用上记忆」是两回事）。 */
+   否则用户会以为 AI 什么都没记住（跟「这次没用上记忆」是两回事）。
+
+    默认**收起**：它解释的是「这次回答为什么长这样」，属于要看时再看的东西；
+    常显等于把内部机制摆在台面上（阅读助手的回答、问你的库共用这一块）。 */
 function memNoteHTML(list) {
   const items = (list || []).map((t) => String(t || "").trim()).filter(Boolean);
   if (!items.length) return "";
-  return `<div class="amem"><div class="amemhead">✦ AI 记得的你</div>`
-    + `<ul class="amemlist">${items.map((t) => `<li>${esc(t)}</li>`).join("")}</ul></div>`;
+  return `<details class="amem"><summary class="amemhead">AI 记得的你（${items.length} 条）</summary>`
+    + `<ul class="amemlist">${items.map((t) => `<li>${esc(t)}</li>`).join("")}</ul></details>`;
 }
 
 /** 「记住这个结论」：正文先挂在按钮上（渲染过的 HTML 里捞不回原文），
@@ -685,6 +693,7 @@ function applyServerConfig(cfg) {
     $("selbtn").classList.remove("show");
   }
   syncFab();
+  updateComposerHint();     // 按钮文案与意图提示跟着模式一起回正
   return serverConfig;
 }
 
@@ -813,17 +822,59 @@ function startBusyWatch() {
   busyTimer = setInterval(tick, 3000);
 }
 
+/* ---------------- 一个输入框，两种意图 ----------------
+   粘链接 → 生成文章（startRun）；打字提问 → 问你的库（askLibrary）。
+   判据就一条：输入里有没有链接（复用 urlsIn，跟「一次粘多条」用的是同一套识别）。 */
+
+/** 意图：link（生成文章）/ ask（问你的库）/ empty。 */
+function composerIntent() {
+  const raw = $("url").value || "";
+  if (urlsIn(raw).length) return "link";
+  return raw.replace(/\s+/g, "").length >= 2 ? "ask" : "empty";
+}
+
+/** 输入框下面那行意图提示：#go 文案之外，明确告诉用户「这次会发生什么」 */
+function setUrlHint(kind, n) {
+  const el = $("urlhint");
+  if (!el) return;
+  if (kind === "empty") { el.style.display = "none"; el.innerHTML = ""; return; }
+  el.style.display = "";
+  el.innerHTML = kind === "link"
+    ? `🔗 将生成文章${n > 1 ? `（${n} 条链接）` : ""}`
+    : `💬 问你的库${kbScaleText()}`;
+}
+
+const COMPOSER_HINT = "⌘/Ctrl + Enter 直接开始（批量时一行一条链接）· 生成完会直接进阅读页，Esc 返回 · 产物会缓存，重新生成文章不必重新转写";
+
 function updateComposerHint() {
-  if (serverConfig.readonly) { $("go").textContent = "只读镜像"; $("go").disabled = true; return; }
+  if (serverConfig.readonly) { $("go").textContent = "只读镜像"; $("go").disabled = true; setUrlHint("empty"); return; }
   const n = urlsIn($("url").value).length;
   const btn = $("go");
   if (n > 1) {
     btn.textContent = `加入队列 (${n})`;
     $("hint").innerHTML = `检测到 ${n} 条链接 —— 点按钮会全部排队，后台依次跑完；不想排队就只留一条。`;
-  } else {
-    btn.textContent = "生成文章";
-    $("hint").innerHTML = "⌘/Ctrl + Enter 直接开始（批量时一行一条链接）· 生成完会直接进阅读页，Esc 返回 · 产物会缓存，重新生成文章不必重新转写";
+    setUrlHint("link", n);
+    return;
   }
+  $("hint").innerHTML = COMPOSER_HINT;
+  if (n === 1) { btn.textContent = "生成文章"; setUrlHint("link", 1); return; }
+  // 没有链接：≥2 个字就当提问（「问你的库」），否则什么也不做
+  const ask = ($("url").value || "").replace(/\s+/g, "").length >= 2;
+  btn.textContent = ask ? "问我的库" : "生成文章";
+  setUrlHint(ask ? "ask" : "empty");
+  // 规模是异步补上的：先说「问你的库」，拿到状态后再把「（12 集 · 5612 条切片）」接上
+  if (ask && !kbStatusCache) {
+    kbStatus().then(() => { if (composerIntent() === "ask") setUrlHint("ask"); });
+  }
+}
+
+/** #go 与 Enter 的唯一入口：按意图分流 */
+function goSubmit() {
+  if (serverConfig.readonly) return;
+  const intent = composerIntent();
+  if (intent === "link") { startRun(); return; }
+  if (intent === "ask") { askLibrary(); return; }
+  $("url").focus();
 }
 
 /** 输入框随内容长高（最多 6 行左右），因为要支持一次粘多条链接 */
@@ -2358,17 +2409,9 @@ async function showArticle(dir, opts) {
   syncTts(false);
 }
 
-// 知识库提问框：⌘/Ctrl + Enter 发送；检索框回车即检索
-document.addEventListener("keydown", (e) => {
-  if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && document.activeElement === $("kbq")) {
-    e.preventDefault(); kbAsk();
-  }
-  if (e.key === "Enter" && document.activeElement === $("kbs")) { e.preventDefault(); kbSearch(); }
-});
-
 // 注：输入框的 Enter / input 处理统一放在文件末尾的初始化段（见 autoGrow 的注释）
 document.addEventListener("keydown", (e) => {
-  if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && !$("go").disabled) { e.preventDefault(); startRun(); }
+  if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && !$("go").disabled) { e.preventDefault(); goSubmit(); }
 });
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
@@ -2452,13 +2495,10 @@ function showView(name) {
   $("lib").style.display = name === "lib" ? "" : "none";
   $("queueview").style.display = name === "queue" ? "" : "none";
   $("feedsview").style.display = name === "feeds" ? "" : "none";
-  if ($("kbview")) $("kbview").style.display = name === "kb" ? "block" : "none";
   $("navqueue").classList.toggle("on", name === "queue");
   $("navfeeds").classList.toggle("on", name === "feeds");
-  if ($("navkb")) $("navkb").classList.toggle("on", name === "kb");
   if (name === "queue") loadQueue();
   if (name === "feeds") loadFeeds();
-  if (name === "kb") loadKb();
   closeSide();
 }
 
@@ -3074,7 +3114,7 @@ function appendAiBubble(md, sources) {
 function attachSources(bubble, src) {
   const old = bubble.querySelector(".asrc");
   if (old) old.remove();
-  // 「AI 记得的你」不进折叠区：它要一眼看见（记忆跑偏了用户才能发现并去删）
+  // 「AI 记得的你」单独一块、默认收起：它不在「依据」里面（要看时各看各的）
   attachMemoryNote(bubble, src && src.memory);
   const passages = (src && src.passages) || [];
   const web = src && src.web;
@@ -3139,7 +3179,7 @@ function doc_el(tag, cls) {
 }
 
 /** 「AI 记得的你」：这次回答参考了他自己存下的哪几条（sources.memory）。
-    空数组就不渲染这一块，也不留空标题。 */
+    空数组就不渲染这一块，也不留空标题；非空时是一个默认收起的折叠块。 */
 function attachMemoryNote(bubble, list) {
   const old = bubble.querySelector(".amem");
   if (old) old.remove();
@@ -3376,7 +3416,8 @@ async function testSearchService(btn) {
 // 一次粘多条链接会被粘成一条（实测被 UI 测试抓到），所以必须用多行控件。
 $("url").addEventListener("input", () => { updateComposerHint(); autoGrow(); });
 $("url").addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); startRun(); }   // Shift+Enter 才换行
+  // Enter 和按钮走同一条路：有链接就生成文章，是问题就问你的库（Shift+Enter 才换行）
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); goSubmit(); }
 });
 $("q").addEventListener("input", onSearchInput);
 $("q").addEventListener("keydown", (e) => {

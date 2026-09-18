@@ -1,11 +1,15 @@
 /**
- * 「知识库 + 记忆」在界面上的四个入口。
+ * 「记忆」在界面上的四个入口。
  *
  * 后端接口早就做好了，这里测的是**接线**：
  *   1) 阅读页抽屉里的「☆ 记住这条」→ POST /api/memory（选中的那段文字）
- *   2) 回答下面的「☆ 记住这个结论」+ sources.memory 非空时的「AI 记得的你」
- *   3) 知识库问答：memory_used 非空时的「AI 记得的你」+「记住这个结论」
- *   4) 知识库检索：memory 非空时结果列表上方的「你记过的（N 条）」
+ *   2) 回答下面的「☆ 记住这个结论」+ sources.memory 非空时的「AI 记得的你」（折叠）
+ *   3) 「问你的库」（#askpanel）：memory_used 非空时的「AI 记得的你」+「记住这个结论」
+ *   4) 设置页·记忆：每条用过几次 / 从未用过，以及删除失败要说出来
+ *
+ * 注：以前还有「知识库检索结果上方的『你记过的』」那一组用例 —— 知识库页面已经从
+ * 界面上拿掉了（知识库服务于 AI，不是人的入口），检索结果里不再有记忆命中块，
+ * 所以那组断言整体删掉；记忆在这条链路上的身份只剩「问你的库」里的「AI 记得的你」。
  *
  * 两条硬约束：
  *   · **绝不能真的写记忆**（这是用户真实的记忆库），所以 /api/memory 一律打桩，
@@ -164,14 +168,19 @@ const KB_ANSWER = "书里提到的做法有两种：先定场景，再补背景�
   const bubble = lastBubble();
   const memBox = bubble.querySelector(".amem");
   out.b_记忆块存在 = !!memBox;
-  out.b_记忆块标题 = memBox ? memBox.querySelector(".amemhead").textContent.trim() : "(没有)";
+  out.b_记忆块标签 = memBox ? memBox.tagName : "(没有)";
+  out.b_记忆块标题 = memBox ? memBox.querySelector("summary").textContent.trim() : "(没有)";
   out.b_记忆块条目 = memBox ? [...memBox.querySelectorAll("li")].map((li) => li.textContent.trim()) : [];
-  out.b_记忆块不在折叠区 = !!memBox && !memBox.closest("details.asrc");
+  out.b_记忆块默认收起 = !!memBox && memBox.tagName === "DETAILS" && memBox.open === false;
+  out.b_记忆块不在依据里 = !!memBox && !memBox.closest("details.asrc");
   check("b_记忆块存在", out.b_记忆块存在, "sources.memory 非空时回答下面应出现「AI 记得的你」");
-  check("b_记忆块标题", /AI 记得的你/.test(out.b_记忆块标题), `标题文案不对：「${out.b_记忆块标题}」`);
+  check("b_记忆块标题", /AI 记得的你/.test(out.b_记忆块标题) && /2 条/.test(out.b_记忆块标题),
+    `标题文案应是「AI 记得的你（2 条）」，实际「${out.b_记忆块标题}」`);
   check("b_记忆块条目", out.b_记忆块条目.join("|") === [MEM1, MEM2].join("|"),
     `应逐条列出这几条记忆，实际 ${JSON.stringify(out.b_记忆块条目)}`);
-  check("b_记忆块可见", out.b_记忆块不在折叠区, "记忆块要一眼看见，不能塞进折叠的「依据」里");
+  check("b_记忆块默认收起", out.b_记忆块默认收起,
+    "「AI 记得的你」要收进默认折叠的 <details>（别把内部机制常显在回答下面）");
+  check("b_记忆块不在依据里", out.b_记忆块不在依据里, "记忆块不能用「依据」那个折叠块装着，要各是各的");
 
   // 「☆ 记住这个结论」：存回答正文（出处标签剥掉）、带 dir、source=answer
   const ansBtn = bubble.querySelector(".aacts button");
@@ -229,77 +238,47 @@ const KB_ANSWER = "书里提到的做法有两种：先定场景，再补背景�
     "保存失败后按钮不该变成已记住（否则用户以为存上了）");
   store.failMem = false;
 
-  // ---------- (c) 知识库检索：memory 非空 → 结果列表上方「你记过的（N 条）」
+  // ---------- (c) 「问你的库」（#askpanel）：memory_used →「AI 记得的你」+「记住这个结论」
   const HIT_TITLE = "命中测试这一篇";
   store.search = {
-    count: 1, mode: "lexical",
+    count: 1, mode: "lexical", memory: [],
     hits: [{ dir: DIR, doc_kind: "article", heading: "", kind: "body", podcast: "测试台",
              start_sec: null, text: "这是资料里的一段话。", title: HIT_TITLE }],
-    memory: [
-      { id: 7, text: MEM1, kind: "preference", pinned: true, source_dir: "" },
-      { id: 8, text: MEM2, kind: "fact", pinned: false, source_dir: DIR },
-    ],
   };
-  window.showView("kb");
-  await sleep(300);
-  out.知识库_界面可见 = $("kbview").style.display === "block";
-  $("kbs").value = "开篇";
-  click(doc.querySelector(".kbsb button"));
-  await until(() => $("kbhits").querySelector(".kbmem"), 5000);
-  await sleep(150);
-
-  const hitsBox = $("kbhits");
-  const memBoxKb = hitsBox.querySelector(".kbmem");
-  out.c_记忆命中块存在 = !!memBoxKb;
-  out.c_记忆命中_标题 = memBoxKb ? memBoxKb.querySelector(".kbmemhead").textContent.trim() : "(没有)";
-  out.c_记忆命中_条目 = memBoxKb ? [...memBoxKb.querySelectorAll(".memitem")].map((d) => ({
-    标签: (d.querySelector(".memkind") || {}).textContent,
-    文本: (d.querySelector(".memtext") || {}).textContent,
-    置顶: /置顶/.test(d.textContent),
-  })) : [];
-  check("c_记忆命中块存在", out.c_记忆命中块存在, "检索返回 memory 非空时结果上方应出现「你记过的」");
-  check("c_记忆命中_标题含条数", /你记过的/.test(out.c_记忆命中_标题) && /2 条/.test(out.c_记忆命中_标题),
-    `标题应写成「你记过的（2 条）」，实际「${out.c_记忆命中_标题}」`);
-  check("c_记忆命中_逐条显示文本", out.c_记忆命中_条目.map((x) => x.文本).join("|") === [MEM1, MEM2].join("|"),
-    `应逐条显示记忆文本，实际 ${JSON.stringify(out.c_记忆命中_条目)}`);
-  check("c_记忆命中_kind中文标签", out.c_记忆命中_条目[0] && out.c_记忆命中_条目[0].标签 === "偏好"
-    && out.c_记忆命中_条目[1] && out.c_记忆命中_条目[1].标签 === "事实",
-    `kind 要显示中文标签，实际 ${JSON.stringify(out.c_记忆命中_条目.map((x) => x.标签))}`);
-  check("c_记忆命中_置顶标记", out.c_记忆命中_条目[0] && out.c_记忆命中_条目[0].置顶 === true
-    && out.c_记忆命中_条目[1] && out.c_记忆命中_条目[1].置顶 === false,
-    "置顶的那条要有「置顶」标记，没置顶的不能有");
-  const flat = hitsBox.textContent;
-  check("c_记忆命中_在结果上方",
-    !!memBoxKb && hitsBox.firstElementChild === memBoxKb
-    && flat.indexOf("你记过的") < flat.indexOf(HIT_TITLE),
-    "「你记过的」必须排在检索结果列表**上方**");
-
-  // 空数组 → 这一块不显示
-  store.search = Object.assign({}, store.search, { memory: [] });
-  click(doc.querySelector(".kbsb button"));
-  await until(() => hitsBox.querySelector(".kbhit") && !hitsBox.querySelector(".kbmem"), 5000);
-  out.c_空记忆_无块 = !hitsBox.querySelector(".kbmem") && !!hitsBox.querySelector(".kbhit");
-  check("c_空记忆_无块", out.c_空记忆_无块, "memory 为空数组时不该显示「你记过的」这一块");
-
-  // ---------- 知识库问答：memory_used →「AI 记得的你」+「记住这个结论」（dir 为空）
   store.kbAsk = {
     answer: KB_ANSWER, mode: "lexical", memory_used: [MEM1],
     sources: [{ dir: DIR, doc_kind: "article", heading: "", kind: "body", podcast: "测试台",
                 start_sec: 607, text: "出处片段。", title: HIT_TITLE }],
   };
-  $("kbq").value = "这些播客里关于开篇都说了什么？";
-  click($("kbgobtn"));
-  await until(() => $("kbanswer").querySelector(".kbaacts button"), 6000);
+  // 打字提问 → 按钮变成「问我的库」→ 走 /api/kb/search + /api/kb/ask（不再有知识库页面）
+  $("url").value = "这些播客里关于开篇都说了什么？";
+  $("url").dispatchEvent(new window.Event("input", { bubbles: true }));
+  await sleep(150);
+  out.问答_按钮文案 = $("go").textContent.trim();
+  out.问答_提示 = $("urlhint").textContent.replace(/\s+/g, " ").trim();
+  check("问答_按钮变成问我的库", out.问答_按钮文案 === "问我的库",
+    `输入框里是问题时按钮应写「问我的库」，实际「${out.问答_按钮文案}」`);
+  check("问答_提示问你的库", /问你的库/.test(out.问答_提示), `输入问题时提示应写「💬 问你的库」，实际「${out.问答_提示}」`);
+
+  click($("go"));
+  await until(() => $("askpanel").querySelector(".kbaacts button"), 6000);
   await sleep(200);
-  const kbAns = $("kbanswer");
+  const kbAns = $("askpanel").querySelector(".askturn");
+  out.kb问答_答案 = kbAns.querySelector(".askans").textContent.trim();
+  check("kb问答_答案渲染进面板", /先定场景/.test(out.kb问答_答案),
+    `答案应渲染进 #askpanel，实际「${out.kb问答_答案.slice(0, 40)}」`);
   out.kb问答_记忆块 = kbAns.querySelector(".amem")
     ? [...kbAns.querySelectorAll(".amem li")].map((li) => li.textContent.trim()) : [];
   check("kb问答_memory_used_列出记忆", out.kb问答_记忆块.join("|") === MEM1,
     `memory_used 非空时回答下方应列出「AI 记得的你」，实际 ${JSON.stringify(out.kb问答_记忆块)}`);
+  const kbMemDetails = kbAns.querySelector(".amem");
+  out.kb问答_记忆默认收起 = !!kbMemDetails && kbMemDetails.tagName === "DETAILS" && kbMemDetails.open === false;
+  check("kb问答_记忆默认收起", out.kb问答_记忆默认收起,
+    "memory_used 的「AI 记得的你」也应是默认收起的折叠块");
   const kbBtn = kbAns.querySelector(".kbaacts button");
   out.kb问答_结论按钮 = kbBtn ? kbBtn.textContent.trim() : "(没有)";
   check("kb问答_有记住这个结论", !!kbBtn && /记住这个结论/.test(out.kb问答_结论按钮),
-    `知识库回答下方应有「☆ 记住这个结论」，实际「${out.kb问答_结论按钮}」`);
+    `问答回答下方应有「☆ 记住这个结论」，实际「${out.kb问答_结论按钮}」`);
   memPosts.length = 0;
   click(kbBtn);
   await until(() => memPosts.length > 0, 4000);
@@ -308,19 +287,25 @@ const KB_ANSWER = "书里提到的做法有两种：先定场景，再补背景�
   out.kb问答_请求 = { url: (memPosts[0] || {}).url, method: (memPosts[0] || {}).method, body: kbBody };
   check("kb问答_存的是回答正文", kbBody.text === KB_ANSWER, `应存回答正文，实际「${kbBody.text}」`);
   check("kb问答_dir为空_source为answer", kbBody.dir === "" && kbBody.source === "answer" && kbBody.kind === "insight",
-    `知识库问答没有单一 dir，应传空串；实际 dir=「${kbBody.dir}」source=${kbBody.source} kind=${kbBody.kind}`);
+    `跨集问答没有单一 dir，应传空串；实际 dir=「${kbBody.dir}」source=${kbBody.source} kind=${kbBody.kind}`);
   const beforeKbDup = memPosts.length;
   click(kbBtn);
   await sleep(250);
-  check("d_kb结论_不重复POST", memPosts.length === beforeKbDup, "知识库的「记住这个结论」重复点也不该再发 POST");
+  check("d_kb结论_不重复POST", memPosts.length === beforeKbDup, "问你的库的「记住这个结论」重复点也不该再发 POST");
 
-  // 没有记忆参与时不留空标题
+  // 没有记忆参与时不留空标题（新一轮追加在下面，上一轮不受影响）
   store.kbAsk = { answer: "第二个问题的答案。", mode: "lexical", memory_used: [], sources: [] };
-  $("kbq").value = "再问一个书库问题";
-  click($("kbgobtn"));
-  await until(() => /第二个问题的答案/.test($("kbanswer").textContent), 6000);
+  $("url").value = "再问一个书库问题";
+  $("url").dispatchEvent(new window.Event("input", { bubbles: true }));
   await sleep(150);
-  out.kb问答_空记忆_无块 = !$("kbanswer").querySelector(".amem");
+  click($("go"));
+  await until(() => /第二个问题的答案/.test($("askpanel").textContent), 6000);
+  await sleep(200);
+  const kbTurns = [...$("askpanel").querySelectorAll(".askturn")];
+  out.kb问答_轮数 = kbTurns.length;
+  check("kb问答_连续提问追加", kbTurns.length === 2 && /先定场景/.test(kbTurns[0].textContent),
+    `第二轮应追加在下面、上一轮不消失，实际 ${kbTurns.length} 轮`);
+  out.kb问答_空记忆_无块 = !kbTurns[kbTurns.length - 1].querySelector(".amem");
   check("kb问答_空记忆_无块", out.kb问答_空记忆_无块, "memory_used 为空时不该显示「AI 记得的你」");
 
   // ---------- 设置页·记忆：每条显示用量，从没用过的那条要标出来
@@ -416,5 +401,5 @@ const KB_ANSWER = "书里提到的做法有两种：先定场景，再补背景�
   out.删除_真的发了请求 = store.memWrites.some((x) => x.method === "DELETE");
 
   out.全程_没有真实写入记忆 = memPosts.every((p) => p.url === "/api/memory");
-  report("记忆入口（阅读页 / 回答 / 知识库 / 设置页用量）通过", out, fails);
+  report("记忆入口（阅读页 / 回答 / 问你的库 / 设置页用量）通过", out, fails);
 })();

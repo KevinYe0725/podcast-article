@@ -34,10 +34,6 @@
         <svg class="ficon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h9"></path><circle cx="19" cy="18" r="2.2"></circle></svg>
         <span class="fname">批量队列</span><span class="fcount" id="navqcount"></span>
       </button>
-      <button class="folder" id="navkb" onclick="showView('kb')">
-        <svg class="ficon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4.5h9a3 3 0 0 1 3 3V20a2.5 2.5 0 0 0-2.5-2.5H5z"></path><path d="M20 4.5v15"></path></svg>
-        <span class="fname">知识库</span><span class="fcount" id="navkbcount"></span>
-      </button>
       <button class="folder" id="navfeeds" onclick="showView('feeds')">
         <svg class="ficon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 19a14 14 0 0 1 14-14"></path><path d="M5 12a7 7 0 0 1 7-7"></path><circle cx="6" cy="18" r="1.6"></circle></svg>
         <span class="fname">订阅</span><span class="fcount" id="navfcount"></span>
@@ -75,12 +71,16 @@
 
 <div id="main">
 
+  <!-- 一个输入框，两种意图：粘链接 = 生成文章；打字提问 = 问你的库（AI 自己去检索）。
+       意图提示单独一行（#urlhint），随输入内容实时切换 —— 用户不需要知道背后有
+       「切片 / 索引 / 实体」这些东西，所以界面上一个词都不提。 -->
   <div class="composer col">
     <div class="row">
-      <textarea id="url" rows="1" placeholder="粘贴播客或视频链接…（一次可粘多条；连标题说明一起粘也没关系）"
+      <textarea id="url" rows="1" placeholder="粘贴播客或视频链接…一次可粘多条；也可以直接打字提问（问你的库）"
                 spellcheck="false" autocomplete="off"></textarea>
-      <button id="go" onclick="startRun()">生成文章</button>
+      <button id="go" onclick="goSubmit()">生成文章</button>
     </div>
+    <div id="urlhint" class="hint" style="display:none"></div>
     <div class="opts">
       <label class="chip">篇幅
         <select id="mode">
@@ -104,6 +104,19 @@
     </div>
   </div>
   <div class="hint col" id="hint">⌘/Ctrl + Enter 直接开始 · 生成完会直接进阅读页，Esc 返回 · 产物会缓存，重新生成文章不必重新转写</div>
+
+  <!-- 问你的库（唯一的问答界面）：像对话一样一轮轮往下接。
+       一轮 = 问题 → 状态 → 出处（折叠，时间戳可回听）→ 答案 →「AI 记得的你」（折叠）。 -->
+  <div id="askpanel" class="col" style="display:none">
+    <div class="askhead">
+      <span class="asktitle">💬 问你的库</span>
+      <span style="flex:1"></span>
+      <button class="iconbtn small" onclick="closeAskPanel()" title="收起" aria-label="收起">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"></path></svg>
+      </button>
+    </div>
+    <div id="askthread"></div>
+  </div>
 
   <div id="runview" class="col">
     <div id="runsum" class="runsum" onclick="toggleRunview()"></div>
@@ -150,44 +163,6 @@
     </div>
     <div id="queuelist"></div>
     <div id="empty-queue" class="viewempty">队列是空的。把攒下来的链接丢进来吧 —— 首页支持一次粘贴多条。</div>
-  </div>
-
-  <div id="kbview" style="display:none">
-    <div class="viewhead">
-      <div>
-        <h2>知识库</h2>
-        <p class="vhint" id="kbstat">正在读取状态…</p>
-      </div>
-      <div class="vacts">
-        <button class="btn mini" onclick="kbReindex(false)">增量索引</button>
-        <button class="btn mini" onclick="kbReindex(true)">重建索引</button>
-      </div>
-    </div>
-
-    <div class="kbask">
-      <textarea id="kbq" rows="2" placeholder="问整个书库：这些播客里关于 AI 安全都说了什么？（⌘/Ctrl + Enter 发送）" spellcheck="false"></textarea>
-      <div class="row">
-        <button class="btn primary" id="kbgobtn" onclick="kbAsk()">提问</button>
-        <label class="achip"><input type="checkbox" id="kbonlysearch"> 只检索，不问模型</label>
-        <span class="fstate" id="kbaskstate"></span>
-      </div>
-      <div id="kbanswer" class="kbanswer" style="display:none"></div>
-    </div>
-
-    <div class="kbsplit">
-      <div class="kbcol">
-        <div class="searchbox kbsb">
-          <input id="kbs" type="search" placeholder="跨集检索：谁说过什么…" autocomplete="off">
-          <button class="btn mini" onclick="kbSearch()">检索</button>
-        </div>
-        <div id="kbhits"></div>
-      </div>
-      <div class="kbcol">
-        <div class="kbtabs" id="kbtabs"></div>
-        <div id="kbents"></div>
-        <div id="kbentdetail"></div>
-      </div>
-    </div>
   </div>
 
   <div id="feedsview" class="col" style="display:none">
@@ -584,12 +559,15 @@
       </div>
       <div id="memlist"></div>
     </div>
-    <div class="field">
-      <div class="fhead"><label class="flabel">知识库索引</label></div>
+    <!-- AI 的底座收在这里：日常不用管，但索引坏了必须有地方能修 -->
+    <details class="kbadmin" id="kbadmin" ontoggle="loadKbAdmin()">
+      <summary>知识库（AI 用的底座，日常不用管）</summary>
       <p class="fhint" id="kb_setstate">—</p>
-      <div class="row"><button class="btn mini" onclick="kbReindex(false)">增量索引</button>
-      <button class="btn mini" onclick="kbReindex(true)">重建索引（会重算所有切片）</button></div>
-    </div>
+      <div class="row">
+        <button class="btn mini" onclick="kbReindex(false)">增量索引</button>
+        <button class="btn mini" onclick="kbReindex(true)">重建索引（会重算所有切片）</button>
+      </div>
+    </details>
   </section>
 
   <section class="pane" id="pane-mcp" style="display:none">    <div class="field" style="border-top:none">

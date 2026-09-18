@@ -811,28 +811,11 @@
   .speedrow input[type=range] { flex: 1; max-width: 260px; accent-color: var(--green); }
   .speedrow .fstate { min-width: 52px; }
 
-  /* ---- 知识库视图 ---- */
-  .kbask { padding: 0 0 8px; }
-  .kbask textarea {
-    width: 100%; border: 1px solid var(--border2); border-radius: 14px; padding: 12px 14px;
-    font-family: var(--font); font-size: 14px; line-height: 1.6; resize: vertical; min-height: 60px;
-    background: #fff; color: var(--text); outline: none;
-  }
-  .kbask .row { display: flex; align-items: center; gap: 10px; margin-top: 9px; }
-  .kbanswer {
-    margin-top: 14px; padding: 16px 18px; border: 1px solid var(--border); border-radius: 14px; background: #fcfcfd;
-  }
+  /* ---- 知识库相关：界面上没有知识库页面了，这里只剩下「问你的库」在用的那几条 ---- */
   .kbansbody { font-size: 14.5px; line-height: 1.85; }
   .kbansbody p { margin: 8px 0; }
   .kbsrc { margin-top: 12px; }
   .kbsrc > summary { font-size: 12.5px; color: var(--dim); cursor: pointer; }
-  .kbsplit { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); gap: 26px; align-items: start; }
-  @media (max-width: 1080px) { .kbsplit { grid-template-columns: 1fr; } }
-  .kbsb { display: flex; align-items: center; gap: 8px; }
-  .kbsb input {
-    flex: 1; min-width: 0; border: 1px solid var(--border2); border-radius: 10px; padding: 9px 12px;
-    font-family: var(--font); font-size: 13.5px; outline: none;
-  }
   .kbhit {
     border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; margin-top: 10px; background: #fff;
   }
@@ -843,24 +826,6 @@
   .kbtext { font-size: 13.5px; line-height: 1.75; color: #3d3d44; margin-top: 6px; }
   .kbacts { margin-top: 7px; }
   .dimtext { font-size: 12px; color: var(--dim); }
-  .kbtabs { display: inline-flex; border: 1px solid var(--border2); border-radius: 999px; overflow: hidden; background: #fff; }
-  .kbtabs button {
-    border: 0; background: transparent; font-family: var(--font); font-size: 12.5px; color: var(--dim);
-    padding: 6px 13px; cursor: pointer;
-  }
-  .kbtabs button.on { background: var(--bg2); color: var(--text); font-weight: 500; }
-  .entlist { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 12px; }
-  .ent {
-    display: inline-flex; align-items: center; gap: 7px; border: 1px solid var(--border); border-radius: 999px;
-    background: #fff; padding: 5px 12px; font-family: var(--font); font-size: 12.5px; color: var(--text); cursor: pointer;
-  }
-  .ent:hover { border-color: var(--green); color: var(--green); }
-  .entcount { font-size: 11px; color: var(--dim); font-variant-numeric: tabular-nums; }
-  .entcard { border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; margin-top: 14px; background: #fff; }
-  .entcardhead { display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px; }
-  .entgroup { border-top: 1px solid var(--border); padding-top: 10px; margin-top: 10px; }
-  .entgroup:first-of-type { border-top: 0; }
-  .entpass { font-size: 13px; line-height: 1.7; color: #3d3d44; margin: 6px 0; }
   /* 记忆 */
   .memadd { display: flex; align-items: center; gap: 8px; margin: 12px 0; flex-wrap: wrap; }
   .memadd input[type=text] {
@@ -1190,22 +1155,54 @@ body.assistopen .fab { display: none; }
 .asrc .anoweb { margin-top: 8px; }
 
 /* 「AI 记得的你」：这次回答参考了他自己存下的哪几条。
-   刻意**不进**折叠的依据区 —— 记忆跑偏时用户要能一眼看见，才好去记忆页删掉。 */
+   默认收起（<details>）—— 它解释的是「回答为什么长这样」，要看时再看，
+   平时不必把内部机制摆在台面上。 */
 .amem {
   margin-top: 10px; padding: 8px 11px; border: 1px solid #d9efe7; border-radius: 10px;
   background: #f7fdfa; font-size: 12px; line-height: 1.7; color: #3f5a51;
 }
-.amemhead { font-size: 11.5px; color: var(--green); margin-bottom: 3px; }
-.amemlist { margin: 0; padding: 0; list-style: none; }
+.amemhead { font-size: 11.5px; color: var(--green); cursor: pointer; }
+.amemhead::-webkit-details-marker { display: none; }
+.amemhead::before { content: "▸"; font-size: 9px; margin-right: 5px; display: inline-block; transition: transform .15s; }
+.amem[open] > .amemhead::before { transform: rotate(90deg); }
+.amemlist { margin: 6px 0 0; padding: 0; list-style: none; }
 .amemlist li { padding-left: 13px; position: relative; }
 .amemlist li::before { content: "·"; position: absolute; left: 3px; color: var(--green); font-weight: 700; }
 /* 回答下面那行「☆ 记住这个结论」 */
 .aacts { margin-top: 9px; }
 .ttslink.done { color: var(--dim); cursor: default; text-decoration: none; }
-/* 知识库：搜索结果上方的「你记过的」与回答下方的「记住这个结论」 */
-.kbmem { margin-top: 10px; }
-.kbmemhead { font-size: 12px; color: var(--green); }
 .kbaacts { margin-top: 10px; }
+
+/* ---- 一个输入框，两种意图：意图提示与「问你的库」对话流 ----
+   输入框下方的 #urlhint 随内容实时切换（🔗 将生成文章 / 💬 问你的库）；#askpanel
+   是一轮轮接下去的对话流：问题 → 状态 → 出处（折叠）→ 答案 →「AI 记得的你」（折叠）。 */
+/* 意图提示：沿用 .hint 的小字，但用 --green —— 它是要人看见的「这次会做什么」，
+   跟下面那行纯说明性的灰字不是一回事。 */
+#urlhint { margin: 2px 0 0; padding: 0 12px; color: var(--green); }
+#askpanel {
+  margin-top: 20px; border: 1px solid var(--border); border-radius: 16px;
+  background: #fff; padding: 4px 18px 14px;
+}
+#askpanel .askhead {
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 0; border-bottom: 1px solid var(--border);
+}
+#askpanel .asktitle { font-size: 13.5px; font-weight: 600; }
+.askturn { padding: 16px 0; border-top: 1px solid var(--border); }
+.askturn:first-child { border-top: 0; }
+.askq { font-size: 14.5px; font-weight: 600; line-height: 1.6; }
+.askstate { margin-top: 5px; }
+.asksrc { margin-top: 8px; }
+.askans { margin-top: 12px; }
+.askerr { font-size: 13px; color: var(--red); line-height: 1.7; }
+
+/* 设置 → 记忆 里的「知识库（AI 用的底座，日常不用管）」：默认收起的折叠区，
+   沿用设置页 .field 的观感，不抢记忆条目的位置。 */
+.kbadmin { margin-top: 18px; border-top: 1px solid var(--border); padding-top: 16px; }
+.kbadmin > summary { font-size: 13px; font-weight: 500; color: var(--dim); cursor: pointer; }
+.kbadmin > summary:hover { color: var(--text); }
+.kbadmin .fhint { margin-top: 8px; }
+.kbadmin .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
 
 /* 抽屉里的历史按钮换成「＋ 新对话」，宽度让它像个小按钮 */
 .assist .ahead .iconbtn.small { width: auto; padding: 0 9px; font-size: 12px; gap: 3px; }

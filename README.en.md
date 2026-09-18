@@ -42,8 +42,8 @@ podcast-article hands that job to the machine: local speech-to-text plus LLM clo
 | 🔔 **Feed subscriptions** | Subscribe to RSS / Apple Podcasts; new episodes are discovered on a schedule and queued automatically |
 | 🤖 **Reading assistant** | Select any passage → a drawer explains it using the episode transcript (timestamped, click to replay) plus web results |
 | 🔊 **Read aloud (TTS)** | Have the article spoken: macOS built-in `say` (free, offline, no key) or any OpenAI-compatible `/v1/audio/speech` endpoint. The text is cleaned and chunked, chunks retry individually, and the cache key covers content + voice — so nothing is re-billed unless it actually changed |
-| 🧠 **Knowledge base** | Every article and transcript becomes provenance-carrying passages (episode · heading · timestamp) searchable with Chinese tokenization plus semantic vectors; new articles are **indexed automatically** |
-| 💭 **Memory** | Make the AI remember you: **☆ Remember this** on any selected passage, or save a conclusion from an answer; memories are included on later questions and **shown back to you** (visible means correctable). Each entry tracks how often it was used, and never-used ones are flagged for cleanup |
+| 🧠 **Knowledge base (the AI's plumbing)** | Every article and transcript becomes provenance-carrying passages (episode · heading · timestamp) searchable with Chinese tokenization plus semantic vectors; new articles are **indexed automatically**. There is deliberately **no** knowledge-base page in the UI — ask in the input box instead |
+| 💭 **Memory** | Make the AI remember you: **☆ Remember this** on any selected passage, or save a conclusion from an answer; memories are included on later questions and collapse into an "AI remembers about you" disclosure (visible means correctable). Each entry tracks how often it was used, and never-used ones are flagged for cleanup |
 | 💰 **Visible cost** | Tokens, exact cost (official peak/off-peak price table) and cache hit rate per article |
 | ☁️ **One-click Notion** | Markdown → native blocks (tables/quotes/inline styles), metadata auto-filled into database properties |
 | 🔌 **MCP support** | Runs as an MCP server for Claude Desktop & friends — conversational access to everything |
@@ -216,22 +216,31 @@ uv run podcast-article "https://www.xiaoyuzhoufm.com/episode/xxxx"
 
 ### Making the AI remember you (knowledge base + memory)
 
-**Collecting.** Every generated article is indexed automatically — no button to press. The
-sidebar **Knowledge base** view gives you three things:
+**The knowledge base serves the AI, not your search habit.** There is deliberately **no
+"Knowledge base" page**: no search box, no entity browser, no index controls in your way — that is
+the AI's plumbing. You get **one input box**:
 
-- **One search box, two sources**: material (passages from every article and transcript, with
-  provenance and clickable timestamps) *and* the memories **you** saved
-- **Ask across episodes**: answers draw only on retrieved passages, each claim tagged `[n]`;
-  any memories used for that answer are shown alongside it
-- **Entities**: people / organizations / media / topics, each linking to the episodes and minute
-  where it appears
+| What you put in it | What happens |
+|---|---|
+| A link | Generates the article (as before) and **automatically** indexes it — no button to press |
+| A question | **Ask your library**: the AI retrieves across all 12 episodes, brings along your saved memories, and answers with provenance for every claim — timestamps clickable back into the audio |
+
+While you type, the line under the box tells you which one this will be ("🔗 will generate an
+article" / "💬 will ask your library") and the button label follows, so you know before you press.
+
+Asking is **two-stage**: the sources (which episodes, which passage, which minute) appear quickly,
+then the answer — no staring at a blank panel for thirty seconds.
 
 **Remembering.** Three ways in, and all of them are **explicit** (nothing is inferred from
 chit-chat):
 
 1. Select a passage in the reader → **☆ Remember this**
-2. Under an assistant or knowledge-base answer → **☆ Remember this conclusion**
+2. Under an answer → **☆ Remember this conclusion**
 3. Settings → **Memory**: write by hand, pin (always included), edit, delete
+
+Memories used for an answer are not splashed across the screen (that is the same mistake of putting
+internals in your face); they collapse into an "AI remembers about you (N)" disclosure you can open
+when you want to check — **visible means correctable**.
 
 **Memory rots, so:**
 
@@ -242,6 +251,10 @@ chit-chat):
 - Memory is **independent of the index**: rebuilding the index or upgrading the schema never
   touches it (the index is derived data and always rebuildable; memory is not)
 - Deleting really deletes — it disappears from the list and from search immediately
+
+If the index ever needs repair: **Settings → Memory → "Knowledge base (the AI's plumbing, you
+normally never touch it)"** shows the scale and semantic-search status and has the rebuild button.
+It is buried on purpose — a maintenance door, not a daily one.
 
 Same thing from the terminal:
 
