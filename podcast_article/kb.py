@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import sqlite3
@@ -530,6 +531,90 @@ def _vec_invalidate() -> None:
     —— 表现为「刚生成的文章一进库，跨集搜索就 500」。实测踩过，见 test_memory_flow。
     """
     _VEC_CACHE.update({"model": "", "ids": None, "mat": None, "db": ""})
+    # 同一个写入点：切片一变，向量的 df 缓存也必须一起失效（见 _df_invalidate）。
+    # 放在这里而不是让每个调用方自己记得调两次 —— 忘了任何一次都会吃到过期的 df，
+    # 而「过期 df」不会报错，只会让排序悄悄错掉，是那种最难发现的坏。
+    _df_invalidate()
+
+
+# ---------------------------------------------------------------- 词频统计（IDF 用）
+
+# 为什么需要它：覆盖率如果**按词计数**，两个词在公式里权重一模一样，而「命中哪几个词」
+# 才是真正的差别。真库实测（问「孙正义是怎么押注 AI 的？」，N=5612 条切片）：
+#   `ai`     df=382  idf=2.75
+#   `孙正义` df= 79  idf=4.27
+#   `押注`   df=  8  idf=6.44
+# 等权口径下「只命中一个词」一律拿 0.33，于是只谈「押注」却与孙正义毫无关系的段落
+# （Bloomberg 那集讲 Dario Amodei）拿到与实质证据同档的覆盖率，混进 top-10 挤掉答案。
+# 加权之后，命中稀有词的切片才拿得到高覆盖率。
+#
+# 注意：`押注` 的 df 比 `孙正义` 还小（8 vs 79）—— **加权并不保证「专名一定赢泛词」**，
+# 它保证的是「命中更稀有的词拿更高分」。真库上这层加权对 Q1 的收益有限（top-10 里
+# 含「孙正义」的条数主要由每集上限那一层决定），真正被它救回来的是 Q2（见测试）。
+#
+# 缓存策略（参照 _VEC_CACHE）：进程内一张 dict，键是查询词，值是「含这个词的切片数」，
+# 切片总数一并记在 _DF_CACHE["total"]（_rerank 要拿它算 idf 的分母）。
+# 全库统计**只在第一次用到时做一次**，之后每次搜索只是查表。
+# 失效有两条独立的路，缺一不可：
+#   1. 进程内写入（index_dir / embed_pending / reindex）→ 走 _vec_invalidate() 顺手清
+#   2. 别的进程改了库（CLI 索引完、Web 正在跑）→ 每次搜索比一下 (切片数, last_index)，
+#      对不上就重算。只看进程内标志会吃到过期数据，只比库指纹则每次搜索都要 COUNT。
+_DF_CACHE: dict = {"db": "", "total": -1, "stamp": "", "df": None}
+
+
+def _df_invalidate() -> None:
+    """让进程内的 df（文档频率）缓存失效。"""
+    _DF_CACHE.update({"db": "", "total": -1, "stamp": "", "df": None})
+
+
+def _df_table(conn: sqlite3.Connection) -> dict | None:
+    """全库文档频率表 {词: 含该词的切片数}；拿不到（空库/异常）返回 None。
+
+    用 FTS5 自己的 `fts5vocab` 虚拟表来算 —— 它直接读索引，不用把 5612 条切片的分词串
+    全读进 Python 再 set 一遍（真库实测：vocab 全表 11890 个词、8ms；全表取文本 + jieba
+    重切一遍是 712ms，差两个数量级）。
+    虚拟表建在 temp 里并立刻 drop：它是**只读视图**，不占库文件，也不会留下过期状态。
+    """
+    try:
+        total = int(conn.execute("SELECT COUNT(*) FROM passages").fetchone()[0] or 0)
+    except sqlite3.Error:
+        return None
+    if not total:
+        return None
+    stamp = ""
+    try:
+        row = conn.execute("SELECT value FROM meta WHERE key='last_index'").fetchone()
+        stamp = str(row[0]) if row else ""
+    except sqlite3.Error:
+        stamp = ""
+    if (_DF_CACHE["df"] is not None and _DF_CACHE["db"] == str(db_path())
+            and _DF_CACHE["total"] == total and _DF_CACHE["stamp"] == stamp):
+        return _DF_CACHE["df"]
+    name = "_pa_vocab"
+    try:
+        conn.execute(f"DROP TABLE IF EXISTS temp.{name}")
+        conn.execute(f"CREATE VIRTUAL TABLE temp.{name} "
+                     f"USING fts5vocab('main', 'passages_fts', 'row')")
+        df = {r[0]: int(r[1] or 0) for r in conn.execute(f"SELECT term, doc FROM temp.{name}")}
+    except Exception:
+        # 拿不到 df 不是错误，只是少一路信号：_coverage 会退回等权覆盖率。
+        return None
+    finally:
+        try:
+            conn.execute(f"DROP TABLE IF EXISTS temp.{name}")
+        except sqlite3.Error:
+            pass
+    if not df:
+        return None
+    _DF_CACHE.update({"db": str(db_path()), "total": total, "stamp": stamp, "df": df})
+    return df
+
+
+def _idf(tok: str, df: dict | None, total: int) -> float:
+    """`idf(t) = log(1 + N / (1 + df(t)))`：越稀有越大，永不小于 log(1+N/(1+N))=0.69…"""
+    if not df or total <= 0:
+        return 1.0
+    return math.log(1.0 + total / (1.0 + int(df.get(tok, 0))))
 
 
 def embedder(model_name: str | None = None, *, allow_download: bool = True):
@@ -864,13 +949,36 @@ def _token_set(text: str) -> set[str]:
 
 
 def _coverage(qset: set[str], pset: set[str]) -> float:
-    """查询词覆盖率：查询里的词有多少出现在这条切片里。**这是主要信号**。
+    """查询词覆盖率（等权）：查询里的词有多少出现在这条切片里。
 
-    20 字的碎片只能覆盖少数查询词，200 字的段落能覆盖更多 —— 长度偏置被这一项抵掉。
+    这是**退回用的兜底口径**：拿不到 df 时（空库、FTS 异常）搜索不能因为少一路信号就
+    排序退化或报错。正常路径用 `_coverage_idf`。
     """
     if not qset:
         return 0.0
     return len(qset & pset) / len(qset)
+
+
+def _coverage_idf(qset: set[str], pset: set[str], df: dict | None,
+                  total: int) -> float | None:
+    """IDF 加权覆盖率：`Σ_{t∈Q∩P} idf(t) / Σ_{t∈Q} idf(t)`。
+
+    为什么必须按信息量加权（而不是数词）：查询「孙正义是怎么押注 AI 的？」里，
+    `ai` 出现在 382 条切片、`孙正义` 79 条、`押注` 8 条。等权口径下「只命中一个词」
+    一律拿 0.33，于是只谈「押注」而与孙正义无关的段落（Bloomberg 那集讲 Dario Amodei）
+    拿到与实质证据同档的覆盖率，混进 top-10 挤掉真正的答案。加权之后，命中稀有词
+    （`押注` idf=6.44）与只命中泛词（`ai` idf=2.75）才分得开。
+    取不到 df 或分母为 0 时返回 None —— 调用方退回 `_coverage`，绝不让搜索炸掉。
+    """
+    if not qset or not df or total <= 0:
+        return None
+    hit = qset & pset
+    if not hit:
+        return 0.0
+    denom = sum(_idf(t, df, total) for t in qset)
+    if denom <= 0:
+        return None
+    return sum(_idf(t, df, total) for t in hit) / denom
 
 
 def _length_prior(n: int) -> float:
@@ -902,24 +1010,31 @@ def _jaccard(a: set[str], b: set[str]) -> float:
     return len(a & b) / len(a | b)
 
 
-def _rerank(hits, query: str, k: int, *, per_dir: int = PER_DIR_MAX) -> list[dict]:
-    """RRF 之后的重排：覆盖率 × 长度先验 × 来源先验，再去重、限每集条数。
+def _rerank(hits, query: str, k: int, *, per_dir: int = PER_DIR_MAX,
+            conn: sqlite3.Connection | None = None) -> list[dict]:
+    """RRF 之后的重排：IDF 加权覆盖率 × 长度先验 × 来源先验，再去重、限每集条数。
 
     `rrf` 字段**原样保留**（界面上 `score` 用的就是它），新分数只写在 `rank_score` 里
-    用来排序与调试。
+    用来排序与调试。`coverage` 保留等权口径（界面/测试按它读），加权口径另写
+    `coverage_idf`。
     """
     qset = _token_set(query)
+    df = _df_table(conn) if conn is not None else None
+    total = int(_DF_CACHE["total"]) if (df and _DF_CACHE["df"] is df) else 0
     scored: list[dict] = []
     for h in hits:
         text = re.sub(r"\s+", " ", h.get("text") or "").strip()
         pset = _token_set(f"{h.get('heading') or ''} {text}")
         cov = _coverage(qset, pset)
+        cov_idf = _coverage_idf(qset, pset, df, total)
         h = dict(h)
         h["coverage"] = cov
+        h["coverage_idf"] = cov if cov_idf is None else cov_idf   # 拿不到 df → 退回等权
         h["len_prior"] = _length_prior(len(text))
         h["src_prior"] = _source_prior(h)
+        # 排序用加权覆盖率；`coverage` 与 `coverage_idf` 一致时（退回路径）与旧公式完全相同
         h["rank_score"] = (float(h.get("rrf") or h.get("score") or 0.0)
-                           * (0.5 + 0.5 * cov) * h["len_prior"] * h["src_prior"])
+                           * (0.5 + 0.5 * h["coverage_idf"]) * h["len_prior"] * h["src_prior"])
         h["_tok"] = pset
         scored.append(h)
     scored.sort(key=lambda h: -h["rank_score"])
@@ -937,24 +1052,66 @@ def _rerank(hits, query: str, k: int, *, per_dir: int = PER_DIR_MAX) -> list[dic
         pool.append(h["_tok"])
         kept.append(h)
 
-    # 每集上限：防止一集（可能只是碰巧词多）霸占全部名额。
-    # **但上限不能导致结果变少** —— 用户的库可能只有 1 集相关，那时必须补满。
-    out: list[dict] = []
-    over: list[dict] = []
-    per: dict[str, int] = {}
-    for h in kept:
-        d = h.get("dir") or ""
-        if per.get(d, 0) >= per_dir:
-            over.append(h)
-            continue
-        per[d] = per.get(d, 0) + 1
-        out.append(h)
-    if len(out) < k:
-        out.extend(over[: k - len(out)])
-    out = out[:k]
+    out = _pick_diverse(kept, k, per_dir)
     for h in out:
         h.pop("_tok", None)
     return out
+
+
+# ---------------------------------------------------------------- 每集上限（自适应）
+
+# 上限为什么不能是固定 4：用户问的是**一个人名/一个专名**时（「孙正义是怎么押注 AI 的？」
+# 真库实测：含「孙正义」的 79 条切片全部来自同一集），答案所在的那一集本来就有 10 条
+# 实质证据，固定上限却把它掐在 4 条，剩下的名额被别的集里只是碰巧出现某个泛词的段落填满。
+# 但上限也不能直接取消：多集都有可比证据时，一集吃光全部名额会让答案失去互相印证。
+#
+# 判据（确定性、只看分数）：**谁最强，谁说了算**。
+#   1. 先看第一名属于哪一集 D；若「别的集里最好那条」的分数 ≥ DOMINANCE_RATIO × 第一名的
+#      分数 → 没有谁明显更强，D 的上限照旧 PER_DIR_MAX（来源多样性保留）。
+#   2. 否则 D 就是答案所在的集，允许它一路填到 k 条。
+#   3. 即便 D 占优，也**只放宽到 k**：k 条以外的切片依然进不来；别的集只要还有名额就
+#      按分数补进来（真库实测：Q1 的 k=10 里 D 拿 8 条，另一集留 2 条）。
+DOMINANCE_RATIO = 0.8
+
+
+def _pick_diverse(kept: list[dict], k: int, per_dir: int) -> list[dict]:
+    """按 rank_score 排序取 k 条，每集上限自适应（见 DOMINANCE_RATIO 的注释）。
+
+    `kept` 必须已按 rank_score 降序。上限**永远不允许结果变少** —— 只有 1 集相关时
+    必须补满 k 条（用户的书库可能就这么大）。
+    """
+    if not kept:
+        return []
+    order = sorted(range(len(kept)), key=lambda i: (-kept[i]["rank_score"], i))
+    dirs = [kept[i].get("dir") or "" for i in order]
+    top_dir = dirs[0]
+    other_best = 0.0
+    for i in order[1:]:
+        if dirs[i] != top_dir:
+            other_best = float(kept[i]["rank_score"])
+            break
+    dominant = bool(top_dir) and other_best < DOMINANCE_RATIO * float(kept[order[0]]["rank_score"])
+
+    # 先按分数顺序给每一集「配额内的」条目（占优的那一集配额是 k，其余是 per_dir）；
+    # 超出的留到第二步。为什么要留：上限的存在意义是**别让一集吃光名额**，
+    # 而不是「把这一集的好证据扔掉」—— 所以别的集填不满时，它们必须还能补回来。
+    taken: set[int] = set()
+    over: list[int] = []
+    per: dict[str, int] = {}
+    for i in order:
+        d = dirs[i]
+        cap = k if (dominant and d == top_dir) else per_dir
+        if per.get(d, 0) >= cap:
+            over.append(i)
+            continue
+        per[d] = per.get(d, 0) + 1
+        taken.add(i)
+    if len(taken) < k:
+        taken.update(over[: k - len(taken)])
+    # **必须再按分数顺序收集一遍**：`taken` 是按配额凑出来的，直接 append 会让
+    # 排在后面的集插到前面集的强证据之前（实测：8 条强证据的那一集只拿到 6 条，
+    # 另外两集的弱条目反而各占 2 条）。输出给模型的顺序必须严格是分数序。
+    return [kept[i] for i in order if i in taken][:k]
 
 
 def search(query: str, *, k: int = 8, mode: str = "auto", dirs: list[str] | None = None,
@@ -987,7 +1144,7 @@ def search(query: str, *, k: int = 8, mode: str = "auto", dirs: list[str] | None
             if e.get("match") == "lexical":
                 e["match"] = "both"
         # 融合后的名次只看"排在第几"，短碎片因此天然占优 —— 重排这一层就是修它。
-        hits = _rerank(fused.values(), query, k)
+        hits = _rerank(fused.values(), query, k, conn=conn)
         return {"mode": "hybrid" if (lex and sem) else ("semantic" if sem else "lexical"),
                 "hits": hits, "count": len(hits)}
     finally:

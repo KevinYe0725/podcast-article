@@ -374,6 +374,178 @@ def test_rerank_weights_do_not_exclude_transcript_only_episodes(kb_env):
     assert hits[0]["src_prior"] == pytest.approx(kb._SRC_TRANSCRIPT)
 
 
+# ------------------------------------------------------------------ IDF 加权覆盖率
+
+# 为什么覆盖率要按词的信息量加权（而不是数命中几个词）：等权口径下「只命中一个泛词」
+# 与「命中一个稀有专名」拿到的覆盖率一模一样，于是只谈泛词的无关段落能和实质证据同档，
+# 混进 top-10 挤掉答案。真库实测（问「孙正义是怎么押注 AI 的？」）：`ai` 出现在 382 条
+# 切片、`孙正义` 79 条、`押注` 8 条 —— 等权口径下讲 Dario Amodei 的段落拿到 0.33，
+# 与含答案的正文只差一档，最后它排到了第 5。
+#
+# 下面用合成库把口径钉死：稀有词只在这一集的这一段里出现，查询 = 稀有词 + 泛词。
+
+def test_idf_coverage_prefers_the_passage_with_the_rare_word(kb_env):
+    """命中稀有词的段落必须排在只命中泛词的段落前面。"""
+    rare = "孙正义今天把仓位压在 OpenAI 和 ARM 两张牌上，这才是他真正的动作。"
+    common = "有人押注的方向是另一条路径，跟上面那件事没有关系。"
+    filler = "这一集讲的是别的事情，用来把库撑大。" * 4
+    _write_episode(kb_env, "20240120-稀有", f"# 标题\n\n{rare}\n\n{filler}\n")
+    for j in range(4):
+        _write_episode(kb_env, f"2024012{j}-泛词", f"# 标题\n\n{common}\n\n{filler}\n")
+    kb.index_all(kb_env, embed=False)
+
+    conn = kb.connect()
+    try:
+        df = kb._df_table(conn)
+    finally:
+        conn.close()
+    assert df, "df 表必须能算出来（拿不到时下面测的是退回路径，不是 IDF）"
+    N = kb._DF_CACHE["total"]
+    assert df.get("孙正义") == 1, f"稀有词只该出现在一处：df={df.get('孙正义')}"
+    assert df.get("押注") >= 4, f"泛词该到处都有：df={df.get('押注')}"
+    assert kb._idf("孙正义", df, N) > kb._idf("押注", df, N), "稀有词的 idf 必须更大"
+
+    q = "孙正义 押注"
+    qset = kb._token_set(q)
+    assert kb._coverage(qset, kb._token_set(common)) == pytest.approx(
+        kb._coverage(qset, kb._token_set(rare))), "前提：等权口径下两者完全一样"
+    rare_idf = kb._coverage_idf(qset, kb._token_set(rare), df, N)
+    common_idf = kb._coverage_idf(qset, kb._token_set(common), df, N)
+    assert rare_idf > common_idf, f"加权口径下必须分得开：稀有 {rare_idf} vs 泛词 {common_idf}"
+
+    hits = kb.search(q, k=5)["hits"]
+    ids = _passage_ids()
+    order = _hit_ids(kb.search(q, k=5))
+    assert ids[rare] in order and ids[common] in order, "两条都该被检索到"
+    assert order.index(ids[rare]) < order.index(ids[common]), \
+        "命中稀有词的那条必须排在只命中泛词的前面"
+    top = hits[0]
+    assert top["id"] == ids[rare] and top["coverage_idf"] > top["coverage"] - 1e-9
+    # coverage 保留等权口径（界面与既有断言按它读），加权口径另写在 coverage_idf 里
+    assert top["coverage"] == pytest.approx(
+        kb._coverage(qset, kb._token_set(f"{top.get('heading') or ''} {top['text']}")))
+
+
+def test_idf_coverage_falls_back_when_df_is_unavailable(kb_env, monkeypatch):
+    """拿不到 df 时必须退回等权覆盖率，绝不让搜索炸掉或排不出序。"""
+    _write_episode(kb_env, "20240121-退回", "# 标题\n\n" + "这是一段讲推理成本的正文内容。" * 8)
+    kb.index_all(kb_env, embed=False)
+
+    monkeypatch.setattr(kb, "_df_table", lambda conn: None)
+    hits = kb.search("推理成本", k=3)["hits"]
+    assert hits, "df 拿不到也要能搜出结果"
+    assert all(h["coverage_idf"] == pytest.approx(h["coverage"]) for h in hits), \
+        "退回路径上两个口径必须一致（否则排序分与界面读数会对不上）"
+
+
+def test_df_cache_invalidates_when_the_library_grows(kb_env):
+    """索引后新增切片，df 必须重算 —— 吃到过期 df 不会报错，只会让排序悄悄错掉。"""
+    rare = "孙正义今天把仓位压在 OpenAI 和 ARM 两张牌上，这才是他真正的动作。"
+    common = "有人押注的方向是另一条路径，跟上面那件事没有关系。"
+    filler = "这一集讲的是别的事情，用来把库撑大。" * 4
+    _write_episode(kb_env, "20240122-旧", f"# 标题\n\n{rare}\n\n{filler}\n")
+    for j in range(3):
+        _write_episode(kb_env, f"2024013{j}-泛词", f"# 标题\n\n{common}\n\n{filler}\n")
+    kb.index_all(kb_env, embed=False)
+
+    conn = kb.connect()
+    try:
+        before = kb._df_table(conn).get("孙正义")
+        n_before = kb._DF_CACHE["total"]
+    finally:
+        conn.close()
+    hits = kb.search("孙正义 押注", k=5)["hits"]
+    score_before = next(h["rank_score"] for h in hits if h["text"] == rare)
+
+    # 新的一集也含这个稀有词 → df 变大 → 它的 idf 变小 → 覆盖率与排序分必须跟着变
+    _write_episode(kb_env, "20240123-新", f"# 标题\n\n{rare}\n\n{filler}\n")
+    kb.index_all(kb_env, embed=False)
+
+    conn = kb.connect()
+    try:
+        after = kb._df_table(conn).get("孙正义")
+        n_after = kb._DF_CACHE["total"]
+    finally:
+        conn.close()
+    assert before == 1 and after == 2, f"df 必须反映新数据：{before} → {after}"
+    assert n_after > n_before, f"切片总数也要跟着变：{n_before} → {n_after}"
+
+    hits = kb.search("孙正义 押注", k=5)["hits"]
+    score_after = next(h["rank_score"] for h in hits if h["text"] == rare)
+    assert score_after < score_before, \
+        f"稀有词不再稀有后排序分必须下降（吃到过期 df 就会纹丝不动）：{score_before} → {score_after}"
+
+
+# ------------------------------------------------------------------ 每集上限（自适应）
+
+# 上限为什么不能固定 4：问一个人名/专名时，答案所在的那一集本来就有 10 条实质证据。
+# 真库实测：含「孙正义」的 79 条切片**全部来自同一集**，固定上限把它掐在 4 条，
+# 剩下的名额被别的集里只是碰巧出现某个泛词的段落填满。
+# 判据见 kb.DOMINANCE_RATIO：谁明显最强谁说了算，但最多也只放宽到 k。
+
+def _fake_kept(n: int, dirname: str, score: float, prefix: str = "") -> list[dict]:
+    return [{"dir": dirname, "rank_score": score, "text": f"{prefix}{dirname}-{i}"}
+            for i in range(n)]
+
+
+def test_adaptive_cap_lets_a_dominant_episode_fill_more_than_the_cap():
+    """某一集明显是这个问题的答案所在时，允许它给出多于 PER_DIR_MAX 条。"""
+    # 甲集 1.0 vs 别的集 0.6：0.6 < DOMINANCE_RATIO(0.8) × 1.0 → 甲集明显更强
+    kept = (_fake_kept(8, "甲集", 1.0) + _fake_kept(2, "乙集", 0.6)
+            + _fake_kept(2, "丙集", 0.6))
+    out = kb._pick_diverse(kept, 10, kb.PER_DIR_MAX)
+    from collections import Counter
+    per = Counter(h["dir"] for h in out)
+    assert len(out) == 10, f"要给满 k 条：{len(out)}"
+    assert per["甲集"] > kb.PER_DIR_MAX, f"占优的那一集必须能超过 {kb.PER_DIR_MAX} 条：{per}"
+    assert per["甲集"] <= 10, f"但最多也只能放宽到 k：{per}"
+    assert per["甲集"] == 8, f"甲集有 8 条强证据就该全给：{per}"
+    # 剩下 2 个名额给别的集里分数最高的条目（乙/丙 同分，按稳定序取）
+    assert per["乙集"] + per["丙集"] == 2, f"别的集必须拿到剩下的名额：{per}"
+    scores = [h["rank_score"] for h in out]
+    assert scores == sorted(scores, reverse=True), f"输出必须严格按分数序：{scores}"
+
+
+def test_adaptive_cap_keeps_diversity_when_episodes_are_comparable():
+    """多集都有可比证据时，来源多样性必须保留（不会全被一集吃光）。"""
+    # 乙/丙 0.9 > 0.8 × 1.0 → 没有谁明显更强，上限照旧
+    kept = (_fake_kept(6, "甲集", 1.0) + _fake_kept(3, "乙集", 0.9)
+            + _fake_kept(3, "丙集", 0.9))
+    out = kb._pick_diverse(kept, 8, kb.PER_DIR_MAX)
+    from collections import Counter
+    per = Counter(h["dir"] for h in out)
+    assert len(out) == 8, len(out)
+    assert per["甲集"] <= kb.PER_DIR_MAX, f"没有谁明显更强时上限照旧：{per}"
+    assert len(per) >= 3, f"三集都该有代表：{per}"
+
+
+def test_adaptive_cap_never_returns_fewer_than_k():
+    """放宽上限也不该让结果变少：只有一集相关时必须补满 k 条。"""
+    kept = _fake_kept(2, "独集", 1.0)
+    out = kb._pick_diverse(kept, 5, kb.PER_DIR_MAX)
+    assert len(out) == 2, f"库里只有 2 条，就给 2 条（不能凭空变多）：{len(out)}"
+    kept = _fake_kept(9, "独集", 1.0)
+    out = kb._pick_diverse(kept, 6, kb.PER_DIR_MAX)
+    assert len(out) == 6, f"只有一集相关时要补满 k：{len(out)}"
+
+
+def test_search_lets_a_dominant_episode_supply_more_than_the_cap(kb_env):
+    """端到端：主题集中的那一集要能拿到 > PER_DIR_MAX 条（真库「孙正义」就是这个形状）。"""
+    _write_episode(kb_env, "20240124-主", f"# 标题\n\n{_MANY_PASSAGES}\n")
+    for j in range(2):
+        # 别的集只有一条与查询无关的长正文：分数远低于主集，不该抢名额
+        _write_episode(kb_env, f"2024014{j}-旁",
+                       "# 标题\n\n" + "这一集讲的是完全另一件事情，与检索词毫无关系。" * 15 + "\n")
+    kb.index_all(kb_env, embed=False)
+
+    hits = kb.search("推理成本", k=8)["hits"]
+    from collections import Counter
+    per = Counter(h["dir"] for h in hits)
+    assert per["20240124-主"] > kb.PER_DIR_MAX, \
+        f"主题集中的那一集必须能超过 {kb.PER_DIR_MAX} 条：{per}"
+    assert per["20240124-主"] <= 8, f"但最多放宽到 k：{per}"
+
+
 def test_length_and_source_priors_are_soft_weights():
     """两个先验的锚点值：长度是软权重（永远 > 0），小标题权重低于正文。"""
     assert kb._length_prior(20) == pytest.approx(0.55)
