@@ -32,11 +32,27 @@ from pathlib import Path
 
 from .config import PROJECT_ROOT
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+
+# 版本升级时可以随手重建的表（派生数据，能从 output/ 重算）。
+# **memory / memory_fts 不在其中**：记忆是用户写下的原话，重算不出来。
+_DERIVED_TABLES = ("passage_entities", "passages_fts", "passages", "entities",
+                   "embeddings", "docs")
 DB_PATH = Path(os.environ.get("PA_KB_FILE") or (PROJECT_ROOT / "kb.sqlite"))
 EMBED_MODEL = os.environ.get("PA_KB_EMBED_MODEL") or "BAAI/bge-small-zh-v1.5"
 PASSAGE_CHARS = 420          # 单条切片的目标长度（检索粒度：太小丢上下文，太大降精度）
-MIN_PASSAGE_CHARS = 30
+MIN_PASSAGE_CHARS = 12
+# 这里的取舍：下限是为了挡「孤立标题、一个词、一句话的残片」这类噪声，但设成 30 会连
+# **一条正常但很短的正文句子**一起删掉 —— 那句话就永远搜不到了（真实踩过：一篇 12 集的库
+# 里有整节被丢）。12 字足以滤掉碎片，同时保住「小标题下只有一句话」这种正常写法。
+# 语义检索的相似度下限（余弦）。低于它的结果直接丢掉，宁可不搜也不给噪声。
+# 这个数是**在真实书库上标定**的（12 集 / 3890 切片，bge-small-zh-v1.5）：
+#   该命中的查询 top1 = 0.602 ~ 0.773（"推理芯片的成本" 0.773、"孙正义怎么押注" 0.691）
+#   不该命中的 top1 = 0.439 ~ 0.564（"量子纠缠的贝尔不等式" 0.564、"qqqzzzxyzzy" 0.531）
+# 取 0.58 正好把两组分开，同时相关查询仍能返回 2-3 条（0.58~0.60 那几条还在）。
+# 只影响**向量**命中：词法命中不受它约束，所以关键词能搜到的东西不会因此丢。
+# 换嵌入模型后必须重新标定；可用 PA_KB_SEM_MIN 覆盖。
+SEM_MIN_SIM = float(os.environ.get("PA_KB_SEM_MIN") or 0.58)
 
 MEMORY_KINDS = ("preference", "fact", "entity", "decision", "insight")
 ENTITY_TYPES = ("person", "org", "media", "place", "topic")
@@ -162,7 +178,11 @@ CREATE TABLE IF NOT EXISTS memory (
     weight REAL DEFAULT 1.0,
     pinned INTEGER DEFAULT 0,
     created_at REAL DEFAULT 0,
-    updated_at REAL DEFAULT 0
+    updated_at REAL DEFAULT 0,
+    -- 用过的次数与最后一次使用时间：用来判断「哪条记忆其实一直没在用」。
+    -- 记忆烂掉的第一步是「堆了一堆谁也不看的东西」，而这件事只有用量看得见。
+    use_count INTEGER DEFAULT 0,
+    last_used_at REAL DEFAULT 0
 );
 CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(tokens, tokenize='unicode61');
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
@@ -184,22 +204,65 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
 
 
 def ensure_schema(conn: sqlite3.Connection) -> sqlite3.Connection:
-    """建表；schema 版本变了就重建（知识库是派生数据，重建比迁移便宜）。"""
+    """建表；schema 版本变了就重建**派生表**，并把 FTS 表修成可删版本。
+
+    两条必须守住的规矩：
+
+    1. **`memory` 永远不 DROP。** 知识库是派生数据，重建比迁移便宜；但记忆不是派生数据
+       —— 它是用户自己写下的东西，丢了没有任何办法重建。曾经这里把整个库（含 memory）
+       一起 drop，等于「升个版本，你的记忆就没了」。现在只重建派生表，记忆原地保留。
+    2. FTS 表如果是 **contentless**（`content=''`），SQLite 不允许 DELETE：
+       `cannot DELETE from contentless fts5 table`。老版本建的库就是这样，表现为
+       **删记忆 500**、**改过的文章一重建索引就报错**。所以这里检测 DDL 并就地修好
+       （drop 掉 virtual table 重建为普通 FTS5，再从原文表灌一遍 tokens —— 能重算的都不怕）。
+    """
     have = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='meta'").fetchone()
     version = None
     if have:
         row = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
         version = row["value"] if row else None
-    if version is not None and int(version) != SCHEMA_VERSION:
-        for t in ("passage_entities", "passages_fts", "memory_fts", "embeddings",
-                  "passages", "entities", "memory", "docs", "meta"):
+    stale = version is not None and int(version) != SCHEMA_VERSION
+    if stale:
+        for t in _DERIVED_TABLES:            # 只清派生表；memory / memory_fts 不在其中
             conn.execute(f"DROP TABLE IF EXISTS {t}")
     conn.executescript(_SCHEMA)
+    _migrate_memory_columns(conn)
+    _repair_fts(conn)
     conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",
                  (str(SCHEMA_VERSION),))
     conn.commit()
     return conn
+
+
+def _fts_is_contentless(conn: sqlite3.Connection, name: str) -> bool:
+    """这张 FTS 表是不是不带 content 的（= 不能 DELETE）。
+
+    只看 DDL 里有没有 `content=`（引号空格都去掉再比）：普通 FTS5 表不写这个参数，
+    contentless 的写法是 `content=''`。`content_rowid=` 不会误命中（下划线挡住了）。
+    """
+    row = conn.execute("SELECT sql FROM sqlite_master WHERE name=?", (name,)).fetchone()
+    sql = (row["sql"] if row else "") or ""
+    flat = sql.replace(" ", "").replace("'", "").replace('"', "")
+    return "content=" in flat
+
+
+def _repair_fts(conn: sqlite3.Connection) -> None:
+    """把 contentless 的 FTS 表就地换成可删的普通表，并从原文表重灌 tokens。"""
+    if _fts_is_contentless(conn, "passages_fts"):
+        conn.execute("DROP TABLE IF EXISTS passages_fts")
+        conn.execute("CREATE VIRTUAL TABLE passages_fts USING fts5(tokens, tokenize='unicode61')")
+        for r in conn.execute("SELECT id, heading, text FROM passages").fetchall():
+            conn.execute("INSERT INTO passages_fts(rowid, tokens) VALUES(?,?)",
+                         (r["id"], tokenize(f"{r['heading'] or ''} {r['text'] or ''}")))
+    if _fts_is_contentless(conn, "memory_fts"):
+        # 记忆的 tokens 能从 memory.text 重算 —— 所以这张表坏了也修得回来，
+        # 真正不可重建的只有 memory 表本身。
+        conn.execute("DROP TABLE IF EXISTS memory_fts")
+        conn.execute("CREATE VIRTUAL TABLE memory_fts USING fts5(tokens, tokenize='unicode61')")
+        for r in conn.execute("SELECT id, text FROM memory").fetchall():
+            conn.execute("INSERT INTO memory_fts(rowid, tokens) VALUES(?,?)",
+                         (r["id"], tokenize(r["text"] or "")))
 
 
 # ============================================================ 切片
@@ -456,7 +519,17 @@ def extract_entities(text: str, *, limit: int = 40) -> list[tuple[str, str, floa
 
 _EMBEDDER = None
 _EMBED_ERR = ""
-_VEC_CACHE: dict = {"model": "", "ids": None, "mat": None}
+_VEC_CACHE: dict = {"model": "", "ids": None, "mat": None, "db": ""}
+
+
+def _vec_invalidate() -> None:
+    """让进程内的向量缓存失效。
+
+    **必须整个清掉，不能只清 ids**：只清 ids 而留下 mat，`_load_vectors` 会认为缓存
+    仍然可用（它看的是 mat 与 model），于是 `_semantic` 拿去 `cache["ids"][idx]` 就炸
+    —— 表现为「刚生成的文章一进库，跨集搜索就 500」。实测踩过，见 test_memory_flow。
+    """
+    _VEC_CACHE.update({"model": "", "ids": None, "mat": None, "db": ""})
 
 
 def embedder(model_name: str | None = None, *, allow_download: bool = True):
@@ -600,27 +673,71 @@ def index_dir(conn: sqlite3.Connection, ep_dir: Path, *, force: bool = False,
     conn.execute("UPDATE entities SET count=(SELECT COUNT(*) FROM passage_entities pe "
                  "WHERE pe.entity_id=entities.id)")
     conn.commit()
-    _VEC_CACHE["ids"] = None
+    _vec_invalidate()
     return {"dir": ep_dir.name, "passages": added}
+
+
+def embed_pending(conn: sqlite3.Connection, *, dirs: list[str] | None = None,
+                  limit: int = 20000, log=print) -> int:
+    """给还没有向量的切片补上向量，返回补了几条。
+
+    为什么要单独一个函数：index_dir 只在**新增了切片**时才嵌入，于是「先索引、后才有
+    嵌入模型」的老库永远补不上向量 —— 状态页会一直显示语义检索关闭，用户也不知道
+    该点哪里。重建索引并不解决它（内容没变，一切照旧跳过）。这个动作是可重复、幂等的：
+    已经有向量的切片不再算第二遍。
+    """
+    sql = ("SELECT p.id, p.text FROM passages p LEFT JOIN embeddings e ON e.passage_id=p.id "
+           "WHERE e.passage_id IS NULL")
+    args: list = []
+    if dirs:
+        sql += f" AND p.doc_id IN (SELECT id FROM docs WHERE dir IN ({','.join('?' * len(dirs))}))"
+        args += dirs
+    sql += " LIMIT ?"
+    args.append(limit)
+    pend = conn.execute(sql, args).fetchall()
+    if not pend:
+        return 0
+    vecs = _embeddings_for([r["text"] for r in pend])
+    if not vecs:
+        log(f"[kb] 还有 {len(pend)} 条切片没有向量（嵌入模型不可用：{embed_error() or '未知原因'}）")
+        return 0
+    done = 0
+    for row, vec in zip(pend, vecs):
+        if not vec:
+            continue
+        conn.execute("INSERT OR REPLACE INTO embeddings(passage_id, model, dim, vec) "
+                     "VALUES(?,?,?,?)", (row["id"], EMBED_MODEL, len(vec), _pack(vec)))
+        done += 1
+    conn.commit()
+    # REPLACE 会留下旧行？不会 —— passage_id 是主键，用的是同一条。但矩阵缓存必须失效。
+    _vec_invalidate()
+    if done:
+        log(f"[kb] 补齐向量 {done} 条")
+    return done
 
 
 def index_all(output_root: Path, *, force: bool = False, embed: bool = True,
               progress=None, log=print) -> dict:
-    """索引整个书库（只有真的变了才会写库）。"""
+    """索引整个书库（只有真的变了才会写库），最后补齐缺失的向量。"""
     root = Path(output_root)
     dirs = sorted([d for d in root.iterdir() if d.is_dir() and not d.name.startswith(".")])
     conn = ensure_schema(connect())
     total = 0
+    added_vecs = 0
     try:
         for i, d in enumerate(dirs):
             r = index_dir(conn, d, force=force, embed=embed, log=log)
             total += r["passages"]
             if progress:
                 progress(i + 1, len(dirs), d.name)
+        # 内容没变的库也要走这一步：它是「语义检索一直没打开」的唯一出路
+        if embed:
+            added_vecs = embed_pending(conn, log=log)
         conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('last_index', ?)",
                      (str(time.time()),))
         conn.commit()
-        return {"episodes": len(dirs), "passages": total, "db": str(db_path())}
+        return {"episodes": len(dirs), "passages": total, "vectors": added_vecs,
+                "db": str(db_path())}
     finally:
         conn.close()
 
@@ -653,7 +770,9 @@ def _lexical(conn: sqlite3.Connection, query: str, k: int, dirs: list[str] | Non
 def _load_vectors(conn: sqlite3.Connection):
     """把向量读进内存矩阵（进程内缓存），个人级书库一次矩阵乘法就够。"""
     import numpy as np
-    if _VEC_CACHE["mat"] is not None and _VEC_CACHE["model"] == EMBED_MODEL:
+    if (_VEC_CACHE["mat"] is not None and _VEC_CACHE["ids"] is not None
+            and _VEC_CACHE["model"] == EMBED_MODEL
+            and _VEC_CACHE["db"] == str(db_path())):        # 换库（测试/多库）必须重读
         return _VEC_CACHE
     rows = conn.execute("SELECT passage_id, dim, vec FROM embeddings WHERE model=?",
                         (EMBED_MODEL,)).fetchall()
@@ -663,7 +782,7 @@ def _load_vectors(conn: sqlite3.Connection):
     ids = np.array([r["passage_id"] for r in rows], dtype="int64")
     mat = np.vstack([_unpack(r["vec"], r["dim"]) for r in rows]).astype("float32")
     mat /= np.maximum(np.linalg.norm(mat, axis=1, keepdims=True), 1e-9)
-    _VEC_CACHE.update({"model": EMBED_MODEL, "ids": ids, "mat": mat})
+    _VEC_CACHE.update({"model": EMBED_MODEL, "ids": ids, "mat": mat, "db": str(db_path())})
     return _VEC_CACHE
 
 
@@ -681,6 +800,12 @@ def _semantic(conn: sqlite3.Connection, query: str, k: int, dirs: list[str] | No
     order = np.argsort(-sims)[: max(k * 4, k)]
     out = []
     for idx in order:
+        sim = float(sims[idx])
+        if sim < SEM_MIN_SIM:
+            # 相似度是降序遍历的，一旦低于下限，后面的只会更低 —— 直接停。
+            # 没有这条线，向量检索对**任何**输入都会返回 k 条（余弦永远有值），
+            # 于是「完全无关的问题」也会拿到一堆貌似相关的原文喂给模型，比不搜更坏。
+            break
         pid = int(cache["ids"][idx])
         row = conn.execute(
             "SELECT p.id, p.doc_id, p.text, p.heading, p.kind, p.start_sec, p.end_sec, "
@@ -691,7 +816,7 @@ def _semantic(conn: sqlite3.Connection, query: str, k: int, dirs: list[str] | No
         if dirs and row["dir"] not in dirs:
             continue
         d = dict(row)
-        d["score"] = float(sims[idx])
+        d["score"] = sim
         d["match"] = "vector"
         out.append(d)
         if len(out) >= k:
@@ -803,6 +928,22 @@ def entity_detail(name: str, *, limit: int = 40, conn: sqlite3.Connection | None
 
 # ============================================================ 记忆
 
+def _migrate_memory_columns(conn: sqlite3.Connection) -> None:
+    """给已存在的 memory 表补新列（**只 ALTER，绝不重建**）。
+
+    `CREATE TABLE IF NOT EXISTS` 不会给老表加列，而 memory 又是唯一不能重建的表：
+    所以新增字段只能靠 ALTER 一个个补。缺列时读出来会直接报 no such column，
+    等于「升级一次，记忆功能全挂」，所以这步必须在 ensure_schema 里无条件跑。
+    """
+    have = {r["name"] for r in conn.execute("PRAGMA table_info(memory)").fetchall()}
+    if not have:
+        return                                   # 表刚建出来，_SCHEMA 已经带全了
+    for col, ddl in (("use_count", "use_count INTEGER DEFAULT 0"),
+                     ("last_used_at", "last_used_at REAL DEFAULT 0")):
+        if col not in have:
+            conn.execute(f"ALTER TABLE memory ADD COLUMN {ddl}")
+
+
 def memory_add(text: str, *, kind: str = "fact", tags: str = "", source_dir: str = "",
                source_kind: str = "user", weight: float = 1.0, pinned: bool = False,
                conn: sqlite3.Connection | None = None) -> dict:
@@ -892,30 +1033,65 @@ def memory_update(mid: int, **fields) -> dict | None:
 
 
 def memory_delete(mid: int) -> bool:
+    """删一条记忆。返回**是否真的删掉了**。
+
+    不能用 `conn.total_changes`：那个计数是整条连接累计的，而 `ensure_schema` 每次都会
+    往 meta 写一条（于是它永远 > 0）—— 结果是「删一个不存在的 id 也回 true」，
+    上层与界面都会以为删成功了，这是最容易被忽略的一种谎报。用 DELETE 的 rowcount。
+    """
     conn = ensure_schema(connect())
     try:
-        conn.execute("DELETE FROM memory WHERE id=?", (mid,))
+        cur = conn.execute("DELETE FROM memory WHERE id=?", (mid,))
+        deleted = cur.rowcount > 0
         conn.execute("DELETE FROM memory_fts WHERE rowid=?", (mid,))
         conn.commit()
-        return conn.total_changes > 0
+        return deleted
     finally:
         conn.close()
 
 
 def memory_for_prompt(query: str = "", *, limit: int = 6,
                       conn: sqlite3.Connection | None = None) -> list[dict]:
-    """挑出该塞进 prompt 的记忆：置顶的 + 与当前问题相关的，去重。"""
+    """挑出该塞进 prompt 的记忆：置顶的 + 与当前问题相关的，去重。
+
+    顺手记下**谁真的被用了**（use_count / last_used_at）。这不是统计癖：记忆腐化最常见
+    的样子就是「存了一堆，没人看」，而用户只有看到「这条 0 次」才知道该删哪条。
+
+    只统计**真的对上号**的：置顶的（用户明确要求永远带上）+ 与当前问题相关的。
+    查询没命中时用来垫底的那几条**不算** —— 否则任何一条记忆只要被顺手塞进 prompt
+    就永远是「用过」，这个信号立刻变成废数。
+    """
     own = conn is None
     conn = conn or ensure_schema(connect())
     try:
         pinned = [dict(r) for r in conn.execute(
             "SELECT * FROM memory WHERE pinned=1 ORDER BY updated_at DESC LIMIT ?", (limit,))]
         seen = {m["id"] for m in pinned}
-        rest = [m for m in memory_list(query=query, limit=limit * 2, conn=conn)
-                if m["id"] not in seen] if query.strip() else []
-        if not rest:
-            rest = [m for m in memory_list(limit=limit, conn=conn) if m["id"] not in seen]
-        return (pinned + rest)[:limit]
+        matched = [m for m in memory_list(query=query, limit=limit * 2, conn=conn)
+                   if m["id"] not in seen] if query.strip() else []
+        rest = matched or [m for m in memory_list(limit=limit, conn=conn)
+                           if m["id"] not in seen]
+        picked = (pinned + rest)[:limit]
+        counted = {m["id"] for m in pinned} | {m["id"] for m in matched}
+        ids = [m["id"] for m in picked if m["id"] in counted]
+        if ids:
+            now = time.time()
+            conn.executemany("UPDATE memory SET use_count=use_count+1, last_used_at=? WHERE id=?",
+                             [(now, mid) for mid in ids])
+            conn.commit()
+        return picked
+    finally:
+        if own:
+            conn.close()
+
+
+def memory_never_used(*, conn: sqlite3.Connection | None = None) -> list[dict]:
+    """一条都没被用过的记忆（按写入时间倒序）——「该不该留着」的复查清单。"""
+    own = conn is None
+    conn = conn or ensure_schema(connect())
+    try:
+        return [dict(r) for r in conn.execute(
+            "SELECT * FROM memory WHERE use_count=0 ORDER BY created_at DESC").fetchall()]
     finally:
         if own:
             conn.close()
@@ -923,7 +1099,9 @@ def memory_for_prompt(query: str = "", *, limit: int = 6,
 
 # ============================================================ 状态
 
-def stats(conn: sqlite3.Connection | None = None) -> dict:
+def stats(conn: sqlite3.Connection | None = None, *,
+          output_root: Path | None = None) -> dict:
+    """书库与记忆的规模。output_root 由调用方给（Web 与 CLI 的输出目录可以不同）。"""
     own = conn is None
     conn = conn or ensure_schema(connect())
     try:
@@ -938,10 +1116,20 @@ def stats(conn: sqlite3.Connection | None = None) -> dict:
             size = db_path().stat().st_size
         except OSError:
             size = 0
+        # 磁盘上有几集：这才是用户眼里的「书库有多大」。只报索引过的集数会误导 ——
+        # 新生成、还没入库的文章会显得"凭空消失"（CLI 的 status 就踩过这个：显示 0 集）。
+        root = Path(output_root) if output_root else (PROJECT_ROOT / "output")
+        try:
+            on_disk = len([d for d in root.iterdir()
+                           if d.is_dir() and not d.name.startswith(".")])
+        except OSError:
+            on_disk = 0
         return {
             "db": str(db_path()), "size_bytes": size,
             "docs": docs, "passages": passages, "vectors": vectors,
             "entities": ents, "memory": mem,
+            "episodes_on_disk": on_disk,
+            "episodes_indexed": q("SELECT COUNT(DISTINCT dir) FROM docs"),
             "model": EMBED_MODEL,
             "semantic": vectors > 0,
             "embed_ready": embedder(allow_download=False) is not None or vectors > 0,

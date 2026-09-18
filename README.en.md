@@ -42,6 +42,8 @@ podcast-article hands that job to the machine: local speech-to-text plus LLM clo
 | 🔔 **Feed subscriptions** | Subscribe to RSS / Apple Podcasts; new episodes are discovered on a schedule and queued automatically |
 | 🤖 **Reading assistant** | Select any passage → a drawer explains it using the episode transcript (timestamped, click to replay) plus web results |
 | 🔊 **Read aloud (TTS)** | Have the article spoken: macOS built-in `say` (free, offline, no key) or any OpenAI-compatible `/v1/audio/speech` endpoint. The text is cleaned and chunked, chunks retry individually, and the cache key covers content + voice — so nothing is re-billed unless it actually changed |
+| 🧠 **Knowledge base** | Every article and transcript becomes provenance-carrying passages (episode · heading · timestamp) searchable with Chinese tokenization plus semantic vectors; new articles are **indexed automatically** |
+| 💭 **Memory** | Make the AI remember you: **☆ Remember this** on any selected passage, or save a conclusion from an answer; memories are included on later questions and **shown back to you** (visible means correctable). Each entry tracks how often it was used, and never-used ones are flagged for cleanup |
 | 💰 **Visible cost** | Tokens, exact cost (official peak/off-peak price table) and cache hit rate per article |
 | ☁️ **One-click Notion** | Markdown → native blocks (tables/quotes/inline styles), metadata auto-filled into database properties |
 | 🔌 **MCP support** | Runs as an MCP server for Claude Desktop & friends — conversational access to everything |
@@ -211,6 +213,57 @@ uv run podcast-article "https://www.xiaoyuzhoufm.com/episode/xxxx"
 > ```
 
 > The transcription model downloads on first use (~1.5 GB). On flaky networks see [Troubleshooting](#-troubleshooting).
+
+### Making the AI remember you (knowledge base + memory)
+
+**Collecting.** Every generated article is indexed automatically — no button to press. The
+sidebar **Knowledge base** view gives you three things:
+
+- **One search box, two sources**: material (passages from every article and transcript, with
+  provenance and clickable timestamps) *and* the memories **you** saved
+- **Ask across episodes**: answers draw only on retrieved passages, each claim tagged `[n]`;
+  any memories used for that answer are shown alongside it
+- **Entities**: people / organizations / media / topics, each linking to the episodes and minute
+  where it appears
+
+**Remembering.** Three ways in, and all of them are **explicit** (nothing is inferred from
+chit-chat):
+
+1. Select a passage in the reader → **☆ Remember this**
+2. Under an assistant or knowledge-base answer → **☆ Remember this conclusion**
+3. Settings → **Memory**: write by hand, pin (always included), edit, delete
+
+**Memory rots, so:**
+
+- Each entry shows "used N times · last used M days ago"; never-used entries are flagged, and you
+  can filter to just those for cleanup
+- Only entries that genuinely matched count as used (pinned ones, or ones relevant to the
+  question) — filler that got stuffed into the context does not
+- Memory is **independent of the index**: rebuilding the index or upgrading the schema never
+  touches it (the index is derived data and always rebuildable; memory is not)
+- Deleting really deletes — it disappears from the list and from search immediately
+
+Same thing from the terminal:
+
+```bash
+uv run podcast-article search "inference chip cost"   # cross-episode search with provenance
+uv run podcast-article ask "how did Masayoshi Son place his bets"   # costs tokens
+uv run podcast-article remember "I prefer numbers over adjectives" --kind preference --pin
+uv run podcast-article recall --never-used             # review memories that never got used
+uv run podcast-article forget 3
+uv run podcast-article status                          # library size, semantic search, memory count
+uv run podcast-article index --force                   # rebuild (also backfills missing vectors)
+```
+
+In MCP clients (Claude Desktop, DSH, …) these are the `search_library` / `ask_library` /
+`remember` / `recall` / `forget` tools, so you can ask another AI to search your podcast library
+or remember something for you.
+
+> Semantic search has a **similarity floor** (calibrated on the real library: relevant ≥0.60,
+> irrelevant ≤0.56, floor set to 0.58). Without it, cosine similarity returns *something* for any
+> input, so an unrelated question would be fed a pile of seemingly-relevant passages — worse than
+> returning nothing. It only affects vector hits; lexical hits are unaffected. Re-calibrate with
+> `PA_KB_SEM_MIN` if you switch embedding models.
 
 ### Have the article read aloud (TTS)
 

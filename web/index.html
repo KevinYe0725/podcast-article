@@ -574,6 +574,7 @@
       <p class="fhint">
         这里的每条记忆都会在「跨集问答」时被读进上下文（置顶的永远参与）。<b>只写不猜</b>：
         新增要么是你手写的，要么是你在文章/对话里点「记住这条」存的，程序不会偷偷记。
+        「用过 N 次」是它真的被某次提问带上过的次数 —— 一直「从未用过」的大概该删了。
       </p>
       <div class="memadd">
         <input type="text" id="mem_text" placeholder="例如：用户偏好开篇用具体场景切入，不要简报式开头" spellcheck="false">
@@ -713,6 +714,7 @@
     <div class="aintro" id="aintro">
       <p>在文章里<b>选中一段</b>有疑问的文字，点「深挖这段」—— 我会先回到播客原文找依据，再按需联网补充背景。</p>
       <p class="adim">之后可以<b>一直追问</b>下去，上下文会接着上一轮。依据（原文片段 / 网络结果）默认收在每条回答下面，需要核对时再展开。</p>
+      <p class="adim">值得留住的段落点下面的<b>「☆ 记住这条」</b>，值得留住的结论点回答下面的<b>「☆ 记住这个结论」</b> —— 存下来的东西以后每次提问都会带上，回答下面就写着「AI 记得的你」。</p>
     </div>
     <div id="amessages"></div>
   </div>
@@ -720,6 +722,8 @@
   <div class="afoot">
     <textarea id="aq" rows="1" placeholder="继续追问…（Enter 发送，Shift+Enter 换行）" spellcheck="false"></textarea>
     <div class="arow">
+      <button class="ttslink" id="amembtn" onclick="rememberSelection(this)"
+              title="把选中的这段话存进记忆库，以后提问会自动带上">☆ 记住这条</button>
       <label class="achip"><input type="checkbox" id="aweb_toggle" checked> 联网</label>
       <label class="achip" title="默认只回答你问的那一点；勾上才展开讲"><input type="checkbox" id="adetail"> 详细</label>
       <button class="btn primary mini" id="agobtn" onclick="askAI()">发送</button>

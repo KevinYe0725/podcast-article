@@ -172,7 +172,7 @@ def _finish_queue_item(job: dict) -> None:
 
 
 def _after_done(dir_name: str, opts: dict, log) -> None:
-    """任务成功后的小动作：订阅自动归类。失败不影响主流程。"""
+    """任务成功后的小动作：订阅自动归类、新文章自动入库。失败不影响主流程。"""
     try:
         dest = (opts or {}).get("auto_dest")
         if dest:
@@ -180,6 +180,27 @@ def _after_done(dir_name: str, opts: dict, log) -> None:
             log(f"[done] 已归入分类：{dest}")
     except Exception as exc:                 # 归类失败不该让「文章已生成」变成失败
         log(f"[done] 自动归类失败：{exc}")
+    _auto_index(dir_name, log)
+
+
+def _auto_index(dir_name: str, log=print) -> None:
+    """新文章生成后**自动进知识库**：用户要的是「收集库」，不该每次手动点一次重建。
+
+    只索引这一篇（增量），失败只写一行日志 —— 文章已经生成好了，索引是锦上添花，
+    绝不能因为它把一次成功的生成变成失败。只读模式（算力在 Mac 上）直接跳过。
+    """
+    if READONLY:
+        return
+    try:
+        conn = kb_mod.ensure_schema(kb_mod.connect())
+        try:
+            r = kb_mod.index_dir(conn, OUTPUT_ROOT / dir_name, force=False,
+                                 log=lambda *_a, **_k: None)
+        finally:
+            conn.close()
+        log(f"[done] 已存入知识库：{r.get('passages', 0)} 个切片")
+    except Exception as exc:
+        log(f"[done] 入库失败（不影响文章）：{type(exc).__name__}: {exc}")
 
 
 def _article_preview(path: Path, limit: int = 3) -> dict:
@@ -748,12 +769,11 @@ _KB_JOB: dict = {"state": "idle", "done": 0, "total": 0, "note": "", "error": ""
 @app.get("/api/kb/status")
 def api_kb_status():
     try:
-        st = kb_mod.stats()
+        # output_root 传进去：Web 的输出目录可能被 PA_OUTPUT_DIR 改过，不能靠默认值
+        st = kb_mod.stats(output_root=OUTPUT_ROOT)
     except Exception as exc:
         return jsonify({"error": f"{type(exc).__name__}: {exc}"[:200]}), 500
     st["indexing"] = _KB_JOB
-    st["episodes_on_disk"] = len([d for d in OUTPUT_ROOT.iterdir()
-                                  if d.is_dir() and not d.name.startswith(".")]) if OUTPUT_ROOT.exists() else 0
     return jsonify(st)
 
 
@@ -795,6 +815,14 @@ def api_kb_search():
     except Exception as exc:
         return jsonify({"error": f"{type(exc).__name__}: {exc}"[:200]}), 500
     res["hits"] = [kb_mod._hit_public(h) for h in res["hits"]]
+    # 一个搜索框同时搜两样东西：资料（书库切片）和他自己存下的记忆。
+    # 分开搜的话，「我记过这个吗」永远要用户自己想 —— 那就等于没记住。
+    try:
+        res["memory"] = [{"id": m["id"], "text": m["text"], "kind": m["kind"],
+                          "pinned": bool(m["pinned"]), "source_dir": m.get("source_dir") or ""}
+                         for m in kb_mod.memory_list(query=q, limit=5)]
+    except Exception:
+        res["memory"] = []
     return jsonify(res)
 
 
@@ -1240,6 +1268,15 @@ def api_ask():
                 terms = deepdive.query_terms(selection, question)
                 web = websearch.search(" ".join(terms), limit=5, terms=terms)
             job["sources"] = {"passages": passages, "web": web}
+            # 记忆：这位读者自己存下的背景（置顶的 + 与他这次选文/疑问相关的）。
+            # 只当「判断他关注点」的背景注入，并且**回给界面** —— 「AI 记得我什么」必须
+            # 是看得见的，否则记忆跑偏时用户无从发现，更无从纠正。
+            try:
+                memories = kb_mod.memory_for_prompt(_ask_query(selection, question))
+            except Exception:                 # 记忆坏了不该让提问失败
+                memories = []
+            mem_text = "\n".join(f"- {m['text']}" for m in memories)
+            job["sources"]["memory"] = [m["text"] for m in memories]
             job["stage"] = "write"
 
             meta = {}
@@ -1256,6 +1293,7 @@ def api_ask():
                 podcast=meta.get("podcast") or "",
                 use_web=use_web,
                 mode=mode,
+                memory=mem_text,
                 history=history,
                 log=log,
                 on_delta=lambda t: job["deltas"].append(t),
@@ -1268,6 +1306,7 @@ def api_ask():
             job["sources"] = {
                 "passages": result.get("passages") or passages,
                 "web": result.get("web") if result.get("web") is not None else web,
+                "memory": job["sources"].get("memory") or [],     # 保留下发时那份，别被覆盖掉
             }
             if job["answer"]:
                 saved = qa_store.append(base, selection=selection, question=question,

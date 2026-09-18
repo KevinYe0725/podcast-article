@@ -594,6 +594,7 @@ def answer_problems(text: str) -> list[str]:
 
 def build_prompt(*, selection: str, question: str, title: str, podcast: str,
                  passages: list[dict], web: str, profile: str = "",
+                 memory: str = "",
                  mode: str | None = None,
                  history: list[dict] | None = None) -> tuple[str, str]:
     """拼出 (system, user)。
@@ -620,6 +621,15 @@ def build_prompt(*, selection: str, question: str, title: str, podcast: str,
     blocks = [f"文章标题：{title or '（未知）'}\n播客/频道：{podcast or '（未知）'}"]
     if profile:
         blocks.append(profile)
+    if memory:
+        # 记忆是**背景**，不是这一期的内容：不写清这句，模型会拿记忆冒充原文来回答
+        # （这会破坏「资料里没有就说没有」的底线，也是记忆污染回答的最短路径）。
+        blocks.append(
+            "【关于这位读者的已知信息（他自己存下的，供你判断他的关注点）】\n"
+            + memory.strip()
+            + "\n注意：这些只是他的背景，**不是这一期的内容**；"
+              "回答里凡是讲这一期的地方，仍然只能依据下面的原文片段。"
+        )
     blocks.append(
         "【读者选中的文字】\n" + (selection.strip() or "（没有给出选中文字）")
     )
@@ -922,6 +932,7 @@ def _stop_usage(started: bool, log=print) -> None:
 def stream_answer(*, workdir: Path | None, selection: str, question: str, title: str,
                   podcast: str, model: str | None = None, use_web: bool = True,
                   mode: str | None = None, log=print, on_delta=None, search=None,
+                  memory: str = "",
                   history: list[dict] | None = None) -> dict:
     """主入口（流式）。返回 `{"answer", "passages", "web", "error"}`。
 
@@ -951,7 +962,8 @@ def stream_answer(*, workdir: Path | None, selection: str, question: str, title:
 
     system, user = build_prompt(
         selection=selection, question=question, title=title or "", podcast=podcast or "",
-        passages=passages, web=web_text, profile=_profile(), mode=mode, history=history,
+        passages=passages, web=web_text, profile=_profile(), memory=memory, mode=mode,
+        history=history,
     )
 
     started = _start_usage(workdir, model, log)

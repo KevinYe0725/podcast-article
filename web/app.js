@@ -111,16 +111,33 @@ function kbHitHTML(h, i) {
   </div>`;
 }
 
+/** 记忆命中：同一个搜索框既搜资料、也搜他自己记过的东西。
+    块放在结果列表**上方** —— 「我记过这个吗」比多一条切片更该先看见。 */
+function kbMemHTML(list) {
+  if (!(list || []).length) return "";
+  return `<div class="kbmem">
+      <div class="kbmemhead">✦ 你记过的（${list.length} 条）</div>
+      ${list.map((m) => `
+        <div class="memitem ${m.pinned ? "pinned" : ""}">
+          <span class="memkind">${esc(memKindLabel(m.kind))}</span>
+          <span class="memtext">${esc(m.text || "")}</span>
+          ${m.pinned ? `<span class="memacts dimtext">置顶</span>` : ""}
+        </div>`).join("")}
+    </div>`;
+}
+
 async function kbSearch() {
   const q = ($("kbs").value || "").trim();
   if (!q) { $("kbhits").innerHTML = ""; return; }
   $("kbhits").innerHTML = `<div class="viewempty">检索中…</div>`;
   const d = await (await fetch("/api/kb/search?q=" + encodeURIComponent(q) + "&k=8")).json();
   if (d.error) { $("kbhits").innerHTML = `<div class="viewempty">✕ ${esc(d.error)}</div>`; return; }
-  $("kbhits").innerHTML = d.hits.length
-    ? `<div class="dimtext" style="margin:6px 0 10px">${d.hits.length} 条命中 · ${d.mode === "hybrid" ? "混合检索" : d.mode === "semantic" ? "向量检索" : "词法检索"}</div>`
-      + d.hits.map((h, i) => kbHitHTML(h, i)).join("")
+  const hits = d.hits || [];
+  const hitsHTML = hits.length
+    ? `<div class="dimtext" style="margin:6px 0 10px">${hits.length} 条命中 · ${d.mode === "hybrid" ? "混合检索" : d.mode === "semantic" ? "向量检索" : "词法检索"}</div>`
+      + hits.map((h, i) => kbHitHTML(h, i)).join("")
     : `<div class="viewempty">没有命中。可以换个说法，或先「重建索引」。</div>`;
+  $("kbhits").innerHTML = kbMemHTML(d.memory) + hitsHTML;
 }
 
 async function kbAsk() {
@@ -149,11 +166,13 @@ async function kbAsk() {
       $("kbaskstate").textContent = "模型不可用，已给出检索结果";
       return;
     }
-    const mem = (d.memory_used || []).length
-      ? `<div class="dimtext" style="margin-top:8px">本次参考了 ${d.memory_used.length} 条记忆</div>` : "";
+    const mem = memNoteHTML(d.memory_used);
     $("kbanswer").innerHTML = `<div class="kbansbody">${mdLite(d.answer || "")}</div>${mem}`
+      + `<div class="kbaacts"><button class="ttslink" data-dir="" onclick="rememberAnswer(this)">☆ 记住这个结论</button></div>`
       + `<details class="kbsrc"><summary>出处（${(d.sources || []).length} 条，时间戳可点回听）</summary>`
       + (d.sources || []).map((h, i) => kbHitHTML(h, i)).join("") + `</details>`;
+    // 知识库问答跨很多集，没有单一 dir，data-dir 写成空串（后端接口的 dir 允许为空）
+    wireAnswerBtn($("kbanswer"), d.answer);
     $("kbaskstate").textContent = "完成";
   } catch (e) {
     $("kbanswer").innerHTML = `<div class="viewempty">✕ ${esc(String(e))}</div>`;
@@ -201,25 +220,74 @@ async function kbEntity(name) {
    每条记忆都会在跨集问答时被读进上下文（置顶的永远参与）。
    只写不猜：要么手写，要么显式点「记住这条」，程序不偷偷记。 */
 
+/* kind 的中文标签：设置页的下拉、搜索命中的标签、记忆条目共用一张表，
+   免得同一个 kind 在两处写成两种说法。 */
+const MEM_KIND_LABELS = { preference: "偏好", fact: "事实", entity: "实体", decision: "决定", insight: "洞见" };
+const memKindLabel = (k) => MEM_KIND_LABELS[k] || k || "记忆";
+
+let memItems = [];              // 上一次拉到的记忆（筛选纯前端做，不再请求后端）
+let memUnusedOnly = false;      // 只看「从未用过」的那些
+
 async function loadMemory() {
   const sel = $("mem_kind");
   const d = await (await fetch("/api/memory")).json();
   if (sel && !sel.options.length) {
-    const labels = { preference: "偏好", fact: "事实", entity: "实体", decision: "决定", insight: "洞见" };
-    sel.innerHTML = (d.kinds || []).map((k) => `<option value="${k}">${labels[k] || k}</option>`).join("");
+    sel.innerHTML = (d.kinds || []).map((k) => `<option value="${k}">${memKindLabel(k)}</option>`).join("");
   }
-  const items = d.items || [];
-  $("mem_state").textContent = items.length ? `${items.length} 条` : "还没有记忆";
-  $("memlist").innerHTML = items.length ? items.map((m) => `
-    <div class="memitem ${m.pinned ? "pinned" : ""}">
+  memItems = d.items || [];
+  renderMemory();
+}
+
+/** 一条记忆的用量。use_count=0 就是**从来没被哪次提问真正用上过**
+    （这时 last_used_at 是 0 —— 那表示「没发生过」，不是 1970 年，所以只说「从未用过」）。
+    垫底塞进 prompt 但没命中的那些不算，所以在 prompt 里的记忆不一定都「用过」。 */
+function memUsageHTML(m) {
+  // 后端还没带用量字段时（旧版本）干脆不显示，别把「缺字段」读成「从未用过」
+  if (m.use_count === undefined && m.last_used_at === undefined) return "";
+  const n = Number(m.use_count) || 0;
+  if (n <= 0) {
+    return `<span class="memuse unused" title="这条还没被任何一次提问真正用上过">从未用过</span>`;
+  }
+  const ts = Number(m.last_used_at) || 0;
+  const days = ts ? Math.floor((Date.now() / 1000 - ts) / 86400) : 0;
+  const ago = !ts ? "" : (days <= 0 ? " · 今天用过" : ` · 最近 ${days} 天前`);
+  return `<span class="memuse">用过 ${n} 次${ago}</span>`;
+}
+
+function memRowHTML(m) {
+  return `<div class="memitem ${m.pinned ? "pinned" : ""}" data-id="${m.id}">
       <span class="memkind">${esc(m.kind)}</span>
-      <span class="memtext">${esc(m.text)}</span>
+      <span class="memtext">${esc(m.text)}${memUsageHTML(m)}</span>
       <span class="memacts">
         <button class="ttslink" onclick="memPin(${m.id}, ${m.pinned ? 0 : 1})">${m.pinned ? "取消置顶" : "置顶"}</button>
         <button class="ttslink" onclick="memDelete(${m.id})">删除</button>
       </span>
-    </div>`).join("")
-    : `<div class="viewempty">还没有记忆。上面填一条试试 —— 跨集问答时它会被读进上下文。</div>`;
+    </div>`;
+}
+
+/** 只看从未用过的那些（再点一次恢复全部）—— 纯前端过滤，不新增接口 */
+function toggleMemUnused() {
+  memUnusedOnly = !memUnusedOnly;
+  renderMemory();
+}
+
+function renderMemory() {
+  const box = $("memlist");
+  const isUnused = (m) => !(Number(m.use_count) > 0);
+  const total = memItems.length;
+  const unused = memItems.filter(isUnused).length;
+  $("mem_state").textContent = total ? `${total} 条` : "还没有记忆";
+  if (!total) {
+    box.innerHTML = `<div class="viewempty">还没有记忆。上面填一条试试 —— 跨集问答时它会被读进上下文。</div>`;
+    return;
+  }
+  const shown = memUnusedOnly ? memItems.filter(isUnused) : memItems;
+  box.innerHTML = `<div class="memsum">
+      <span class="dimtext">共 ${total} 条，其中 ${unused} 条从未用过</span>
+      <button class="ttslink" id="memfilter" onclick="toggleMemUnused()">${memUnusedOnly ? "显示全部" : "只看从未用过的"}</button>
+    </div>`
+    + (shown.length ? shown.map(memRowHTML).join("")
+      : `<div class="viewempty">没有「从未用过」的记忆 —— 每一条都被某次提问带上过。</div>`);
 }
 
 async function memAdd() {
@@ -247,6 +315,91 @@ async function memPin(id, pinned) {
 async function memDelete(id) {
   await fetch(`/api/memory/${id}`, { method: "DELETE" });
   loadMemory();
+}
+
+/* ---- 界面上的几个「记住」入口 ----
+   记忆只在用户**显式**点击时写入（程序不偷偷记）：阅读页选中一段 →「记住这条」，
+   回答下面 →「记住这个结论」。两处都走 saveMemory，错误提示也就一处。 */
+
+/** 存一条记忆；失败已经提示过了，返回 false 让调用方别改成「已记住」。 */
+async function saveMemory(payload) {
+  try {
+    const resp = await fetch("/api/memory", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const d = await resp.json().catch(() => ({}));
+    if (!resp.ok) { toast("⚠ " + esc(d.error || "保存失败")); return false; }
+    return true;
+  } catch (e) {
+    toast("⚠ " + esc(String((e && e.message) || e)));
+    return false;
+  }
+}
+
+/** 点过就换成「已记住」并禁用：既给反馈，也顺手挡住重复提交。
+    dataset.mem 存的是**存过的原文**，重复点同一段/同一条时直接跳过。 */
+function markRemembered(btn, text, label) {
+  if (!btn) return;
+  btn.textContent = label;
+  btn.disabled = true;
+  btn.dataset.mem = text;
+  btn.classList.add("done");
+}
+
+/** 记忆块：「AI 记得的你」。空数组时返回空串 —— 不显示空标题，
+   否则用户会以为 AI 什么都没记住（跟「这次没用上记忆」是两回事）。 */
+function memNoteHTML(list) {
+  const items = (list || []).map((t) => String(t || "").trim()).filter(Boolean);
+  if (!items.length) return "";
+  return `<div class="amem"><div class="amemhead">✦ AI 记得的你</div>`
+    + `<ul class="amemlist">${items.map((t) => `<li>${esc(t)}</li>`).join("")}</ul></div>`;
+}
+
+/** 「记住这个结论」：正文先挂在按钮上（渲染过的 HTML 里捞不回原文），
+    点击时直接取。data-dir 显式写空串表示这条不属于任何一集（知识库问答）。 */
+function wireAnswerBtn(box, text) {
+  const btn = box ? box.querySelector(".aacts button, .kbaacts button") : null;
+  if (!btn) return;
+  const body = String(text || "").trim();
+  if (!body) { btn.remove(); return; }
+  btn.memText = body;
+}
+
+async function rememberAnswer(btn) {
+  const text = String((btn && btn.memText) || "").trim();
+  if (!text || (btn.dataset.mem || "") === text) return;      // 已记住过就不重复存
+  const dir = btn.hasAttribute("data-dir") ? btn.getAttribute("data-dir")
+                                           : (curWorkdir || assistDir || "");
+  const ok = await saveMemory({ text, kind: "insight", dir, source: "answer" });
+  if (!ok) return;
+  markRemembered(btn, text, "★ 已记住");
+  toast("✦ 记住了这条结论");
+}
+
+/** 阅读页抽屉里的「☆ 记住这条」：存的是抽屉里显示的那段选文 */
+function resetRememberSel() {
+  const btn = $("amembtn");
+  if (!btn) return;
+  btn.textContent = "☆ 记住这条";
+  btn.disabled = false;
+  delete btn.dataset.mem;
+  btn.classList.remove("done");
+}
+
+async function rememberSelection(btn) {
+  const el = btn || $("amembtn");
+  const text = (assistSelection || currentArticleSelection() || lastSelection || "").trim();
+  if (!text) {
+    toast("⚠ 先在文章里选一段文字，再点「记住这条」");
+    return;
+  }
+  if (el && (el.dataset.mem || "") === text) return;           // 同一段点第二次不再存
+  const ok = await saveMemory({ text, kind: "insight", dir: curWorkdir || assistDir || "",
+                                source: "reader" });
+  if (!ok) return;
+  markRemembered(el, text, "★ 已记住");
+  toast("✦ 记住了这段");
 }
 
 /* ---------------- 朗读（把文章念出来）----------------
@@ -889,14 +1042,10 @@ async function openSettings(tab) {
   $("main").style.display = "none";
   $("settings").style.display = "block";
   window.scrollTo({ top: 0 });
-  $("feedsview").style.display = name === "feeds" ? "" : "none";
-  if ($("kbview")) $("kbview").style.display = name === "kb" ? "block" : "none";
-  $("navqueue").classList.toggle("on", name === "queue");
-  $("navfeeds").classList.toggle("on", name === "feeds");
-  if ($("navkb")) $("navkb").classList.toggle("on", name === "kb");
-  if (name === "queue") loadQueue();
-  if (name === "feeds") loadFeeds();
-  if (name === "kb") loadKb();
+  // 注：这里以前被误粘进了 showView() 的尾巴（用了未定义的 name），
+  // 于是 openSettings() 一定抛错、设置页的页签也切不了。按本函数原本的样子恢复。
+  await loadSettings();
+  if (tab) switchTab(tab);
   loadMcp();
 }
 
@@ -924,6 +1073,7 @@ function switchTab(name) {
   document.querySelectorAll(".tab").forEach((t) => t.setAttribute("data-active", String(t.dataset.tab === name)));
   document.querySelectorAll(".pane").forEach((p) => { p.style.display = p.id === "pane-" + name ? "block" : "none"; });
   if (name === "mcp") loadMcp();
+  if (name === "memory") loadMemory();      // 切到记忆页就把列表拉出来（含用量）
 }
 
 const markDirty = () => $("savebar").classList.add("dirty");
@@ -2752,6 +2902,7 @@ function toggleAssist() {
 function setAssistSelection(text) {
   assistSelection = (text || "").trim();
   if (!assistSelection) lastSelection = "";
+  resetRememberSel();            // 换了选文，「已记住」要退回可点状态
 }
 
 /** 开一段新对话：清空消息流与上下文 */
@@ -2902,6 +3053,7 @@ function appendAiBubble(md, sources) {
   $("amessages").appendChild(wrap);
   $("aintro").style.display = "none";
   if (sources) attachSources(wrap, sources);
+  attachAnswerActions(wrap, md);        // 恢复历史对话时也要能「记住这个结论」
   scrollAssist();
   return wrap;
 }
@@ -2910,6 +3062,8 @@ function appendAiBubble(md, sources) {
 function attachSources(bubble, src) {
   const old = bubble.querySelector(".asrc");
   if (old) old.remove();
+  // 「AI 记得的你」不进折叠区：它要一眼看见（记忆跑偏了用户才能发现并去删）
+  attachMemoryNote(bubble, src && src.memory);
   const passages = (src && src.passages) || [];
   const web = src && src.web;
   const bits = [];
@@ -2971,6 +3125,32 @@ function doc_el(tag, cls) {
   if (cls) el.className = cls;
   return el;
 }
+
+/** 「AI 记得的你」：这次回答参考了他自己存下的哪几条（sources.memory）。
+    空数组就不渲染这一块，也不留空标题。 */
+function attachMemoryNote(bubble, list) {
+  const old = bubble.querySelector(".amem");
+  if (old) old.remove();
+  const html = memNoteHTML(list);
+  if (!html) return;
+  bubble.insertAdjacentHTML("beforeend", html);
+}
+
+/** 回答下面那行动作：「☆ 记住这个结论」。流式过程中不挂（正文还没成形）。 */
+function attachAnswerActions(bubble, answer) {
+  const old = bubble.querySelector(".aacts");
+  if (old) old.remove();
+  const body = answerPlain(answer);
+  if (!body) return;
+  const row = doc_el("div", "aacts");
+  row.innerHTML = `<button class="ttslink" onclick="rememberAnswer(this)"
+      title="把这条结论存进记忆库，以后提问会自动带上">☆ 记住这个结论</button>`;
+  bubble.appendChild(row);                 // 每次都追加到末尾，确保在依据下面
+  row.querySelector("button").memText = body;
+}
+
+/** 回答正文里能被存下来的那份文本：和界面显示的一致（剥掉模型自我标注的出处标签） */
+const answerPlain = (md) => splitTags(md || "").text.trim();
 
 /* ---- 提问 ---- */
 async function askAI() {
@@ -3047,6 +3227,7 @@ function connectAssistStream(id, bubble, question, selection) {
     if (!answer && d.error) view.innerHTML = `<p class="aerr">✕ ${esc(d.error)}</p>`;
     if (d.sources) sources = d.sources;
     if (sources) attachSources(bubble, sources);
+    attachAnswerActions(bubble, answer);      // 回答成形后才挂「记住这个结论」
     if (d.thread) assistThread = d.thread;          // 首轮由后端生成，之后一直沿用
     if (answer) {
       assistTurns.push({ role: "user", content: question || "（就这段展开讲讲）" });
@@ -3124,6 +3305,7 @@ function resetAssist() {
   assistThread = "";
   assistBusy = false;
   $("agobtn").disabled = false;
+  resetRememberSel();
 }
 /** 设置页的联网搜索服务状态 */
 async function loadSearchService() {

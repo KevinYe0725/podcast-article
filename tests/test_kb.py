@@ -97,14 +97,98 @@ def test_index_is_incremental(kb_env):
     assert kb.stats()["passages"] == first
     # 改了正文 → 会重新索引这一篇（用「能不能搜到新词」判断，比数字数切片数可靠）
     (kb_env / "20240102-乙" / "article.md").write_text(
-        "# 标题\n\n" + "改过的正文，里面有个独特词 zebracorn，旧标记 oldmarker 已删除。" * 60,
+        "# 标题\n\n" + "改过的正文，里面有个独特词 zebracorn，旧的标记已经被删掉了。" * 60,
         encoding="utf-8")
     kb.index_all(kb_env, embed=False)
     assert kb.search("zebracorn", k=3)["hits"], "改过的内容应该被重新索引"
     # 用一个不会与其它词部分重合的假词判断"旧内容被换掉"（FTS 是 OR 语义，
-    # 拿中文短语去查会撞上仍然存在的其它词）
-    assert not kb.search("oldmarker", k=3)["hits"]
+    # 拿中文短语去查会撞上仍然存在的其它词）。
+    # 注意新正文里**不能**再出现 legacytoken 这个词 —— 之前这行写的是
+    # 「旧标记 oldmarker 已删除」，于是搜索命中的是新正文里那个词，
+    # 断言失败被误当成"旧切片没清掉"。查旧词必须让它在库里彻底不存在。
+    assert not kb.search("legacytoken", k=3)["hits"], "旧切片没被清掉"
     assert kb.search("zebracorn", k=3)["hits"][0]["dir"] == "20240102-乙"
+
+
+# ------------------------------------------------------------------ 语义检索
+
+def test_semantic_drops_hits_below_the_floor(kb_env, monkeypatch):
+    """相似度低于下限的向量命中必须丢掉。
+
+    没有下限时，余弦相似度对**任何**输入都有值，于是「完全无关的问题」也会拿到 k 条
+    貌似相关的原文去喂模型 —— 比搜不到更坏。这里用打桩向量把两种情形分开：
+    切片 A 与查询同向（相似度 1.0），切片 B 正交（0.0）。
+    """
+    import numpy as np
+
+    _write_episode(kb_env, "20240104-丁",
+                   "# 标题\n\n这是甲切片的内容，讲的是算力成本与推理单价的下降趋势。\n\n"
+                   "## 乙\n\n这是乙切片的内容，讲的是完全另一件事情。\n")
+    kb.index_all(kb_env, embed=False)
+    ids = [r["id"] for r in kb.connect().execute(
+        "SELECT id FROM passages ORDER BY id").fetchall()]
+
+    monkeypatch.setattr(kb, "_embeddings_for", lambda texts: [[1.0, 0.0] for _ in texts])
+    monkeypatch.setattr(kb, "_load_vectors", lambda conn: {
+        "mat": np.array([[1.0, 0.0], [0.0, 1.0]], dtype="float32"),
+        "ids": np.array(ids[:2], dtype="int64"), "model": kb.EMBED_MODEL,
+        "db": str(kb.db_path())})
+
+    res = kb.search("算力成本", k=5, mode="semantic")
+    assert [h["id"] for h in res["hits"]] == [ids[0]], "正交的那条不该出现"
+    assert res["hits"][0]["score"] == pytest.approx(1.0)
+
+    # 把下限抬到 1.0 之上 → 连同向的那条也留不下（证明是下限在起作用，不是别的）
+    monkeypatch.setattr(kb, "SEM_MIN_SIM", 1.01)
+    assert kb.search("算力成本", k=5, mode="semantic")["hits"] == []
+
+
+def test_semantic_floor_keeps_relevant_hits(kb_env, monkeypatch):
+    """下限不能把该给的也砍掉：相似度高于下限的照常返回。"""
+    import numpy as np
+
+    _write_episode(kb_env, "20240105-戊",
+                   "# 标题\n\n第一条内容是足够长的正文，用来占满一个切片的位置。\n\n"
+                   "## 二\n\n第二条内容同样要足够长，不然会被切片规则丢掉。\n")
+    kb.index_all(kb_env, embed=False)
+    ids = [r["id"] for r in kb.connect().execute("SELECT id FROM passages ORDER BY id").fetchall()]
+
+    monkeypatch.setattr(kb, "_embeddings_for", lambda texts: [[1.0, 0.0] for _ in texts])
+    monkeypatch.setattr(kb, "_load_vectors", lambda conn: {
+        "mat": np.array([[0.9, 0.4359], [0.95, 0.3122]], dtype="float32"),  # 0.9 / 0.95
+        "ids": np.array(ids[:2], dtype="int64"), "model": kb.EMBED_MODEL,
+        "db": str(kb.db_path())})
+
+    hits = kb.search("内容", k=5, mode="semantic")["hits"]
+    assert len(hits) == 2 and hits[0]["score"] == pytest.approx(0.95, abs=1e-3)
+
+
+def test_embed_pending_backfills_an_old_library(kb_env, monkeypatch):
+    """先建的库（当时没有嵌入模型）要能补上向量，而不是永远关着语义检索。
+
+    `index_all` 只在**新增切片**时才嵌入，所以「内容没变」的老库点了重建也没用。
+    """
+    _write_episode(kb_env, "20240106-己",
+                   "# 标题\n\n这段内容需要向量，所以它必须长到能被切成一个切片。\n")
+    kb.index_all(kb_env, embed=False)
+    assert kb.stats()["vectors"] == 0
+
+    calls: list[int] = []
+
+    def fake_embed(texts):
+        calls.append(len(texts))
+        return [[0.5, 0.5] for _ in texts]
+
+    monkeypatch.setattr(kb, "_embeddings_for", fake_embed)
+    conn = kb.ensure_schema(kb.connect())
+    n = kb.embed_pending(conn, log=lambda *_: None)
+    conn.close()
+
+    assert n > 0 and kb.stats()["vectors"] == n
+    assert calls == [n], "只该嵌入缺向量的那些"
+    conn = kb.ensure_schema(kb.connect())
+    assert kb.embed_pending(conn, log=lambda *_: None) == 0, "已经补过的不该重复嵌入"
+    conn.close()
 
 
 # ------------------------------------------------------------------ 检索
