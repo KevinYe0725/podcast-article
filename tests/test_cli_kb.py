@@ -107,8 +107,11 @@ def test_ask_uses_library_and_cites(cli_env, monkeypatch, capsys):
 
     seen = {}
 
-    def fake_chat(messages, **kw):
-        seen["user"] = messages[-1]["content"]
+    # 打桩必须用 _chat 的**真实签名**（client, model, system, user）。之前这里写成
+    # `fake_chat(messages, **kw)`，于是调用方把 messages 数组当第一个参数传、还漏了
+    # system/user，测试照样通过 —— 真跑一次就 TypeError。宽松的打桩会吃掉这类错误。
+    def fake_chat(client, model, system, user, **kw):
+        seen["system"], seen["user"] = system, user
         return "结论：1906 年 [1]。"
 
     monkeypatch.setattr(summarize, "_chat", fake_chat)

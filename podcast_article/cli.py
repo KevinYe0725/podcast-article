@@ -113,14 +113,11 @@ def _run_kb_command(args) -> int:
             lines.append(f"[{i}] {where}\n{h['text']}")
         mem = kb.memory_for_prompt(args.question)
         mem_text = "\n".join(f"- {m['text']}" for m in mem) or "（没有）"
-        answer = summarize._chat(
-            [{"role": "system",
-              "content": "你是这位读者私人播客书库的研究助手。只依据资料片段回答，"
-                         "资料里没有的就说「资料里没有」。先结论后依据，依据标编号（如 [2]）。"},
-             {"role": "user", "content": f"读者的问题：{args.question}\n\n"
-                                         f"【关于这位读者的已知信息】\n{mem_text}\n\n"
-                                         f"【资料片段】\n" + "\n\n".join(lines)}],
-            model=None, max_tokens=1200, temperature=0.3)
+        answer = summarize.ask_once(
+            "你是这位读者私人播客书库的研究助手。只依据资料片段回答，"
+            "资料里没有的就说「资料里没有」。先结论后依据，依据标编号（如 [2]）。",
+            f"读者的问题：{args.question}\n\n【关于这位读者的已知信息】\n{mem_text}\n\n"
+            f"【资料片段】\n" + "\n\n".join(lines))
         console.print(answer.strip())
         console.print("\n[dim]依据：[/]")
         for i, h in enumerate(hits, 1):

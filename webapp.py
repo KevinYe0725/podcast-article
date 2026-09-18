@@ -874,9 +874,7 @@ def api_kb_ask():
     )
     user = f"读者的问题：{q}{mem_text}\n\n【资料片段】\n{context}"
     try:
-        answer = summarize._chat(
-            [{"role": "system", "content": system}, {"role": "user", "content": user}],
-            model=None, max_tokens=1200, temperature=0.3)
+        answer = summarize.ask_once(system, user)
     except Exception as exc:
         # 模型不可用时把检索结果给出去 —— 有出处的原文比一句报错有用
         return jsonify({"answer": "", "sources": hits, "mode": res["mode"],

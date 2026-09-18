@@ -19,6 +19,24 @@ def _client() -> OpenAI:
     return OpenAI(api_key=config.deepseek_api_key(), base_url=config.DEEPSEEK_BASE_URL)
 
 
+def ask_once(system: str, user: str, *, model: str | None = None,
+             max_tokens: int = 1200, temperature: float = 0.3, log=None) -> str:
+    """一次问答式调用（Web「问你的库」、CLI `ask`、MCP `ask_library` 共用）。
+
+    为什么要有这个函数：`_chat` 的签名是 `(client, model, system, user, ...)`，
+    而上面那三个入口当初各自手写调用，全写成了「传一个 messages 数组、model=None」——
+    形状完全对不上，一调用就 `TypeError: _chat() missing 2 required positional
+    arguments: 'system' and 'user'`。三处一直没被发现，因为测试全都把这个函数打了桩，
+    而打桩函数签名宽松，恰好把错误吃掉了（真正跑一次就炸）。所以现在只留这一个入口，
+    禁止各处再手拼 messages。
+    """
+    return _chat(
+        _client(), model or config.deepseek_model(), system, user,
+        log=log or (lambda *_a, **_k: None),
+        max_tokens=max_tokens, temperature=temperature,
+    )
+
+
 def _chat(
     client: OpenAI, model: str, system: str, user: str,
     log=print, max_tokens: int = 8192, on_chars=None, temperature: float = 1.0,

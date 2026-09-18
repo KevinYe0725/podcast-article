@@ -104,8 +104,8 @@ def test_ask_library_uses_only_library_and_cites_sources(mcp_env, monkeypatch):
 
     seen: dict = {}
 
-    def fake_chat(messages, **kw):
-        seen["messages"] = messages
+    def fake_chat(client, model, system, user, **kw):     # _chat 的真实签名
+        seen["system"], seen["user"] = system, user
         return "结论：地震发生在 1906 年 [1]。"
 
     monkeypatch.setattr(summarize, "_chat", fake_chat)
@@ -113,6 +113,6 @@ def test_ask_library_uses_only_library_and_cites_sources(mcp_env, monkeypatch):
     out = mcp_env.ask_library("旧金山地震是什么时候")
 
     assert "[1]" in out and "依据" in out
-    user = seen["messages"][-1]["content"]
+    user = seen["user"]
     assert "我在跟踪地震预警" in user, "记忆没进 prompt"
     assert "1906" in user, "资料片段没进 prompt"

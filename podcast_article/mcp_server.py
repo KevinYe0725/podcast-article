@@ -184,15 +184,12 @@ def ask_library(question: str) -> str:
     mem = kb.memory_for_prompt(question)
     mem_text = "\n".join(f"- {m['text']}" for m in mem)
     from . import summarize
-    answer = summarize._chat(
-        [{"role": "system",
-          "content": "你是这位读者私人播客书库的研究助手。只依据给到的资料片段回答，"
-                     "不要引入资料之外的事实；资料里没有的就说「资料里没有」。"
-                     "先给结论再给依据，每条依据标出编号（如 [2]）。"},
-         {"role": "user", "content":
-          f"读者的问题：{question}\n\n【关于这位读者的已知信息】\n{mem_text or '（没有）'}"
-          f"\n\n【资料片段】\n" + "\n\n".join(lines)}],
-        model=None, max_tokens=1200, temperature=0.3)
+    answer = summarize.ask_once(
+        "你是这位读者私人播客书库的研究助手。只依据给到的资料片段回答，"
+        "不要引入资料之外的事实；资料里没有的就说「资料里没有」。"
+        "先给结论再给依据，每条依据标出编号（如 [2]）。",
+        f"读者的问题：{question}\n\n【关于这位读者的已知信息】\n{mem_text or '（没有）'}"
+        f"\n\n【资料片段】\n" + "\n\n".join(lines))
     src = "\n".join(f"[{i}] {h.get('title') or h.get('dir')}"
                     + (f" · {h['heading']}" if h.get("heading") else "") for i, h in enumerate(hits, 1))
     return f"{answer.strip()}\n\n---\n依据：\n{src}"

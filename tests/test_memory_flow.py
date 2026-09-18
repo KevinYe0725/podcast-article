@@ -353,3 +353,58 @@ def test_memory_roundtrip_through_json_is_stable(client):
     assert json.dumps(again, ensure_ascii=False, sort_keys=True) == \
         json.dumps(item, ensure_ascii=False, sort_keys=True)
     assert again["tags"] == "测试,导出" and bool(again["pinned"]) is True
+
+
+# ---------------------------------------------------------------- 问答入口的调用姿势
+
+def test_ask_once_calls_chat_with_the_real_signature(client, monkeypatch):
+    """`_chat` 的签名是 (client, model, system, user, ...)，不是 messages 数组。
+
+    这条测试是为一个真实故障写的：Web「问你的库」、CLI `ask`、MCP `ask_library`
+    三处当初各自手拼调用，全写成「传一个 messages 数组 + model=None」，一跑就
+    `TypeError: _chat() missing 2 required positional arguments: 'system' and 'user'`。
+    之所以长期没被发现，是因为测试把这些调用点全都打了桩，而打桩函数签名宽松。
+    现在三个入口都走 `summarize.ask_once`，这里用**真实签名**打桩把它钉死。
+    """
+    from podcast_article import summarize
+
+    seen = {}
+
+    def fake_chat(client, model, system, user, **kw):
+        seen.update({"client": client, "model": model, "system": system, "user": user, **kw})
+        return "答案"
+
+    monkeypatch.setattr(summarize, "_chat", fake_chat)
+    monkeypatch.setattr(summarize, "_client", lambda: "假客户端")
+    assert summarize.ask_once("系统提示", "用户问题") == "答案"
+
+    assert seen["client"] == "假客户端"
+    assert seen["system"] == "系统提示" and seen["user"] == "用户问题"
+    assert isinstance(seen["model"], str) and seen["model"], "模型名必须落到具体名字，不能是 None"
+    assert seen["max_tokens"] and seen["temperature"] is not None
+
+
+def test_kb_ask_endpoint_reaches_the_model(client, monkeypatch):
+    """跨集问答这条 HTTP 路径要真的调到模型（而不是在拼参数时先崩掉）。"""
+    import webapp
+
+    from podcast_article import kb, summarize
+
+    kb.index_dir(kb.ensure_schema(kb.connect()),
+                 webapp.OUTPUT_ROOT / "20240101-测试台-测试单集")   # 没索引就没得检索
+    kb.memory_add("我在跟踪地震预警", kind="preference", pinned=True)
+
+    def fake_chat(_client, _model, system, user, **kw):
+        assert "资料片段" in user and "地震" in user
+        return "结论：资料里说是 1906 年 [1]。"
+
+    monkeypatch.setattr(summarize, "_chat", fake_chat)
+    monkeypatch.setattr(summarize, "_client", lambda: None)
+
+    r = client.post("/api/kb/ask", json={"question": "旧金山地震是什么时候"})
+    assert r.status_code == 200, r.get_data(as_text=True)
+    d = r.get_json()
+    assert not d.get("error"), f"不该有错误：{d.get('error')}"
+    assert "1906" in d["answer"]
+    assert d["sources"], "回答要带出处"
+    assert d["memory_used"] == ["我在跟踪地震预警"]
