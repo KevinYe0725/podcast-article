@@ -99,25 +99,14 @@ def _run_kb_command(args) -> int:
         return 0
 
     if args.cmd == "ask":
-        from . import summarize
+        from . import library_ask
         res = kb.search(args.question, k=6)
         hits = [kb._hit_public(h, limit=700) for h in res["hits"]]
         if not hits:
             console.print("[yellow]书库里没有检索到相关内容。[/]")
             return 1
-        lines = []
-        for i, h in enumerate(hits, 1):
-            where = (h.get("title") or h.get("dir") or "")
-            if h.get("heading"):
-                where += f" · {h['heading']}"
-            lines.append(f"[{i}] {where}\n{h['text']}")
         mem = kb.memory_for_prompt(args.question)
-        mem_text = "\n".join(f"- {m['text']}" for m in mem) or "（没有）"
-        answer = summarize.ask_once(
-            "你是这位读者私人播客书库的研究助手。只依据资料片段回答，"
-            "资料里没有的就说「资料里没有」。先结论后依据，依据标编号（如 [2]）。",
-            f"读者的问题：{args.question}\n\n【关于这位读者的已知信息】\n{mem_text}\n\n"
-            f"【资料片段】\n" + "\n\n".join(lines))
+        answer = library_ask.answer(args.question, hits, [m["text"] for m in mem])
         console.print(answer.strip())
         console.print("\n[dim]依据：[/]")
         for i, h in enumerate(hits, 1):

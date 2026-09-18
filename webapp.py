@@ -21,6 +21,7 @@ import markdown
 from flask import Flask, Response, jsonify, request, send_file, send_from_directory
 
 from podcast_article import library as library_mod
+from podcast_article import library_ask
 from podcast_article import mcp_client, mcp_config, notion
 from podcast_article import publish as publish_mod
 from podcast_article import qa_store
@@ -848,33 +849,10 @@ def api_kb_ask():
         return jsonify({"answer": "书库里没有检索到相关内容。可以先重建索引，或换个说法。",
                         "sources": [], "mode": res["mode"]})
 
-    lines = []
-    for i, h in enumerate(hits, 1):
-        where = f"{h['title']}（{h['podcast']}）" if h.get("podcast") else (h.get("title") or "")
-        if h.get("start_sec") is not None:
-            where += f" · {ts_clock(h['start_sec'])}"
-        if h.get("heading"):
-            where += f" · {h['heading']}"
-        if h.get("doc_kind") == "transcript":
-            where += " · 文字稿"
-        lines.append(f"[{i}] {where}\n{h['text']}")
-    context = "\n\n".join(lines)
-
-    from podcast_article import summarize
     memories = kb_mod.memory_for_prompt(q)
-    mem_text = ""
-    if memories:
-        mem_text = "\n\n【关于这位读者的已知信息】\n" + "\n".join(
-            f"- {m['text']}" for m in memories)
-    system = (
-        "你是这位读者私人播客书库的研究助手。只依据下面提供的资料片段回答问题，"
-        "不要引入资料之外的事实；资料里没有的，直接说「资料里没有」。"
-        "回答用中文，先给结论再给依据，每条依据标注对应的编号（如 [2]）。"
-        "不要复述资料原文的长度，也不要点评资料本身；直接回答问题。"
-    )
-    user = f"读者的问题：{q}{mem_text}\n\n【资料片段】\n{context}"
     try:
-        answer = summarize.ask_once(system, user)
+        # 作答规则统一在 podcast_article/library_ask.py（Web / CLI / MCP 共用一份）
+        answer = library_ask.answer(q, hits, [m["text"] for m in memories])
     except Exception as exc:
         # 模型不可用时把检索结果给出去 —— 有出处的原文比一句报错有用
         return jsonify({"answer": "", "sources": hits, "mode": res["mode"],
