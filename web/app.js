@@ -305,15 +305,27 @@ async function memAdd() {
 }
 
 async function memPin(id, pinned) {
-  await fetch(`/api/memory/${id}`, {
+  const resp = await fetch(`/api/memory/${id}`, {
     method: "PATCH", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ pinned: !!pinned }),
   });
+  // 失败必须说出来：紧接着会重新拉一次列表，成功和失败看起来一模一样，
+  // 用户只会以为「点了没反应」，然后再点一遍。
+  if (!resp.ok) {
+    const d = await resp.json().catch(() => ({}));
+    toast("⚠ " + esc(d.error || "没改动"));
+  }
   loadMemory();
 }
 
 async function memDelete(id) {
-  await fetch(`/api/memory/${id}`, { method: "DELETE" });
+  const resp = await fetch(`/api/memory/${id}`, { method: "DELETE" });
+  if (!resp.ok) {
+    const d = await resp.json().catch(() => ({}));
+    toast("⚠ 删除失败：" + esc(String(d.error || resp.status)));
+  } else {
+    toast("已删除");
+  }
   loadMemory();
 }
 

@@ -28,7 +28,8 @@ const KB_ANSWER = "书里提到的做法有两种：先定场景，再补背景�
 
   const memPosts = [];            // 前端发起的记忆写入请求
   const asks = [];                // 前端发起的提问请求
-  const store = { failMem: false, failError: "内容太短", search: null, kbAsk: null, memList: null };
+  const store = { failMem: false, failError: "内容太短", search: null, kbAsk: null,
+                  memList: null, failDelete: false, memWrites: [] };
 
   const { window, doc, $, click } = await boot({
     beforeParse(w) {
@@ -50,7 +51,12 @@ const KB_ANSWER = "书里提到的做法有两种：先定场景，再补背景�
             if (store.failMem) return fakeResp({ error: store.failError }, false);
             return fakeResp(Object.assign({ id: memPosts.length, pinned: false }, body));
           }
-          // 记忆列表 / 置顶 / 删除：默认给空，别碰真实记忆库（用量那组用例会塞 store.memList）
+          // 置顶 / 删除：默认成功，别碰真实记忆库（用量那组用例会塞 store.memList）
+          if (method === "DELETE" || method === "PATCH") {
+            store.memWrites.push({ url, method });
+            if (store.failDelete) return fakeResp({ error: "cannot DELETE from contentless fts5 table" }, false);
+            return fakeResp({ ok: true, pinned: false });
+          }
           return fakeResp(store.memList
             || { items: [], kinds: ["preference", "fact", "entity", "decision", "insight"] });
         }
@@ -381,6 +387,33 @@ const KB_ANSWER = "书里提到的做法有两种：先定场景，再补背景�
   await sleep(200);
   out.筛选_再点恢复 = doc.querySelectorAll("#memlist .memitem").length === 2;
   check("筛选_再点恢复", out.筛选_再点恢复, "再点一次开关应恢复显示全部");
+
+  // ---------- 删除失败必须说出来（后端曾经 500，界面却当成删成功）
+  store.failDelete = true;
+  store.memList = {
+    kinds: ["preference", "fact", "entity", "decision", "insight"],
+    items: [{ id: 12, text: unusedText, kind: "fact", pinned: false, source_dir: "",
+              use_count: 0, last_used_at: 0 }],
+  };
+  await window.openSettings("memory");      // 跟真实用户一样：切到记忆页签
+  await until(() => doc.querySelectorAll("#memlist .memitem").length === 1, 6000);
+  await sleep(80);
+  // 一行里有两颗按钮（置顶 / 删除），按文案取，别按顺序取
+  const delBtn = [...doc.querySelectorAll("#memlist .memacts button")]
+    .find((b) => /删除/.test(b.textContent));
+  out.删除_有按钮 = !!delBtn;
+  check("删除_有按钮", out.删除_有按钮, "记忆条目上应有删除按钮");
+  if (delBtn) {
+    click(delBtn);
+    await sleep(150);
+    out.删除失败_提示 = (doc.querySelector("#toast").textContent || "").trim();
+    out.删除失败_提示可见 = doc.querySelector("#toast").classList.contains("show");
+    check("删除失败_有提示且不冒充成功",
+      /删除失败/.test(out.删除失败_提示) && out.删除失败_提示可见
+      && !/已删除/.test(out.删除失败_提示),
+      `删除失败时应提示，实际「${out.删除失败_提示}」`);
+  }
+  out.删除_真的发了请求 = store.memWrites.some((x) => x.method === "DELETE");
 
   out.全程_没有真实写入记忆 = memPosts.every((p) => p.url === "/api/memory");
   report("记忆入口（阅读页 / 回答 / 知识库 / 设置页用量）通过", out, fails);
