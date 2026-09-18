@@ -824,9 +824,142 @@ def _semantic(conn: sqlite3.Connection, query: str, k: int, dirs: list[str] | No
     return out
 
 
+# ---------------------------------------------------------------- 重排（RRF 之后）
+
+# 为什么融合之后还要再加一层：**BM25 与余弦都偏爱短句**（BM25 有长度归一化，短文档的
+# 词密度天然高；余弦同理），于是「一个 20 字的 ASR 碎片」能把「200 字的实质段落」挤出
+# 前 6 —— 喂给模型的 6 条"资料"全是断句，再好的提示词也救不回来。
+# 实测（真库，问「孙正义是怎么押注 AI 的？」）：含答案的那条 115 字正文在词法排第 14、
+# 语义排第 15（余弦 0.629），而 top10 里挤满了 20~40 字的碎片，回答只能是「资料里没有」。
+#
+# 所以这里补一层**软重排**：RRF 分 × 覆盖率 × 长度先验 × 来源先验。
+# 三样都是**乘性权重，只调顺序，不排除任何切片** —— 有些集只有文字稿没有文章，
+# 那时它必须还能被选中。
+LEN_FULL = (100.0, 600.0)      # 这个长度区间权重 1.0（检索粒度最好）
+LEN_SHORT = 40.0               # 短于它明显降权：多半是 ASR 断句
+LEN_LONG = 900.0               # 长于它轻微降权：段落太长，检索粒度差
+W_SHORT, W_LONG = 0.55, 0.9
+
+_SRC_ARTICLE = 1.0             # 文章正文 / 引用 / 要点：编辑过，信息密度最高
+_SRC_HEADING = 0.7             # 文章小标题：是标签，不是内容
+_SRC_TRANSCRIPT = 0.85         # 文字稿：ASR 断句、碎片多（但不排除，见上）
+_SRC_OTHER = 0.9
+
+DEDUP_JACCARD = 0.6            # 词集合重合到这个程度就算同一条信息
+PER_DIR_MAX = 4                # 同一集最多给几条（凑不够 k 时会放宽）
+
+# 融合之前每种检索各取多少条**候选**。
+# 为什么不能只取 k*3：重排只能从候选里挑，而真正有信息量的长段落恰恰被长度偏置压在
+# 候选池外面。实测（真库 5612 条切片）：
+#   k=10（池 30）→ 含答案的 115 字正文在词法第 14、语义第 15，勉强够得着
+#   k=3 （池  9）→ 它根本不在候选池里，重排再对也拿不到它
+# 所以池子给一个下限：先粗捞 100 条，再由重排（覆盖率/长度/来源/去重/每集上限）挑。
+# 代价可以忽略：BM25 是一条 SQL 的 LIMIT，向量那一步本来就是全表矩阵乘法。
+CANDIDATE_POOL = 100
+
+
+def _token_set(text: str) -> set[str]:
+    """分词后的**词集合**（覆盖率与去重都用它，跟 FTS 的切法保持一致）。"""
+    return set(tokenize(text).split())
+
+
+def _coverage(qset: set[str], pset: set[str]) -> float:
+    """查询词覆盖率：查询里的词有多少出现在这条切片里。**这是主要信号**。
+
+    20 字的碎片只能覆盖少数查询词，200 字的段落能覆盖更多 —— 长度偏置被这一项抵掉。
+    """
+    if not qset:
+        return 0.0
+    return len(qset & pset) / len(qset)
+
+
+def _length_prior(n: int) -> float:
+    """长度先验（软权重，不是硬过滤）：约 100–600 字最好，碎片明显降权。"""
+    if n <= LEN_SHORT:
+        return W_SHORT
+    if n < LEN_FULL[0]:                                   # 40–100：线性过渡
+        return W_SHORT + (1.0 - W_SHORT) * (n - LEN_SHORT) / (LEN_FULL[0] - LEN_SHORT)
+    if n <= LEN_FULL[1]:
+        return 1.0
+    if n <= LEN_LONG:                                     # 600–900：线性过渡
+        return 1.0 + (W_LONG - 1.0) * (n - LEN_FULL[1]) / (LEN_LONG - LEN_FULL[1])
+    return W_LONG
+
+
+def _source_prior(hit: dict) -> float:
+    """来源先验：文章正文 > 文字稿 > 文章小标题。"""
+    doc_kind = hit.get("doc_kind") or ""
+    if doc_kind == "transcript":
+        return _SRC_TRANSCRIPT
+    if doc_kind == "article":
+        return _SRC_HEADING if (hit.get("kind") or "") == "heading" else _SRC_ARTICLE
+    return _SRC_OTHER
+
+
+def _jaccard(a: set[str], b: set[str]) -> float:
+    if not a or not b:
+        return 0.0
+    return len(a & b) / len(a | b)
+
+
+def _rerank(hits, query: str, k: int, *, per_dir: int = PER_DIR_MAX) -> list[dict]:
+    """RRF 之后的重排：覆盖率 × 长度先验 × 来源先验，再去重、限每集条数。
+
+    `rrf` 字段**原样保留**（界面上 `score` 用的就是它），新分数只写在 `rank_score` 里
+    用来排序与调试。
+    """
+    qset = _token_set(query)
+    scored: list[dict] = []
+    for h in hits:
+        text = re.sub(r"\s+", " ", h.get("text") or "").strip()
+        pset = _token_set(f"{h.get('heading') or ''} {text}")
+        cov = _coverage(qset, pset)
+        h = dict(h)
+        h["coverage"] = cov
+        h["len_prior"] = _length_prior(len(text))
+        h["src_prior"] = _source_prior(h)
+        h["rank_score"] = (float(h.get("rrf") or h.get("score") or 0.0)
+                           * (0.5 + 0.5 * cov) * h["len_prior"] * h["src_prior"])
+        h["_tok"] = pset
+        scored.append(h)
+    scored.sort(key=lambda h: -h["rank_score"])
+
+    # 去重：文本高度重合的只留一条。同一集里 6 条近义碎片等于只给模型一条信息。
+    # **按集去重**（不是全局）：同一集里的重复多半只是 ASR 把一句话说了两遍、或者文章与
+    # 文字稿各存了一份，丢掉一条什么也没少；而**两集说同样的话是互相印证**，是更强的
+    # 证据，连出处一起丢掉反而是损失。
+    kept: list[dict] = []
+    seen: dict[str, list[set]] = {}
+    for h in scored:
+        pool = seen.setdefault(h.get("dir") or "", [])
+        if any(_jaccard(h["_tok"], prev) >= DEDUP_JACCARD for prev in pool):
+            continue
+        pool.append(h["_tok"])
+        kept.append(h)
+
+    # 每集上限：防止一集（可能只是碰巧词多）霸占全部名额。
+    # **但上限不能导致结果变少** —— 用户的库可能只有 1 集相关，那时必须补满。
+    out: list[dict] = []
+    over: list[dict] = []
+    per: dict[str, int] = {}
+    for h in kept:
+        d = h.get("dir") or ""
+        if per.get(d, 0) >= per_dir:
+            over.append(h)
+            continue
+        per[d] = per.get(d, 0) + 1
+        out.append(h)
+    if len(out) < k:
+        out.extend(over[: k - len(out)])
+    out = out[:k]
+    for h in out:
+        h.pop("_tok", None)
+    return out
+
+
 def search(query: str, *, k: int = 8, mode: str = "auto", dirs: list[str] | None = None,
            conn: sqlite3.Connection | None = None) -> dict:
-    """混合检索：词法（FTS5/BM25）+ 向量，用 RRF 融合。
+    """混合检索：词法（FTS5/BM25）+ 向量，用 RRF 融合，再做一层软重排（见 _rerank）。
 
     mode: auto（有向量就混合）/ lexical / semantic。
     返回 {"mode", "hits": [...]}；每条命中都带出处（哪一集、小标题、时间戳），
@@ -838,8 +971,10 @@ def search(query: str, *, k: int = 8, mode: str = "auto", dirs: list[str] | None
         has_vec = _load_vectors(conn) is not None
         use_sem = mode in ("semantic", "auto") and has_vec
         use_lex = mode != "semantic"
-        lex = _lexical(conn, query, k * 3, dirs) if use_lex else []
-        sem = _semantic(conn, query, k * 3, dirs) if use_sem else []
+        # 候选池要够深：重排只能从池子里挑，见 CANDIDATE_POOL 的注释。
+        pool = max(k * 3, CANDIDATE_POOL)
+        lex = _lexical(conn, query, pool, dirs) if use_lex else []
+        sem = _semantic(conn, query, pool, dirs) if use_sem else []
 
         # RRF：按名次融合，避免两种分数的量纲打架（BM25 与余弦完全不可比）
         K0 = 60.0
@@ -851,7 +986,8 @@ def search(query: str, *, k: int = 8, mode: str = "auto", dirs: list[str] | None
             e["rrf"] += 1 / (K0 + rank + 1)
             if e.get("match") == "lexical":
                 e["match"] = "both"
-        hits = sorted(fused.values(), key=lambda h: -h["rrf"])[:k]
+        # 融合后的名次只看"排在第几"，短碎片因此天然占优 —— 重排这一层就是修它。
+        hits = _rerank(fused.values(), query, k)
         return {"mode": "hybrid" if (lex and sem) else ("semantic" if sem else "lexical"),
                 "hits": hits, "count": len(hits)}
     finally:
@@ -866,7 +1002,9 @@ def _hit_public(hit: dict, *, limit: int = 320) -> dict:
         "doc_kind": hit.get("doc_kind"), "kind": hit.get("kind"), "heading": hit.get("heading"),
         "start_sec": hit.get("start_sec"), "end_sec": hit.get("end_sec"),
         "text": text[:limit], "match": hit.get("match"),
+        # score 仍然是 RRF 分（界面语义不变）；重排分单独给一个字段，只为调试。
         "score": round(float(hit.get("rrf") or hit.get("score") or 0), 5),
+        "rank_score": round(float(hit.get("rank_score") or 0), 6),
     }
 
 

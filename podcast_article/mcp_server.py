@@ -173,7 +173,7 @@ def ask_library(question: str) -> str:
     适合「我这一年在这堆播客里学到的东西，关于 X 有哪些说法」这类跨集问题。
     只依据书库里的原文回答；书库里没有的会说没有。
     """
-    res = kb.search(question, k=6)
+    res = kb.search(question, k=10)   # 重排要去重 + 限每集条数，候选要多给
     hits = [kb._hit_public(h, limit=700) for h in res["hits"]]
     if not hits:
         return "书库里没有检索到相关内容（可以先在界面上重建索引，或换个说法）。"

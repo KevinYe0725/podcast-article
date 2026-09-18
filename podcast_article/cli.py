@@ -100,7 +100,7 @@ def _run_kb_command(args) -> int:
 
     if args.cmd == "ask":
         from . import library_ask
-        res = kb.search(args.question, k=6)
+        res = kb.search(args.question, k=10)   # 重排要去重 + 限每集条数，候选要多给
         hits = [kb._hit_public(h, limit=700) for h in res["hits"]]
         if not hits:
             console.print("[yellow]书库里没有检索到相关内容。[/]")

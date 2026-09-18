@@ -839,7 +839,8 @@ def api_kb_ask():
     q = (data.get("question") or "").strip()
     if len(q) < 2:
         return jsonify({"error": "问题太短"}), 400
-    k = min(12, max(3, int(data.get("k") or 6)))
+    # 候选给到 10：重排要做去重与每集上限，多给几条才有得挑（融合池 = k*3）。
+    k = min(12, max(3, int(data.get("k") or 10)))
     try:
         res = kb_mod.search(q, k=k)
     except Exception as exc:
