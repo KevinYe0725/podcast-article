@@ -38,17 +38,18 @@ jobs:
           chmod 600 "$HOME/.ssh/id_ed25519"
           ssh-keyscan -H "$SERVER_HOST" >> "$HOME/.ssh/known_hosts"
 
-          ssh "$SERVER_USER@$SERVER_HOST" "install -d -m 755 '$SERVER_PATH' '$SERVER_PATH/data/output'"
+          ssh -i "$HOME/.ssh/id_ed25519" -o IdentitiesOnly=yes "$SERVER_USER@$SERVER_HOST" "install -d -m 755 '$SERVER_PATH' '$SERVER_PATH/data/output'"
           rsync -az --delete \
             --exclude .git --exclude .venv --exclude output --exclude node_modules \
             --exclude __pycache__ --exclude .env --exclude settings.json \
             --exclude library.json --exclude queue.json --exclude feeds.json \
             --exclude mcp_servers.json --exclude data \
-            -e "ssh -o BatchMode=yes" ./ "$SERVER_USER@$SERVER_HOST:$SERVER_PATH/"
-          scp deploy/podcast-article.service \
+            -e "ssh -i $HOME/.ssh/id_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes" ./ "$SERVER_USER@$SERVER_HOST:$SERVER_PATH/"
+          scp -i "$HOME/.ssh/id_ed25519" -o IdentitiesOnly=yes \
+            deploy/podcast-article.service \
             "$SERVER_USER@$SERVER_HOST:/etc/systemd/system/podcast-article.service"
 
-          ssh "$SERVER_USER@$SERVER_HOST" "set -e; cd '$SERVER_PATH'; \
+          ssh -i "$HOME/.ssh/id_ed25519" -o IdentitiesOnly=yes "$SERVER_USER@$SERVER_HOST" "set -e; cd '$SERVER_PATH'; \
             python3 -m venv .venv 2>/dev/null || true; \
             .venv/bin/pip install --disable-pip-version-check -i https://mirrors.aliyun.com/pypi/simple/ .; \
             chown -R root:root '$SERVER_PATH'; \
