@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import os
 import re
 import sys
 from pathlib import Path
@@ -32,9 +33,13 @@ def _has_faster() -> bool:
         return False
 
 
+def _has_cloud() -> bool:
+    return bool(os.environ.get("DASHSCOPE_API_KEY", "").strip())
+
+
 def available_backends() -> list[str]:
     order = ["mlx", "faster"]
-    checks = {"mlx": _has_mlx, "faster": _has_faster}
+    checks = {"mlx": _has_mlx, "faster": _has_faster, "cloud": _has_cloud}
     return [b for b in order if checks[b]()]
 
 
@@ -43,6 +48,7 @@ def transcribe(
     language: str = "auto",
     backend: str = "auto",
     model: str | None = None,
+    audio_url: str | None = None,
     log=print,
     progress=None,
 ) -> list[dict]:
@@ -58,8 +64,11 @@ def transcribe(
                 "  uv add mlx-whisper        (Apple Silicon 推荐)\n"
                 "  uv add --optional faster faster-whisper   (CPU 通用)"
             )
-    else:
-        candidates = [backend]
+        else:
+            candidates = [backend]
+
+    if backend == "cloud" and not audio_url:
+        raise ValueError("cloud 转写需要 audio_url")
 
     errors: list[str] = []
     for cand in candidates:
@@ -68,10 +77,26 @@ def transcribe(
                 return _transcribe_mlx(audio_path, language, model, log, progress)
             if cand == "faster":
                 return _transcribe_faster(audio_path, language, model, log, progress)
+            if cand == "cloud":
+                if not audio_url:
+                    raise ValueError("cloud 转写需要 audio_url")
+                return _transcribe_cloud(audio_url, language, model, log, progress)
         except Exception as exc:  # 后端失败则尝试下一个
             errors.append(f"{cand}: {exc}")
             log(f"[warn] 转写后端 {cand} 失败：{exc}，尝试下一个…")
     raise RuntimeError("所有转写后端都失败了：\n" + "\n".join(errors))
+
+
+def _transcribe_cloud(audio_url: str, language: str, model: str | None, log, progress=None) -> list[dict]:
+    from .cloud_asr import CloudASRClient
+
+    selected_model = model or os.environ.get("PA_ASR_MODEL", "paraformer-v2")
+    log(f"[asr] 云端模型：{selected_model}")
+    client = CloudASRClient()
+    return client.transcribe(
+        audio_url, language, selected_model,
+        progress=(lambda data: progress("asr", data)) if progress else None,
+    )
 
 
 def _norm_language(language: str) -> str | None:
