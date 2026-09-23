@@ -13,7 +13,17 @@ export PA_USER_SECRETS_KEY="$(uv run python -c 'import base64,os; print(base64.u
 export PA_UI_SESSION_FILE="$TMP/session.json"
 mkdir -p "$OUT" "$PA_DATA_ROOT"
 python3 root_file_guard.test.py
+GUARD_TEST_STATUS=$?
+if [ "$GUARD_TEST_STATUS" -ne 0 ]; then
+  rm -rf "$TMP"
+  exit "$GUARD_TEST_STATUS"
+fi
 python3 root_file_guard.py snapshot "$REPO" > "$TMP/root-files.before.json"
+GUARD_SNAPSHOT_STATUS=$?
+if [ "$GUARD_SNAPSHOT_STATUS" -ne 0 ]; then
+  rm -rf "$TMP"
+  exit "$GUARD_SNAPSHOT_STATUS"
+fi
 export PA_OUTPUT_DIR="$OUT"
 export PA_LIBRARY_FILE="$TMP/library.json"   # 分类数据也要隔离，别碰真实 library.json
 export PA_QUEUE_FILE="$TMP/queue.json"       # 批量队列（后台调度会读写它）

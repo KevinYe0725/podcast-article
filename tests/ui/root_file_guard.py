@@ -11,15 +11,57 @@ from typing import Any
 
 
 VOLATILE_DIRECTORIES = {".git", "node_modules", ".venv", "__pycache__", ".pytest_cache"}
+PRIVATE_PATH_COMPONENTS = {
+    "data", "output", "uploads", "storage", "private", "secrets", "credentials",
+    ".ssh", ".aws", ".azure", ".npm", ".config",
+}
+PRIVATE_SUFFIXES = {".db", ".sqlite", ".sqlite3", ".pem", ".key", ".p12", ".pfx", ".p8"}
+PRIVATE_FILENAMES = {
+    ".npmrc", ".pypirc", ".netrc", "auth.json", "credentials.json", "secrets.json",
+    "library.json", "settings.json", "feeds.json", "queue.json", "usage.json", "meta.json",
+    "transcript.json", "mcp_servers.json",
+}
+HASHABLE_CODE_SUFFIXES = {
+    ".py", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".css", ".html", ".htm",
+    ".sh", ".bash", ".toml", ".yaml", ".yml", ".xml", ".ini", ".cfg", ".conf", ".lock",
+}
+HASHABLE_CONFIG_NAMES = {
+    "package.json", "package-lock.json", "tsconfig.json", "jsconfig.json",
+    "mcp_servers.example.json",
+}
 
 
-def _fingerprint(path: Path, info: os.stat_result) -> dict[str, Any]:
+def _is_private_path(relative: Path) -> bool:
+    parts = tuple(part.lower() for part in relative.parts)
+    name = parts[-1] if parts else ""
+    if any(part in PRIVATE_PATH_COMPONENTS for part in parts):
+        return True
+    if name in PRIVATE_FILENAMES or name == ".env" or name.startswith(".env."):
+        return True
+    if any(marker in name for marker in ("secret", "credential", "_key", "-key", "token")) \
+            or Path(name).suffix in PRIVATE_SUFFIXES:
+        return True
+    return False
+
+
+def _is_safe_code_or_config(relative: Path) -> bool:
+    if _is_private_path(relative):
+        return False
+    name = relative.name.lower()
+    return (
+        Path(name).suffix in HASHABLE_CODE_SUFFIXES
+        or name in HASHABLE_CONFIG_NAMES
+        or name.endswith(".config.json")
+    )
+
+
+def _fingerprint(path: Path, info: os.stat_result, relative: Path) -> dict[str, Any]:
     if stat.S_ISLNK(info.st_mode):
-        digest = hashlib.sha256(os.fsencode(os.readlink(path))).hexdigest()
+        digest = (hashlib.sha256(os.fsencode(os.readlink(path))).hexdigest()
+                  if _is_safe_code_or_config(relative) else None)
         kind = "symlink"
     elif stat.S_ISREG(info.st_mode):
-        # Avoid reading the ignored root MCP config, which may contain credentials.
-        digest = None if path.name == "mcp_servers.json" else _file_digest(path)
+        digest = _file_digest(path) if _is_safe_code_or_config(relative) else None
         kind = "file"
     else:
         digest = None
@@ -52,14 +94,14 @@ def snapshot(root: Path) -> dict[str, dict[str, Any]]:
             except FileNotFoundError:
                 continue
             relative = path.relative_to(root).as_posix()
-            manifest[relative] = _fingerprint(path, info)
+            manifest[relative] = _fingerprint(path, info, Path(relative))
         # Directory symlinks are not traversed, but their own paths remain monitored.
         for name in sorted(os.listdir(base)):
             path = base / name
             if path.is_symlink():
                 relative = path.relative_to(root).as_posix()
                 try:
-                    manifest[relative] = _fingerprint(path, path.lstat())
+                    manifest[relative] = _fingerprint(path, path.lstat(), Path(relative))
                 except FileNotFoundError:
                     pass
     return manifest
