@@ -71,6 +71,38 @@ def test_run_queue_once_returns_none_on_empty_queue(pa):
     assert pa.run_queue_once() is None, "队列为空时应返回 None"
 
 
+def test_worker_lease_is_exclusive_and_released(pa):
+    first = pa._acquire_worker_lease()
+    assert first is not None
+    assert pa._acquire_worker_lease() is None
+
+    first.release()
+    second = pa._acquire_worker_lease()
+    assert second is not None
+    second.release()
+
+
+def test_worker_lease_releases_if_thread_start_and_queue_cleanup_both_fail(pa, monkeypatch):
+    original_start = threading.Thread.start
+
+    def fail_start(self):
+        raise RuntimeError("thread start failed")
+
+    monkeypatch.setattr(threading.Thread, "start", fail_start)
+    monkeypatch.setattr(pa, "_finish_queue_item", lambda _job: (_ for _ in ()).throw(OSError("db failed")))
+    lease = pa._acquire_worker_lease()
+    assert lease is not None
+
+    with pytest.raises(RuntimeError, match="thread start failed"):
+        pa._new_job("https://example.test/episode", {}, worker_lease=lease)
+
+    assert lease.fd is None
+    second = pa._acquire_worker_lease()
+    assert second is not None
+    second.release()
+    monkeypatch.setattr(threading.Thread, "start", original_start)
+
+
 def test_run_queue_once_claims_pending_item_and_forwards_fields(pa, monkeypatch):
     from podcast_article import queue
 
@@ -82,7 +114,8 @@ def test_run_queue_once_claims_pending_item_and_forwards_fields(pa, monkeypatch)
 
     calls = []
 
-    def fake_new_job(url, opts, *, source="manual", queue_id=None, workspace=None):
+    def fake_new_job(url, opts, *, source="manual", queue_id=None, workspace=None, quota_guard=None,
+                     worker_lease=None):
         calls.append({"url": url, "opts": opts, "source": source, "queue_id": queue_id})
         return "job-fake001"
 
@@ -217,7 +250,7 @@ def test_start_scheduler_disabled_by_env(pa, monkeypatch):
 
 
 def test_start_scheduler_starts_thread_when_enabled(pa, monkeypatch):
-    monkeypatch.delenv("PA_SCHEDULER", raising=False)
+    monkeypatch.setenv("PA_SCHEDULER", "1")
     monkeypatch.setattr(pa, "_scheduler_loop", lambda: None)     # 不让它真的循环
 
     assert pa.start_scheduler() is True, "PA_SCHEDULER 未设置时应返回 True"
@@ -405,6 +438,24 @@ def test_run_queue_once_then_finish_leaves_consistent_state(pa, monkeypatch):
     assert queue.snapshot()["counts"]["error"] == 1, "失败应被记成 error"
 
 
+def test_fair_queue_resolves_quota_store_without_flask_context(pa, monkeypatch):
+    """The scheduler claims fair jobs outside Flask and still needs an account quota store."""
+    from podcast_article import queue
+
+    platform_store = pa._system_store()
+    owner_id = platform_store.enabled_account_ids()[0]
+    queued = queue.add("https://example.com/scheduled", owner_id=owner_id)
+    calls = []
+    monkeypatch.setattr(pa, "_new_job", lambda url, opts, **kw: calls.append(kw) or "job-scheduled")
+
+    assert pa.run_queue_once() == "job-scheduled"
+    assert len(calls) == 1
+    guard = calls[0]["quota_guard"]
+    assert guard.owner_id == owner_id
+    assert guard.store.path == platform_store.path
+    assert queue.get(queued[0]["id"], owner_id=owner_id)["state"] == "running"
+
+
 # ------------------------------------------------- 重启后的条目回收（recover_running）
 
 
@@ -453,7 +504,7 @@ def test_start_scheduler_recovers_orphans(pa, monkeypatch):
 
     queue.add("https://example.com/ep1")
     queue.claim(queue.next_pending()["id"])
-    monkeypatch.delenv("PA_SCHEDULER", raising=False)
+    monkeypatch.setenv("PA_SCHEDULER", "1")
     monkeypatch.setattr(pa, "_scheduler_loop", lambda: None)   # 别真的起循环
 
     assert pa.start_scheduler() is True, "未禁用时应启动调度"

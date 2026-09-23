@@ -417,7 +417,7 @@ def test_stream_answer_structure_and_deltas(tmp_output, llm):
     got = stream_answer(workdir=d, selection="强化学习", question="这到底是什么意思",
                         title="某期", podcast="某台", use_web=False, on_delta=on_delta)
 
-    assert set(got) == {"answer", "passages", "web", "error"}
+    assert {"answer", "passages", "web", "error"} <= set(got)
     assert got["error"] == ""
     assert got["answer"] == "第一段。第二段。还可以往哪追"
     # 注意：回答比 GATE_CHARS 短时，闸门会先攒住、末尾一次性放行 —— 所以回调次数
@@ -605,7 +605,7 @@ def test_stream_answer_reports_model_error(tmp_output, llm):
     got = stream_answer(workdir=d, selection="甲", question="q", title="t", podcast="p",
                         use_web=False)
 
-    assert set(got) == {"answer", "passages", "web", "error"}
+    assert {"answer", "passages", "web", "error"} <= set(got)
     assert got["error"], "模型失败要给人话，不许抛异常"
     assert "500" in got["error"]
     assert got["answer"] == ""
@@ -905,3 +905,19 @@ def test_web_empty_hint_does_not_teach_narration():
                            passages=[{"text": "片段", "ts": "00:00:01"}], web="")
     assert "不要交代" in user or "直接" in user, f"应当要求直接回答：{user[-260:]}"
     assert "以下是背景补充" not in user, "不该再出现「以下是背景补充」这种教法"
+
+
+def test_stream_answer_returns_structured_quota_failure(monkeypatch):
+    from decimal import Decimal
+    from podcast_article.platform_store import QuotaExceeded
+
+    def fail_quota(**kwargs):
+        raise QuotaExceeded("llm", Decimal("5.00"), Decimal("4.99"), Decimal("0"), Decimal("0.02"))
+
+    monkeypatch.setattr(deepdive, "_call_model", fail_quota)
+    result = stream_answer(workdir=None, selection="选中", question="为什么", title="T", podcast="P",
+                           use_web=False, quota_guard=object())
+
+    assert result["error"] == "本月额度不足"
+    assert result["error_code"] == "quota_exceeded"
+    assert result["quota"] == {"resource": "llm", "remaining": "0.01"}

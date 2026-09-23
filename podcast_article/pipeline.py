@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
+import shutil
 import ssl
+import subprocess
 import time
 from pathlib import Path
 
@@ -12,6 +15,7 @@ import requests
 
 from . import config, cover as cover_mod, object_storage, summarize, transcribe, usage
 from . import subtitles as subs
+from .platform_store import QuotaExceeded
 from .sources import resolve
 from .sources.ytdlp_src import download_audio
 from .util import episode_slug, ts_clock
@@ -28,6 +32,25 @@ DEFAULT_DOWNLOAD_BACKOFF = "2,5"
 # 跨国链路最先崩的是握手：连接超时给短一点，读超时（两次收到数据之间的最长等待）给宽一点
 CONNECT_TIMEOUT = 15.0
 READ_TIMEOUT = 60.0
+
+
+def _probe_audio_duration(audio_path: Path) -> float | None:
+    """Read the downloaded media duration when ffprobe is installed."""
+    executable = shutil.which("ffprobe")
+    if not executable:
+        return None
+    try:
+        result = subprocess.run(
+            [executable, "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=nw=1:nk=1", str(audio_path)],
+            capture_output=True, text=True, timeout=30, check=False,
+        )
+        if result.returncode != 0:
+            return None
+        duration = float(result.stdout.strip())
+        return duration if math.isfinite(duration) and duration > 0 else None
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None
 
 
 def _env_int(name: str, default: int, minimum: int = 1) -> int:
@@ -98,6 +121,12 @@ class Pipeline:
         on_usage=None,
         episode: dict | None = None,
         settings_path: Path | None = None,
+        quota_guard=None,
+        before_billable_asr=None,
+        resize_billable_asr=None,
+        settle_billable_asr=None,
+        release_billable_asr=None,
+        check_workspace_cache=None,
         object_storage_client=None,
     ):
         self.url = url
@@ -119,6 +148,14 @@ class Pipeline:
         self.on_usage = on_usage  # on_usage(usage: dict)，每次 LLM 调用后回调（用于实时显示花费）
         self.episode = episode    # 预先解析好的单集快照（订阅发现时固定下来，见 webapp）
         self.settings_path = settings_path
+        self.quota_guard = quota_guard
+        self.before_billable_asr = before_billable_asr
+        self.resize_billable_asr = resize_billable_asr
+        self.settle_billable_asr = settle_billable_asr
+        self.release_billable_asr = release_billable_asr
+        self.check_workspace_cache = check_workspace_cache
+        self._actual_audio_seconds: int | None = None
+        self._billable_asr_used = False
         self.object_storage = object_storage_client
 
     def _cloud_storage(self):
@@ -126,12 +163,11 @@ class Pipeline:
             self.object_storage = object_storage.ObjectStorage()
         return self.object_storage
 
-    @staticmethod
-    def _update_meta(workdir: Path, values: dict) -> None:
+    def _update_meta(self, workdir: Path, values: dict) -> None:
         path = workdir / "meta.json"
         current = _read_json(path) if path.exists() else {}
         current.update(values)
-        _write_json(path, current)
+        _write_json(path, current, check_workspace_cache=self.check_workspace_cache)
 
     # ------------------------------------------------------------ 阶段 1：元信息
 
@@ -146,7 +182,15 @@ class Pipeline:
         self.log(f"[meta] {ep.podcast or ep.source}｜{ep.title}")
 
         workdir = self.output_dir / episode_slug(ep.podcast, ep.title, ep.pub_date)
+        workdir_existed = workdir.exists()
         workdir.mkdir(parents=True, exist_ok=True)
+        preexisting_files = {path for path in workdir.rglob("*") if path.is_file() or path.is_symlink()}
+        preexisting_sizes = {}
+        for path in preexisting_files:
+            try:
+                preexisting_sizes[path] = path.stat().st_size
+            except OSError:
+                continue
         meta_path = workdir / "meta.json"
 
         if meta_path.exists():
@@ -157,10 +201,109 @@ class Pipeline:
                 json.dumps(ep.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8"
             )
 
-        self._stage_cover(ep, workdir)
-        audio_file = self._stage_audio(ep, workdir)
-        segments = self._stage_transcript(ep, workdir, audio_file)
+        transcript_path = workdir / "transcript.json"
+        reservation = None
+        self._billable_asr_used = False
+        self._asr_reservation = None
+        self._actual_audio_seconds = None
+        should_check_asr_quota = (
+            self.backend == "cloud"
+            and self.before_billable_asr
+            and (self.force_transcript or not transcript_path.exists())
+        )
+        if should_check_asr_quota and (self.no_subs or not ep.subtitle_tracks):
+            reservation = self.before_billable_asr(ep)
+            self._asr_reservation = reservation
+        try:
+            self._stage_cover(ep, workdir)
+            if self.check_workspace_cache:
+                self.check_workspace_cache()
+            audio_before = set(workdir.glob("audio.*"))
+            audio_file = self._stage_audio(ep, workdir)
+            if self.check_workspace_cache:
+                try:
+                    self.check_workspace_cache()
+                except Exception as cache_exc:
+                    if audio_file.parent == workdir and audio_file not in audio_before:
+                        resumed_part = next((path for path in audio_before
+                                             if path.name.endswith(".part")
+                                             and path.with_suffix("") == audio_file), None)
+                        if (isinstance(cache_exc, QuotaExceeded) and resumed_part is not None
+                                and resumed_part in preexisting_sizes and audio_file.exists()):
+                            try:
+                                with audio_file.open("r+b") as stream:
+                                    stream.truncate(preexisting_sizes[resumed_part])
+                                audio_file.replace(resumed_part)
+                            except OSError:
+                                audio_file.unlink(missing_ok=True)
+                        else:
+                            audio_file.unlink(missing_ok=True)
+                    raise
+            segments = self._stage_transcript(ep, workdir, audio_file)
+            if self.check_workspace_cache:
+                self.check_workspace_cache()
+        except Exception as exc:
+            reservation = reservation or self._asr_reservation
+            if reservation is not None:
+                if self._billable_asr_used and self.settle_billable_asr:
+                    self.settle_billable_asr(reservation, int(reservation.reserved_amount))
+                elif self.release_billable_asr:
+                    self.release_billable_asr(reservation)
+            if isinstance(exc, QuotaExceeded) and exc.resource == "cache_bytes":
+                if workdir_existed:
+                    for path, original_size in preexisting_sizes.items():
+                        if path.name.endswith(".part"):
+                            try:
+                                if path.is_file() and path.stat().st_size > original_size:
+                                    with path.open("r+b") as stream:
+                                        stream.truncate(original_size)
+                            except OSError:
+                                pass
+                    for path in workdir.rglob("*"):
+                        try:
+                            if path.is_file() and path not in preexisting_files:
+                                path.unlink(missing_ok=True)
+                        except OSError:
+                            pass
+                else:
+                    shutil.rmtree(workdir, ignore_errors=True)
+            raise
+        reservation = reservation or self._asr_reservation
+        if reservation is not None:
+            if self._billable_asr_used and self.settle_billable_asr:
+                actual_seconds = self._actual_audio_seconds or 0
+                duration = ep.duration
+                if actual_seconds <= 0:
+                    try:
+                        actual_seconds = max(1, math.ceil(float(duration))) if duration else 0
+                    except (TypeError, ValueError, OverflowError):
+                        actual_seconds = 0
+                if actual_seconds == 0:
+                    try:
+                        actual_seconds = math.ceil(max(float(segment.get("end") or 0) for segment in segments))
+                    except (TypeError, ValueError, OverflowError):
+                        actual_seconds = 0
+                if actual_seconds <= 0:
+                    actual_seconds = int(reservation.reserved_amount)
+                self.settle_billable_asr(reservation, actual_seconds)
+            elif self.release_billable_asr:
+                self.release_billable_asr(reservation)
         article = self._stage_article(ep, workdir, segments)
+        if self.check_workspace_cache:
+            try:
+                self.check_workspace_cache()
+            except QuotaExceeded as exc:
+                if exc.resource == "cache_bytes":
+                    if workdir_existed:
+                        for path in workdir.rglob("*"):
+                            try:
+                                if path.is_file() and path not in preexisting_files:
+                                    path.unlink(missing_ok=True)
+                            except OSError:
+                                pass
+                    else:
+                        shutil.rmtree(workdir, ignore_errors=True)
+                raise
         return article
 
     def _stage_cover(self, ep, workdir: Path) -> None:
@@ -266,6 +409,29 @@ class Pipeline:
                 except ValueError:
                     asr_url_expires = 86400
                 audio_url = self._cloud_storage().signed_url(key, expires=asr_url_expires)
+            if self.backend == "cloud":
+                if self.before_billable_asr:
+                    from .quota import asr_reservation_seconds
+
+                    measured_duration = _probe_audio_duration(audio_file)
+                    if measured_duration is None:
+                        raise RuntimeError("无法验证云端转写音频时长；请安装 ffprobe 后重试")
+                    self._actual_audio_seconds = asr_reservation_seconds(measured_duration)
+                    if self._asr_reservation is None:
+                        self._asr_reservation = self.before_billable_asr(ep, self._actual_audio_seconds)
+                    elif self.resize_billable_asr:
+                        self._asr_reservation = self.resize_billable_asr(
+                        self._asr_reservation, self._actual_audio_seconds
+                        )
+                    elif self._actual_audio_seconds > int(self._asr_reservation.reserved_amount):
+                        raise RuntimeError("云端转写额度预留无法扩展到已验证的音频时长")
+                    if self.check_workspace_cache:
+                        reserve_bytes = min(4 * 1024 * 1024,
+                                            64 * 1024 + self._actual_audio_seconds * 256)
+                        self.check_workspace_cache(requested_bytes=reserve_bytes)
+                if self.before_billable_asr and self._asr_reservation is None:
+                    self._asr_reservation = self.before_billable_asr(ep)
+                self._billable_asr_used = True
             segments = transcribe.transcribe(
                 audio_file,
                 language=self.language,
@@ -277,8 +443,22 @@ class Pipeline:
             )
             self.log(f"[text] 转写完成：{len(segments)} 个片段")
 
-        _write_json(t_path, segments)
-        self._write_readable_transcript(workdir / "transcript.txt", segments)
+        readable_path = workdir / "transcript.txt"
+        readable_content = "\n".join(f"[{ts_clock(s['start'])}] {s['text']}" for s in segments)
+        cache_write_guard = None
+        if self.check_workspace_cache:
+            json_content = json.dumps(segments, ensure_ascii=False, indent=1)
+            cache_write_guard = self.check_workspace_cache(replacements={
+                t_path: len(json_content.encode("utf-8")),
+                readable_path: len(readable_content.encode("utf-8")),
+            })
+        if cache_write_guard is not None and hasattr(cache_write_guard, "__enter__"):
+            with cache_write_guard:
+                _write_json(t_path, segments)
+                readable_path.write_text(readable_content, encoding="utf-8")
+        else:
+            _write_json(t_path, segments)
+            readable_path.write_text(readable_content, encoding="utf-8")
         return segments
 
     def _try_subtitles(self, ep) -> list[dict] | None:
@@ -292,11 +472,6 @@ class Pipeline:
                 self.log(f"[text] 字幕 {track.lang} 获取失败：{exc}")
         return None
 
-    @staticmethod
-    def _write_readable_transcript(path: Path, segments: list[dict]) -> None:
-        lines = [f"[{ts_clock(s['start'])}] {s['text']}" for s in segments]
-        path.write_text("\n".join(lines), encoding="utf-8")
-
     # ------------------------------------------------------------ 阶段 4：文章
 
     def _stage_article(self, ep, workdir: Path, segments: list[dict]) -> Path:
@@ -305,12 +480,21 @@ class Pipeline:
             self.log("[write] 复用已有文章")
             return a_path
 
+        if self.check_workspace_cache:
+            estimate = max(128 * 1024, min(4 * 1024 * 1024, self.max_chars * 4))
+            self.check_workspace_cache(requested_bytes=estimate)
+
         text_chars = sum(len(s["text"]) for s in segments)
         self.log(f"[write] 开始生成文章（文字稿约 {text_chars} 字）…")
         # 记账：重写文章时把上一次的花费一起带上（这一集真实花掉的钱是有意义的）
         model = self.llm_model or config.deepseek_model()
         meter = usage.Recorder(model, workdir, on_update=self.on_usage,
-                               started=usage.load(workdir))
+                               started=usage.load(workdir),
+                               before_save=(
+                                   lambda path, size: self.check_workspace_cache(
+                                       replacing=path, projected_bytes=size
+                                   )
+                               ) if self.check_workspace_cache else None)
         if self.on_usage:
             self.on_usage(usage.describe(meter.usage))
         try:
@@ -327,6 +511,7 @@ class Pipeline:
                 outlined=self.outlined,
                 settings_path=self.settings_path,
                 usage_recorder=meter,
+                quota_guard=self.quota_guard,
                 log=self.log,
                 progress=self.progress,
             )
@@ -341,7 +526,16 @@ class Pipeline:
                      f"约 {usage.cost_cny(snapshot):.3f} 元")
         if not article:
             raise RuntimeError("模型没有返回任何内容")
-        a_path.write_text(article + "\n", encoding="utf-8")
+        content = article + "\n"
+        if self.check_workspace_cache:
+            guard = self.check_workspace_cache(replacing=a_path, projected_bytes=len(content.encode("utf-8")))
+        else:
+            guard = None
+        if guard is not None and hasattr(guard, "__enter__"):
+            with guard:
+                a_path.write_text(content, encoding="utf-8")
+        else:
+            a_path.write_text(content, encoding="utf-8")
         self.log("[write] 文章完成")
         return a_path
 
@@ -447,6 +641,7 @@ def _download_once(audio_url: str, dest: Path, tmp: Path, progress=None, log=pri
         total = range_total or (done + remain if remain is not None else 0)
 
         last_pct = -100.0
+        last_progress_bytes = 0
         got = 0
         with open(tmp, mode) as f:
             for chunk in r.iter_content(chunk_size=1 << 20):
@@ -455,14 +650,15 @@ def _download_once(audio_url: str, dest: Path, tmp: Path, progress=None, log=pri
                 f.write(chunk)
                 got += len(chunk)
                 done += len(chunk)
-                if progress and total:
-                    pct = done / total * 100
-                    if pct - last_pct >= 2:  # 每 2% 上报一次
+                if progress:
+                    pct = done / total * 100 if total else None
+                    if done - last_progress_bytes >= (1 << 20) or (pct is not None and pct - last_pct >= 2):
                         last_pct = pct
+                        last_progress_bytes = done
                         progress("download", {
-                            "pct": round(pct, 1),
+                            "pct": round(pct, 1) if pct is not None else None,
                             "downloaded": done,
-                            "total": total,
+                            "total": total or None,
                         })
 
     # 长度校验：Content-Length 与实际不符（被中途掐断 / 代理截断）按失败处理，交给外层重试
@@ -520,8 +716,17 @@ def _read_json(path: Path):
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _write_json(path: Path, data) -> None:
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+def _write_json(path: Path, data, *, check_workspace_cache=None) -> None:
+    content = json.dumps(data, ensure_ascii=False, indent=1)
+    if check_workspace_cache:
+        guard = check_workspace_cache(replacing=path, projected_bytes=len(content.encode("utf-8")))
+    else:
+        guard = None
+    if guard is not None and hasattr(guard, "__enter__"):
+        with guard:
+            path.write_text(content, encoding="utf-8")
+    else:
+        path.write_text(content, encoding="utf-8")
 
 
 def Episode_from_dict(d: dict):

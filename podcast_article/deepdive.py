@@ -29,6 +29,7 @@ import types
 from pathlib import Path
 
 from . import config, outline, settings, summarize, usage
+from .platform_store import QuotaExceeded
 from .summarize import _chat
 from .util import ts_clock
 
@@ -714,7 +715,7 @@ def _tee_client(client, on_delta, log=print):
 
 def _call_model(*, system: str, user: str, model: str, log=print, on_delta=None,
                 max_tokens: int | None = None, history: list[dict] | None = None,
-                usage_recorder: usage.Recorder | None = None) -> str:
+                usage_recorder: usage.Recorder | None = None, quota_guard=None) -> str:
     """流式调用，返回正文全文（复用 summarize._chat 的全部既有约定）。"""
     client = _client()
     return _chat(
@@ -724,11 +725,14 @@ def _call_model(*, system: str, user: str, model: str, log=print, on_delta=None,
         thinking=False,   # 关思考：抽屉场景要的是快而稳，且关掉后 temperature 才生效
         history=history,  # 连续追问：把之前的轮次按真实角色带上（见 _chat 的说明）
         usage_recorder=usage_recorder,
+        quota_guard=quota_guard,
     )
 
 
 def _friendly_error(exc: Exception) -> str:
     """把异常翻成一句人能看懂的话（上层是流式界面，只显示这段文字）。"""
+    if isinstance(exc, QuotaExceeded):
+        return "本月额度不足"
     if isinstance(exc, config.MissingKeyError):
         return "还没有配置 DeepSeek API Key，无法生成解读：请在「设置」里填入 key 后重试。"
     return f"解读生成失败（{type(exc).__name__}）：{exc}"
@@ -895,17 +899,17 @@ def _profile(settings_path: Path | None = None) -> str:
         return ""
 
 
-def _start_usage(workdir: Path | None, model: str, log=print, on_update=None):
+def _start_usage(workdir: Path | None, model: str, log=print, on_update=None, before_save=None):
     """为当前提问创建独立记录器，不读取或抢占别的请求的活动记录。"""
     if workdir is None:
-        return usage.Recorder(model, on_update=on_update), False
+        return usage.Recorder(model, on_update=on_update, before_save=before_save), False
     try:
         recorder = usage.Recorder(model, workdir=Path(workdir), on_update=on_update,
-                                  started=usage.load(workdir) or {})
+                                  started=usage.load(workdir) or {}, before_save=before_save)
         return recorder, True
     except Exception as exc:
         log(f"[deepdive] 用量记录器启动失败，本次不记账（{type(exc).__name__}: {exc}）")
-        return usage.Recorder(model, on_update=on_update), False
+        return usage.Recorder(model, on_update=on_update, before_save=before_save), False
 
 
 def _stop_usage(recorder: usage.Recorder | None, owned: bool, log=print) -> dict:
@@ -930,7 +934,7 @@ def stream_answer(*, workdir: Path | None, selection: str, question: str, title:
                   memory: str = "",
                   history: list[dict] | None = None,
                   settings_path: Path | None = None, usage_recorder: usage.Recorder | None = None,
-                  on_usage=None) -> dict:
+                  quota_guard=None, before_usage_save=None, on_usage=None) -> dict:
     """主入口（流式）。返回 `{"answer", "passages", "web", "error"}`。
 
     - 先 `retrieve()` 拿原文片段（query = 选中文字 + 疑问，两者都可能在讲他关心的词）；
@@ -964,12 +968,19 @@ def stream_answer(*, workdir: Path | None, selection: str, question: str, title:
     )
 
     if usage_recorder is None:
-        recorder, owns_recorder = _start_usage(workdir, model, log, on_update=on_usage)
+        active_recorder = usage.current()
+        if active_recorder is not None:
+            recorder, owns_recorder = active_recorder, False
+        else:
+            recorder, owns_recorder = _start_usage(workdir, model, log, on_update=on_usage,
+                                                   before_save=before_usage_save)
     else:
         recorder, owns_recorder = usage_recorder, False
     pushed: list[str] = []          # 真正推给界面的文本（= 最终 answer）
     body = ""                       # 生成结果；generate() 抛异常时也要有值
     error = ""
+    error_code = None
+    quota_error = None
 
     def push(text: str) -> None:
         if not text:
@@ -1021,7 +1032,7 @@ def stream_answer(*, workdir: Path | None, selection: str, question: str, title:
         body = _call_model(system=system_override or system, user=user, model=model,
                            log=log, on_delta=emit,
                            max_tokens=answer_limits(mode)[1], history=history,
-                           usage_recorder=recorder)
+                           usage_recorder=recorder, quota_guard=quota_guard)
         if not buf and body:
             # 兜底：万一流里没有 content（例如上游换了实现），整段补发一次，
             # 保证「on_delta 收到的拼接」永远等于 answer
@@ -1055,6 +1066,9 @@ def stream_answer(*, workdir: Path | None, selection: str, question: str, title:
             log("[deepdive] 重写后仍在清点材料，保留这一版（不再重试）")
     except Exception as exc:
         error = _friendly_error(exc)
+        if isinstance(exc, QuotaExceeded):
+            error_code = "quota_exceeded"
+            quota_error = {"resource": exc.resource, "remaining": str(exc.remaining)}
         log(f"[deepdive] {error}")
         # 中途失败时，攒在闸门缓冲里、还没放行的正文不能丢 —— 有半篇也比一片空白强
         partial = "".join(tracker.get("buf") or [])
@@ -1076,4 +1090,5 @@ def stream_answer(*, workdir: Path | None, selection: str, question: str, title:
         if meta:
             log(f"[deepdive] ⚠ 回答里有 {len(meta)} 处交代出处的话：" + "；".join(m[:30] for m in meta))
     return {"answer": answer, "passages": passages, "web": web, "error": error,
-            "usage": usage.describe(usage_snapshot) if usage_snapshot else None}
+            "usage": usage.describe(usage_snapshot) if usage_snapshot else None,
+            "error_code": error_code, "quota": quota_error}

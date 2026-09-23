@@ -35,6 +35,25 @@ def test_append_creates_file_and_returns_record(workdir):
     assert saved["items"][0]["answer"] == "解读正文"
 
 
+def test_append_capacity_rejection_preserves_previous_qa(workdir):
+    from podcast_article.platform_store import QuotaExceeded
+
+    existing = _add(workdir, answer="previous answer")
+    path = workdir / "qa.json"
+    before = path.read_bytes()
+
+    def reject(target, size):
+        assert target == path
+        assert size > len(before)
+        raise QuotaExceeded("cache_bytes", 1, len(before), 0, size)
+
+    with pytest.raises(QuotaExceeded):
+        qa_store.append(workdir, selection="x", question="y", answer="new answer",
+                        thread=existing["thread"], before_save=reject)
+
+    assert path.read_bytes() == before
+
+
 def test_load_returns_newest_first(workdir):
     _add(workdir, answer="第一条")
     _add(workdir, answer="第二条")

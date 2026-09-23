@@ -200,11 +200,12 @@ class Recorder:
     """一次任务的用量累加器；每次调用后回调 on_update，界面就能实时看到花费。"""
 
     def __init__(self, model: str, workdir: Path | None = None, on_update=None,
-                 started: dict | None = None):
+                 started: dict | None = None, before_save=None):
         self.usage = {**empty(model), **(started or {})}
         self.usage["model"] = model or FALLBACK_MODEL
         self.workdir = workdir
         self.on_update = on_update
+        self.before_save = before_save
         self._t0 = time.time()
         self._lock = threading.Lock()
 
@@ -225,7 +226,15 @@ class Recorder:
             self.usage["elapsed_s"] = round(time.time() - self._t0, 1)
             snapshot = json.loads(json.dumps(self.usage))
         if self.workdir and snapshot.get("calls"):
-            save(self.workdir, snapshot)
+            guard = None
+            if self.before_save:
+                encoded = json.dumps(snapshot, ensure_ascii=False, indent=2)
+                guard = self.before_save(path_for(self.workdir), len(encoded.encode("utf-8")))
+            if guard is not None and hasattr(guard, "__enter__"):
+                with guard:
+                    save(self.workdir, snapshot)
+            else:
+                save(self.workdir, snapshot)
         return snapshot
 
 

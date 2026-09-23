@@ -30,9 +30,12 @@ import re
 import time
 import uuid
 from pathlib import Path
+from functools import lru_cache
 
 from . import links
 from .config import PROJECT_ROOT
+from .platform_store import PlatformStore, PlatformJob
+from .workspace import data_root
 
 # "1. http…" / "- http…" / "* http…" / "• http…" 这类行首标记
 _BULLET = re.compile(r"^(?:\d+[.)、]|[-*•])+\s*")
@@ -47,6 +50,34 @@ STATE_LABELS = {
 }
 MAX_ITEMS = 200          # 队列上限，防止误粘贴把 json 撑爆
 MAX_URLS_PER_CALL = 50
+
+
+@lru_cache(maxsize=4)
+def _platform_store(path: str) -> PlatformStore:
+    return PlatformStore(Path(path))
+
+
+def _owner_store(owner_id: str) -> PlatformStore:
+    return _platform_store(str(data_root() / "platform.sqlite"))
+
+
+def _platform_item(job: PlatformJob) -> dict:
+    payload = dict(job.payload)
+    return {
+        "id": job.id,
+        "owner_id": job.owner_id,
+        "url": payload.get("url") or "",
+        "pick": payload.get("pick", 1),
+        "title": payload.get("title") or "",
+        "source": payload.get("source") or "manual",
+        "state": job.state,
+        "opts": payload.get("opts") or {},
+        "added_at": round(job.created_at, 3),
+        "started_at": job.started_at,
+        "finished_at": job.finished_at,
+        "dir": job.dir_name,
+        "error": job.error,
+    }
 
 
 def _load() -> dict:
@@ -71,9 +102,12 @@ def _find(data: dict, item_id: str) -> dict | None:
     return next((i for i in data["items"] if i["id"] == item_id), None)
 
 
-def snapshot() -> dict:
+def snapshot(*, owner_id: str | None = None) -> dict:
     """队列全貌 + 计数（按加入顺序返回）。"""
-    items = _load()["items"]
+    if owner_id is not None:
+        items = [_platform_item(job) for job in _owner_store(owner_id).list_jobs(owner_id, limit=500)]
+    else:
+        items = _load()["items"]
     counts = {s: 0 for s in STATES}
     for it in items:
         counts[it.get("state", "pending")] = counts.get(it.get("state", "pending"), 0) + 1
@@ -111,11 +145,29 @@ def parse_urls(text: str | list[str]) -> list[str]:
 
 
 def add(urls: str | list[str], *, opts: dict | None = None,
-        source: str = "manual", pick: int = 1, title: str = "") -> list[dict]:
+        source: str = "manual", pick: int = 1, title: str = "",
+        owner_id: str | None = None) -> list[dict]:
     """入队。返回新加进去的条目（已在队列里的重复链接会被跳过）。"""
     items = parse_urls(urls)
     if not items:
         raise ValueError("没有识别到链接（需要 http/https 链接，或本地文件路径）")
+    if owner_id is not None:
+        store = _owner_store(owner_id)
+        known = {(it["url"], it.get("pick", 1)) for it in
+                 (_platform_item(job) for job in store.list_jobs(owner_id, limit=500))
+                 if it.get("state") in ("pending", "running")}
+        payloads: list[dict] = []
+        for url in items:
+            normalized_pick = int(pick) if str(pick).isdigit() else 1
+            if (url, normalized_pick) in known:
+                continue
+            payloads.append({
+                "url": url, "pick": normalized_pick, "title": title or "",
+                "source": source, "opts": dict(opts or {}),
+            })
+            known.add((url, normalized_pick))
+        jobs = store.enqueue_jobs(owner_id, payloads, created_at=time.time())
+        return [_platform_item(job) for job in jobs]
     data = _load()
     known = {(i.get("url"), i.get("pick", 1)) for i in data["items"]
              if i.get("state") in ("pending", "running")}
@@ -146,21 +198,39 @@ def add(urls: str | list[str], *, opts: dict | None = None,
     return added
 
 
-def get(item_id: str) -> dict | None:
+def get(item_id: str, *, owner_id: str | None = None) -> dict | None:
+    if owner_id is not None:
+        job = _owner_store(owner_id).get_job(owner_id, item_id)
+        return _platform_item(job) if job else None
     return _find(_load(), item_id)
 
 
-def next_pending() -> dict | None:
+def next_pending(*, owner_id: str | None = None) -> dict | None:
     """拿最早入队且还没跑的一条（FIFO）。"""
+    if owner_id is not None:
+        jobs = _owner_store(owner_id).list_jobs(owner_id, limit=500)
+        pending = [job for job in jobs if job.state == "pending"]
+        return _platform_item(min(pending, key=lambda job: (job.position, job.created_at))) if pending else None
     return next((i for i in _load()["items"] if i.get("state") == "pending"), None)
 
 
-def has_running() -> bool:
+def next_fair_job() -> dict | None:
+    """Atomically claim the next account-fair platform job for the global worker."""
+    job = _platform_store(str(data_root() / "platform.sqlite")).next_job()
+    return _platform_item(job) if job else None
+
+
+def has_running(*, owner_id: str | None = None) -> bool:
+    if owner_id is not None:
+        return any(job.state == "running" for job in _owner_store(owner_id).list_jobs(owner_id, limit=500))
     return any(i.get("state") == "running" for i in _load()["items"])
 
 
-def claim(item_id: str) -> dict | None:
+def claim(item_id: str, *, owner_id: str | None = None) -> dict | None:
     """把一条标成 running（开始跑之前调用）。已经被别人抢走则返回 None。"""
+    if owner_id is not None:
+        job = _owner_store(owner_id).claim_job(owner_id, item_id)
+        return _platform_item(job) if job else None
     data = _load()
     item = _find(data, item_id)
     if not item or item.get("state") != "pending":
@@ -173,9 +243,15 @@ def claim(item_id: str) -> dict | None:
 
 
 def finish(item_id: str, state: str, *, dir_name: str | None = None,
-           error: str = "") -> dict:
+           error: str = "", owner_id: str | None = None) -> dict:
     if state not in STATES:
         raise ValueError(f"未知状态：{state}")
+    if owner_id is not None:
+        store = _owner_store(owner_id)
+        if not store.finish_job(owner_id, item_id, state, dir_name=dir_name, error=error):
+            raise ValueError("队列里没有这一条")
+        job = store.get_job(owner_id, item_id)
+        return _platform_item(job) if job else {}
     data = _load()
     item = _find(data, item_id)
     if not item:
@@ -189,9 +265,14 @@ def finish(item_id: str, state: str, *, dir_name: str | None = None,
     return item
 
 
-def update(item_id: str, **fields) -> dict:
+def update(item_id: str, *, owner_id: str | None = None, **fields) -> dict:
     """只允许改标题这类展示字段（状态一律走 claim/finish）。"""
     allowed = {"title", "pick", "opts", "source"}
+    if owner_id is not None:
+        job = _owner_store(owner_id).update_job(owner_id, item_id, fields)
+        if not job:
+            raise ValueError("队列里没有这一条")
+        return _platform_item(job)
     data = _load()
     item = _find(data, item_id)
     if not item:
@@ -203,7 +284,9 @@ def update(item_id: str, **fields) -> dict:
     return item
 
 
-def remove(item_id: str) -> bool:
+def remove(item_id: str, *, owner_id: str | None = None) -> bool:
+    if owner_id is not None:
+        return _owner_store(owner_id).remove_job(owner_id, item_id)
     data = _load()
     before = len(data["items"])
     data["items"] = [i for i in data["items"] if i["id"] != item_id]
@@ -213,12 +296,14 @@ def remove(item_id: str) -> bool:
     return True
 
 
-def clear(*, keep_failed: bool = False) -> int:
+def clear(*, keep_failed: bool = False, owner_id: str | None = None) -> int:
     """清掉已结束的条目（done 与 error）。
 
     排队中/生成中的条目**永远保留**——正在跑的那条被删掉会让执行循环失去跟踪对象。
     keep_failed=True 时连失败的也留着（方便回头重试）。
     """
+    if owner_id is not None:
+        return _owner_store(owner_id).clear_jobs(owner_id, keep_failed=keep_failed)
     data = _load()
     keep = {"pending", "running"} | ({"error"} if keep_failed else set())
     before = len(data["items"])
@@ -229,8 +314,10 @@ def clear(*, keep_failed: bool = False) -> int:
     return removed
 
 
-def move(item_id: str, delta: int) -> int:
+def move(item_id: str, delta: int, *, owner_id: str | None = None) -> int:
     """上移/下移一条待跑的任务（delta=-1 提前）。返回新位置；非 pending 不动。"""
+    if owner_id is not None:
+        return _owner_store(owner_id).move_job(owner_id, item_id, delta)
     data = _load()
     idx = next((n for n, i in enumerate(data["items"]) if i["id"] == item_id), None)
     if idx is None:
@@ -244,16 +331,21 @@ def move(item_id: str, delta: int) -> int:
     return new
 
 
-def reorder(ids: list[str]) -> None:
+def reorder(ids: list[str], *, owner_id: str | None = None) -> None:
     """按给定 id 顺序重排（未出现的保持原有相对顺序跟在后面）。"""
+    if owner_id is not None:
+        _owner_store(owner_id).reorder_jobs(owner_id, ids)
+        return
     data = _load()
     order = {i: n for n, i in enumerate(ids)}
     data["items"].sort(key=lambda it: order.get(it["id"], len(order)))
     _save(data)
 
 
-def retry_failed() -> int:
+def retry_failed(*, owner_id: str | None = None) -> int:
     """把失败的全部退回排队，用于「重跑失败的那几条」。"""
+    if owner_id is not None:
+        return _owner_store(owner_id).retry_failed_jobs(owner_id)
     data = _load()
     n = 0
     for it in data["items"]:
@@ -271,13 +363,17 @@ def retry_failed() -> int:
 MAX_AUTO_RECOVER = 2
 
 
-def recover_running() -> int:
+def recover_running(*, owner_id: str | None = None) -> int:
     """把卡在 running 的条目归位（服务重启/进程被杀之后调用）。
 
     服务是单进程单任务的：进程起来时如果还有 running，那一定是上次没跑完就死了，
     而队列只挑 pending —— 不归位的话整条队列会被一条永远跑不完的任务堵死。
     连续失败 MAX_AUTO_RECOVER 次的条目直接标失败，把问题暴露给用户而不是反复空转。
     """
+    if owner_id is not None:
+        return _owner_store(owner_id).recover_running_jobs(owner_id)
+    # The platform queue is the service-wide durable queue; recover stale claims at startup.
+    recovered_platform = _platform_store(str(data_root() / "platform.sqlite")).recover_running_jobs()
     data = _load()
     changed = 0
     for it in data["items"]:
@@ -295,4 +391,4 @@ def recover_running() -> int:
         changed += 1
     if changed:
         _save(data)
-    return changed
+    return changed + recovered_platform

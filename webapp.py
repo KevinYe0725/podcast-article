@@ -5,7 +5,9 @@
 from __future__ import annotations
 
 import json
+import fcntl
 import ipaddress
+from contextlib import contextmanager
 import os
 import shlex
 import re
@@ -16,6 +18,7 @@ import time
 import unicodedata
 import uuid
 from functools import wraps
+from decimal import Decimal
 from pathlib import Path
 from urllib.parse import quote
 
@@ -23,7 +26,7 @@ import markdown
 from flask import Flask, Response, g, jsonify, make_response, redirect, request, send_file, send_from_directory, url_for
 
 from podcast_article import auth as auth_mod
-from podcast_article.platform_store import InviteError, normalize_username
+from podcast_article.platform_store import InviteError, PlatformStore, QuotaExceeded, normalize_username
 from podcast_article import library as library_mod
 from podcast_article import library_ask
 from podcast_article import mcp_client, mcp_config, notion
@@ -174,6 +177,182 @@ def _auth_store():
     return auth_mod._request_store()
 
 
+def _quota_guard(owner_id: str):
+    from flask import has_app_context
+    from podcast_article.quota import LLMQuotaGuard
+
+    # Scheduled jobs run outside a Flask request/app context. Route handlers use
+    # the configured request store; the scheduler resolves the same DB by path.
+    store = _auth_store() if has_app_context() else _system_store()
+    return LLMQuotaGuard(store, owner_id)
+
+
+_SYSTEM_STORE_LOCK = threading.Lock()
+_SYSTEM_STORE_PATH: Path | None = None
+_SYSTEM_STORE: PlatformStore | None = None
+
+
+def _system_store() -> PlatformStore:
+    global _SYSTEM_STORE, _SYSTEM_STORE_PATH
+    path = data_root() / "platform.sqlite"
+    with _SYSTEM_STORE_LOCK:
+        if _SYSTEM_STORE is None or _SYSTEM_STORE_PATH != path:
+            _SYSTEM_STORE = PlatformStore(path)
+            _SYSTEM_STORE_PATH = path
+        return _SYSTEM_STORE
+
+
+def _quota_summary(owner_id: str) -> dict:
+    from podcast_article.quota import month_key
+
+    store = _auth_store()
+    account = store.user_by_id(owner_id)
+    if account is None:
+        return {}
+    month = month_key()
+    totals = store.quota_usage(owner_id, month)
+    asr_limit = account.quota.asr_month_seconds
+    llm_limit = account.quota.llm_month_cny
+    asr_remaining = (None if asr_limit is None else
+                     max(0, asr_limit - totals["asr_used_seconds"] - totals["asr_reserved_seconds"]))
+    llm_remaining = (None if llm_limit is None else
+                     max(Decimal(0), llm_limit - totals["llm_used_cny"] - totals["llm_reserved_cny"]))
+    return {
+        "month_key": month,
+        "asr": {
+            "limit_seconds": asr_limit,
+            "used_seconds": totals["asr_used_seconds"],
+            "reserved_seconds": totals["asr_reserved_seconds"],
+            "remaining_seconds": asr_remaining,
+        },
+        "llm": {
+            "limit_cny": str(llm_limit) if llm_limit is not None else None,
+            "used_cny": str(totals["llm_used_cny"]),
+            "reserved_cny": str(totals["llm_reserved_cny"]),
+            "remaining_cny": str(llm_remaining) if llm_remaining is not None else None,
+        },
+        "cache_bytes": account.quota.cache_bytes,
+        "queue_items": account.quota.queue_items,
+        "max_upload_bytes": account.quota.max_upload_bytes,
+    }
+
+
+def _quota_exhausted_response(owner_id: str, resource: str):
+    summary = _quota_summary(owner_id)
+    if resource == "llm_month_cny":
+        remaining = (summary.get("llm") or {}).get("remaining_cny")
+        exhausted = remaining is not None and Decimal(remaining) <= 0
+    elif resource == "asr_month_seconds":
+        remaining = (summary.get("asr") or {}).get("remaining_seconds")
+        exhausted = remaining is not None and int(remaining) <= 0
+    else:
+        raise ValueError("unknown quota resource")
+    if not exhausted:
+        return None
+    return jsonify({"error": "quota_exceeded", "resource": resource,
+                    "remaining": remaining, "message": "本月额度已用完"}), 429
+
+
+def _workspace_file_bytes(workspace) -> int:
+    used_bytes = 0
+    if workspace.output_root.exists():
+        for path in workspace.output_root.rglob("*"):
+            try:
+                if path.is_file() and not path.is_symlink():
+                    used_bytes += path.stat().st_size
+            except OSError:
+                continue
+    return used_bytes
+
+
+_WORKSPACE_CACHE_LOCKS_GUARD = threading.Lock()
+_WORKSPACE_CACHE_LOCKS: dict[str, threading.RLock] = {}
+
+
+def _workspace_cache_lock(workspace) -> threading.RLock:
+    key = str(workspace.root.resolve())
+    with _WORKSPACE_CACHE_LOCKS_GUARD:
+        return _WORKSPACE_CACHE_LOCKS.setdefault(key, threading.RLock())
+
+
+def _check_workspace_cache_projection(workspace, limit_bytes: int | None, *,
+                                      baseline_bytes: int | None = None,
+                                      replacing: Path | None = None,
+                                      projected_bytes: int | None = None,
+                                      replacements: dict[Path, int] | None = None,
+                                      requested_bytes: int = 0) -> None:
+    if limit_bytes is None:
+        return
+    from podcast_article.quota import check_cache_capacity
+
+    used_bytes = _workspace_file_bytes(workspace)
+    effective_limit = max(limit_bytes, baseline_bytes) if baseline_bytes is not None else limit_bytes
+    projected_total = max(0, int(requested_bytes))
+    replacement_sizes = dict(replacements or {})
+    if replacing is not None:
+        replacement_sizes[replacing] = max(0, int(projected_bytes or 0))
+    for path, size_bytes in replacement_sizes.items():
+        try:
+            if path.is_file() and not path.is_symlink():
+                used_bytes = max(0, used_bytes - path.stat().st_size)
+        except OSError:
+            pass
+        projected_total += max(0, int(size_bytes))
+    check_cache_capacity(used_bytes=used_bytes, requested_bytes=projected_total,
+                         limit_bytes=effective_limit)
+
+
+@contextmanager
+def _workspace_cache_write_guard(workspace, limit_bytes: int | None, *,
+                                 replacing: Path | None = None,
+                                 projected_bytes: int | None = None,
+                                 baseline_bytes: int | None = None,
+                                 replacements: dict[Path, int] | None = None,
+                                 requested_bytes: int = 0):
+    with _workspace_cache_lock(workspace):
+        _check_workspace_cache_projection(
+            workspace, limit_bytes, baseline_bytes=baseline_bytes,
+            replacing=replacing, projected_bytes=projected_bytes,
+            replacements=replacements, requested_bytes=requested_bytes,
+        )
+        yield
+
+
+def _check_workspace_capacity(workspace, source_url: str, *, requested_cache_bytes: int = 0) -> None:
+    from podcast_article.quota import check_cache_capacity, check_upload_size
+
+    account = _auth_store().user_by_id(workspace.account_id)
+    if account is None:
+        raise ValueError("account not found")
+    used_bytes = _workspace_file_bytes(workspace)
+    cache_limit = account.quota.cache_bytes
+    if requested_cache_bytes == 0 and cache_limit is not None:
+        cache_limit = max(cache_limit, used_bytes)
+    check_cache_capacity(used_bytes=used_bytes, requested_bytes=requested_cache_bytes,
+                         limit_bytes=cache_limit)
+    candidate = Path(source_url).expanduser()
+    try:
+        if candidate.is_file():
+            check_upload_size(size_bytes=candidate.stat().st_size,
+                              limit_bytes=account.quota.max_upload_bytes)
+    except OSError:
+        pass
+
+
+def _check_cache_usage(workspace, limit_bytes: int | None) -> None:
+    from podcast_article.quota import check_cache_capacity
+
+    check_cache_capacity(used_bytes=_workspace_file_bytes(workspace), requested_bytes=0,
+                         limit_bytes=limit_bytes)
+
+
+def _check_workspace_cache_limit(workspace) -> None:
+    account = _auth_store().user_by_id(workspace.account_id)
+    if account is None:
+        raise ValueError("account not found")
+    _check_cache_usage(workspace, account.quota.cache_bytes)
+
+
 def _auth_client_ip_key() -> str:
     remote_key = request.remote_addr or "unknown"
     if app.config.get("PA_TRUSTED_PROXY"):
@@ -270,6 +449,7 @@ def api_auth_me():
         "username": account.username,
         "role": account.role,
         "must_change_password": account.must_change_password,
+        "quota": _quota_summary(account.id),
     })
 
 
@@ -370,6 +550,56 @@ def api_auth_password():
 
 _JOBS: dict[str, dict] = {}          # job_id -> 状态字典
 _JOBS_LOCK = threading.Lock()
+_WORKER_ADMISSION_LOCK = threading.Lock()
+
+
+class _WorkerLease:
+    """A process-wide advisory lock held for the full article pipeline lifetime."""
+
+    def __init__(self, fd: int):
+        self.fd: int | None = fd
+        self.transferred = False
+
+    def transfer(self) -> "_WorkerLease":
+        self.transferred = True
+        return self
+
+    def release(self) -> None:
+        fd, self.fd = self.fd, None
+        if fd is None:
+            return
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
+def _acquire_worker_lease() -> _WorkerLease | None:
+    """Try to own the global single-pipeline slot across all local processes."""
+    root = data_root()
+    root.mkdir(parents=True, exist_ok=True)
+    path = root / "worker.lock"
+    flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(fd)
+        return None
+    except Exception:
+        os.close(fd)
+        raise
+    return _WorkerLease(fd)
+
+
+def _recover_abandoned_work() -> tuple[int, int]:
+    """Recover DB state only while this process owns the global worker lease."""
+    recovered = queue_mod.recover_running()
+    settled = _system_store().reconcile_stale_reservations()
+    return recovered, settled
+
+
 _ALLOWED_FILES = {"article.md", "transcript.txt", "transcript.json", "meta.json",
                   "usage.json", "outline.json", "qa.json"}
 
@@ -382,14 +612,24 @@ def get_job(owner_id: str, job_id: str) -> dict | None:
 
 
 def _new_job(url: str, opts: dict, *, source: str = "manual",
-             queue_id: str | None = None, workspace=None) -> str:
+             queue_id: str | None = None, workspace=None, quota_guard=None,
+             worker_lease: _WorkerLease | None = None) -> str:
     output_root = workspace.output_root if workspace is not None else OUTPUT_ROOT
     settings_path = workspace.settings_path if workspace is not None else None
     owner_id = workspace.account_id if workspace is not None else "system"
+    cache_limit = None
+    cache_baseline_bytes = 0
+    if workspace is not None and quota_guard is not None:
+        account = quota_guard.store.user_by_id(workspace.account_id)
+        cache_limit = account.quota.cache_bytes if account is not None else None
+        cache_baseline_bytes = _workspace_file_bytes(workspace)
+    cache_effective_limit = (max(cache_limit, cache_baseline_bytes)
+                             if cache_limit is not None else None)
     job_id = uuid.uuid4().hex[:12]
     job = {
         "id": job_id,
         "owner_id": owner_id,
+        "queue_owner_id": workspace.account_id if workspace is not None and queue_id else None,
         "url": url,
         "source": source,          # manual（首页直接提交）/ queue / feed:<id> / lib（重新生成）
         "queue_id": queue_id,
@@ -401,18 +641,78 @@ def _new_job(url: str, opts: dict, *, source: str = "manual",
         "meta": None,
         "workdir": None,
         "error": None,
+        "error_code": None,
+        "quota": None,
     }
     with _JOBS_LOCK:
         _JOBS[job_id] = job
+    last_cache_check = [0]
 
     def log(msg: str) -> None:
         job["logs"].append(msg)
 
     def progress(stage: str, data: dict) -> None:
         job["progress"] = {**data, "stage": stage}
+        if stage == "download" and cache_limit is not None:
+            downloaded = int(data.get("downloaded") or 0)
+            last_checked = last_cache_check[0]
+            reached_end = float(data.get("pct") or 0) >= 100
+            check_interval = min(1024 * 1024, max(64 * 1024, int(cache_limit) // 100))
+            if downloaded >= last_checked + check_interval or reached_end:
+                check_workspace_cache()
+                last_cache_check[0] = downloaded
+
+    def check_workspace_cache(*, replacing: Path | None = None,
+                              projected_bytes: int | None = None,
+                              replacements: dict[Path, int] | None = None,
+                              requested_bytes: int = 0):
+        if workspace is None or cache_limit is None:
+            return
+        if replacing is not None:
+            return _workspace_cache_write_guard(
+                workspace, cache_limit, baseline_bytes=cache_baseline_bytes,
+                replacing=replacing, projected_bytes=projected_bytes,
+            )
+        if replacements:
+            return _workspace_cache_write_guard(
+                workspace, cache_limit, baseline_bytes=cache_baseline_bytes,
+                replacements=replacements,
+            )
+        if requested_bytes:
+            with _workspace_cache_lock(workspace):
+                _check_workspace_cache_projection(
+                    workspace, cache_limit, baseline_bytes=cache_baseline_bytes,
+                    requested_bytes=requested_bytes,
+                )
+            return None
+        _check_workspace_cache_projection(workspace, cache_limit,
+                                          baseline_bytes=cache_baseline_bytes)
 
     def on_usage(snapshot: dict) -> None:
         job["usage"] = snapshot
+
+    def before_billable_asr(episode, audio_seconds=None):
+        if quota_guard is None:
+            return None
+        from podcast_article.quota import asr_reservation_seconds
+
+        seconds = asr_reservation_seconds(
+            audio_seconds if audio_seconds is not None else getattr(episode, "duration", None)
+        )
+        return quota_guard.reserve_asr(job_id, seconds)
+
+    def resize_billable_asr(reservation, audio_seconds: int):
+        if quota_guard is not None:
+            return quota_guard.resize_asr(reservation, audio_seconds)
+        return reservation
+
+    def settle_billable_asr(reservation, actual_seconds: int) -> None:
+        if quota_guard is not None:
+            quota_guard.settle_asr(reservation, actual_seconds)
+
+    def release_billable_asr(reservation) -> None:
+        if quota_guard is not None:
+            quota_guard.release(reservation)
 
     def worker() -> None:
         try:
@@ -442,6 +742,12 @@ def _new_job(url: str, opts: dict, *, source: str = "manual",
                 on_usage=on_usage,
                 episode=opts.get("episode") or None,
                 settings_path=settings_path,
+                quota_guard=quota_guard,
+                before_billable_asr=before_billable_asr if quota_guard is not None else None,
+                resize_billable_asr=resize_billable_asr if quota_guard is not None else None,
+                settle_billable_asr=settle_billable_asr if quota_guard is not None else None,
+                release_billable_asr=release_billable_asr if quota_guard is not None else None,
+                check_workspace_cache=check_workspace_cache if cache_limit is not None else None,
             )
             article_path = pipe.run()
             workdir = article_path.parent
@@ -455,14 +761,38 @@ def _new_job(url: str, opts: dict, *, source: str = "manual",
             job["status"] = "done"
             log("[done] 完成 ✔")
             _after_done(workdir.name, opts, log, workspace=workspace)
+        except QuotaExceeded as exc:
+            job["status"] = "error"
+            job["error_code"] = "quota_exceeded"
+            job["quota"] = {"resource": exc.resource, "remaining": str(exc.remaining)}
+            job["error"] = f"{exc.resource} quota exceeded"
+            job["logs"].append("[error] account quota exceeded")
         except Exception as exc:
             job["status"] = "error"
             job["error"] = str(exc)
             job["logs"].append(f"[error] {exc}")
         finally:
-            _finish_queue_item(job)
+            try:
+                _finish_queue_item(job)
+            finally:
+                if worker_lease is not None:
+                    worker_lease.release()
 
-    threading.Thread(target=worker, daemon=True).start()
+    if worker_lease is not None:
+        worker_lease.transfer()
+    try:
+        threading.Thread(target=worker, daemon=True).start()
+    except Exception as exc:
+        job["status"] = "error"
+        job["error"] = f"无法启动任务：{type(exc).__name__}"
+        try:
+            _finish_queue_item(job)
+        except Exception as cleanup_exc:
+            job["logs"].append(f"[error] queue cleanup failed: {type(cleanup_exc).__name__}")
+        finally:
+            if worker_lease is not None:
+                worker_lease.release()
+        raise
     return job_id
 
 
@@ -478,9 +808,10 @@ def _finish_queue_item(job: dict) -> None:
         return
     try:
         if job["status"] == "done":
-            queue_mod.finish(qid, "done", dir_name=job.get("workdir"))
+            queue_mod.finish(qid, "done", dir_name=job.get("workdir"), owner_id=job.get("queue_owner_id"))
         elif job["status"] == "error":
-            queue_mod.finish(qid, "error", error=job.get("error") or "未知错误")
+            queue_mod.finish(qid, "error", error=job.get("error") or "未知错误",
+                             owner_id=job.get("queue_owner_id"))
     except ValueError:
         pass          # 条目被用户删掉了，不用管
 
@@ -591,7 +922,12 @@ def _running_job_id(owner_id: str | None = None) -> str | None:
         for job_id, job in _JOBS.items():
             if job["status"] == "running" and (owner_id is None or job.get("owner_id") == owner_id):
                 return job_id
-    return None
+    try:
+        store = _auth_store()
+    except RuntimeError:
+        store = _system_store()
+    queued = store.running_jobs(owner_id)
+    return queued[0].id if queued else None
 
 
 # ---------------------------------------------------------------- API
@@ -605,18 +941,43 @@ def api_run():
     if not url:
         return jsonify({"error": "请填写链接"}), 400
     workspace = _workspace()
-    busy = _running_job_id(workspace.account_id)
-    if busy:
-        # 明确告诉前端「在跑什么」，否则用户只会觉得按钮坏了
-        with _JOBS_LOCK:
-            current = dict(_JOBS.get(busy) or {})
-        return jsonify({
-            "error": f"已有任务在运行：{current.get('url', '')}",
-            "busy": True, "job_id": busy, "url": current.get("url", ""),
-            "source": current.get("source", ""),
-        }), 409
-    job_id = _new_job(url, data, workspace=workspace)
-    return jsonify({"job_id": job_id})
+    with _WORKER_ADMISSION_LOCK:
+        lease = _acquire_worker_lease()
+        if lease is None:
+            return jsonify({
+                "error": "服务器正在处理另一个任务，请稍后重试或加入队列",
+                "busy": True,
+            }), 409
+        try:
+            _recover_abandoned_work()
+            if _running_job_id():
+                return jsonify({"error": "服务器正在处理另一个任务，请稍后重试或加入队列",
+                                "busy": True}), 409
+            defaults = settings_mod.load(settings_path=workspace.settings_path)["generation"]
+            backend = data.get("backend") or os.environ.get("PA_ASR_BACKEND") or defaults.get("backend")
+            ignore_subtitles = bool(data.get("no_subs", defaults.get("no_subs", False)))
+            # Cached work may require no model call. Only preflight an explicit force
+            # action; ordinary runs reserve at the exact billable step in Pipeline.
+            if data.get("force_article"):
+                quota_block = _quota_exhausted_response(workspace.account_id, "llm_month_cny")
+                if quota_block:
+                    return quota_block
+            if backend == "cloud" and ignore_subtitles and data.get("force_transcript"):
+                quota_block = _quota_exhausted_response(workspace.account_id, "asr_month_seconds")
+                if quota_block:
+                    return quota_block
+            try:
+                requested_cache_bytes = 1 if data.get("force_article") or data.get("force_transcript") else 0
+                _check_workspace_capacity(workspace, url, requested_cache_bytes=requested_cache_bytes)
+            except QuotaExceeded as exc:
+                return jsonify({"error": "quota_exceeded", "resource": exc.resource,
+                                "remaining": str(exc.remaining), "message": "存储或文件大小超过账号限额"}), 429
+            job_id = _new_job(url, data, workspace=workspace,
+                              quota_guard=_quota_guard(workspace.account_id), worker_lease=lease)
+            return jsonify({"job_id": job_id})
+        finally:
+            if not lease.transferred:
+                lease.release()
 
 
 @app.get("/api/config")
@@ -662,6 +1023,8 @@ def api_job(job_id: str):
             "workdir": job["workdir"],
             "source": job["source"],
             "error": job["error"],
+            "error_code": job.get("error_code"),
+            "quota": job.get("quota"),
         }
     )
 
@@ -702,6 +1065,8 @@ def api_stream(job_id: str):
                     {
                         "status": job["status"],
                         "error": job["error"],
+                        "error_code": job.get("error_code"),
+                        "quota": job.get("quota"),
                         "workdir": job["workdir"],
                         "meta": job["meta"],
                         "usage": job["usage"],
@@ -993,7 +1358,7 @@ def api_library():
         "status_labels": cat_state["status_labels"],
         "usage_total": totals,
         "search_stats": search_mod.stats(workspace.output_root),
-        "queue_active": queue_mod.snapshot()["active"],
+        "queue_active": queue_mod.snapshot(owner_id=workspace.account_id)["active"],
     })
 
 
@@ -1192,11 +1557,17 @@ def api_kb_ask():
 
     memories = kb_mod.memory_for_prompt(q, db_path=workspace.kb_path)
     from podcast_article import config
+    from podcast_article.platform_store import QuotaExceeded
 
     recorder = usage_mod.Recorder(config.deepseek_model())
     try:
         # 作答规则统一在 podcast_article/library_ask.py（Web / CLI / MCP 共用一份）
-        answer = library_ask.answer(q, hits, [m["text"] for m in memories], usage_recorder=recorder)
+        answer = library_ask.answer(q, hits, [m["text"] for m in memories], usage_recorder=recorder,
+                                    quota_guard=_quota_guard(workspace.account_id))
+    except QuotaExceeded as exc:
+        recorder.flush()
+        return jsonify({"error": "quota_exceeded", "resource": exc.resource,
+                        "remaining": str(exc.remaining), "message": "本月额度不足"}), 429
     except Exception as exc:
         usage_snapshot = recorder.flush()
         # 模型不可用时把检索结果给出去 —— 有出处的原文比一句报错有用
@@ -1342,21 +1713,28 @@ def _tts_payload(job_dir: str, base: Path) -> dict:
     }
 
 
-def _run_tts(owner_id: str, job_dir: str, base: Path, article: str, cfg: dict, force: bool) -> None:
+def _run_tts(owner_id: str, job_dir: str, base: Path, article: str, cfg: dict, force: bool,
+             workspace=None, cache_limit: int | None = None) -> None:
     """后台线程：跑完就更新 _TTS_JOBS，前端轮询看到状态变化。"""
 
     def progress(done: int, total: int, note: str) -> None:
+        if workspace is not None and cache_limit is not None:
+            _check_cache_usage(workspace, cache_limit)
         with _TTS_LOCK:
             _TTS_JOBS[(owner_id, job_dir)] = {"state": "running", "done": done, "total": total, "note": note}
 
     try:
         idx = tts_mod.synthesize(base, article, cfg, api_key=_tts_key(),
                                  progress=progress, log=lambda m: _log_tts(job_dir, m), force=force)
+        if workspace is not None and cache_limit is not None:
+            _check_cache_usage(workspace, cache_limit)
         n = len(idx.get("chunks") or [])
         # 完成时 total 要保留真实块数（写成 0 会让前端进度归零）
         with _TTS_LOCK:
             _TTS_JOBS[(owner_id, job_dir)] = {"state": "ready", "done": n, "total": n, "note": ""}
     except Exception as exc:
+        if isinstance(exc, QuotaExceeded) and exc.resource == "cache_bytes":
+            tts_mod.remove(base)
         with _TTS_LOCK:
             _TTS_JOBS[(owner_id, job_dir)] = {"state": "error", "error": f"{type(exc).__name__}: {exc}"[:300]}
 
@@ -1391,13 +1769,25 @@ def api_tts_start(job_dir: str):
     if cfg.get("provider") in ("", "off"):
         return jsonify({"error": "还没有启用朗读：设置 → 朗读，选一个语音后端"
                                  "（macOS 本地免费，或任何兼容 OpenAI 的语音接口）"}), 400
+    force = bool((request.get_json(force=True, silent=True) or {}).get("force"))
+    article = article_path.read_text(encoding="utf-8")
+    fresh = bool(_tts_payload(job_dir, base).get("fresh"))
+    account = _auth_store().user_by_id(owner_id)
+    cache_limit = account.quota.cache_bytes if account is not None else None
+    requested_cache_bytes = 0 if fresh and not force else max(256 * 1024, len(article.encode("utf-8")) * 512)
+    active_cache_limit = None if fresh and not force else cache_limit
+    try:
+        _check_workspace_capacity(workspace, "", requested_cache_bytes=requested_cache_bytes)
+    except QuotaExceeded as exc:
+        return jsonify({"error": "quota_exceeded", "resource": exc.resource,
+                        "remaining": str(exc.remaining), "message": "缓存空间不足以生成朗读音频"}), 429
     with _TTS_LOCK:
         if (_TTS_JOBS.get(job_key) or {}).get("state") == "running":
             return jsonify({"error": "这一篇正在生成朗读，稍等", "tts": _tts_payload(job_dir, base)}), 409
         _TTS_JOBS[job_key] = {"state": "running", "done": 0, "total": 0, "note": "准备中"}
-    force = bool((request.get_json(force=True, silent=True) or {}).get("force"))
-    article = article_path.read_text(encoding="utf-8")
-    threading.Thread(target=_run_tts, args=(owner_id, job_dir, base, article, cfg, force), daemon=True).start()
+    threading.Thread(target=_run_tts,
+                     args=(owner_id, job_dir, base, article, cfg, force, workspace, active_cache_limit),
+                     daemon=True).start()
     return jsonify({"state": "running", "tts": _tts_payload(job_dir, base)})
 
 
@@ -1531,6 +1921,8 @@ def _slim_ask(job: dict) -> dict:
         "thread": job.get("thread") or "",
         "usage": job.get("usage"),
         "error": job.get("error") or "",
+        "error_code": job.get("error_code"),
+        "quota": job.get("quota"),
     }
 
 
@@ -1587,6 +1979,24 @@ def api_ask():
         return jsonify({"error": "先选中一段文字，或者写一个问题"}), 400
 
     workspace = _workspace()
+    quota_block = _quota_exhausted_response(workspace.account_id, "llm_month_cny")
+    if quota_block:
+        return quota_block
+    try:
+        _check_workspace_capacity(workspace, "", requested_cache_bytes=128 * 1024)
+    except QuotaExceeded as exc:
+        return jsonify({"error": "quota_exceeded", "resource": exc.resource,
+                        "remaining": str(exc.remaining), "message": "缓存空间不足以保存问答"}), 429
+    quota_guard = _quota_guard(workspace.account_id)
+    cache_limit_account = quota_guard.store.user_by_id(workspace.account_id)
+    cache_limit = cache_limit_account.quota.cache_bytes if cache_limit_account else None
+
+    def before_ask_cache_save(path: Path, size_bytes: int):
+        if cache_limit is None:
+            return None
+        return _workspace_cache_write_guard(
+            workspace, cache_limit, replacing=path, projected_bytes=size_bytes,
+        )
     subs = settings_mod.load(settings_path=workspace.settings_path).get("assistant") or {}
     use_web = data.get("web")
     use_web = bool(subs.get("web_default", True)) if use_web is None else bool(use_web)
@@ -1603,7 +2013,7 @@ def api_ask():
         "selection": selection, "question": question, "web": use_web, "mode": mode,
         "thread": thread, "history": history,
         "answer": "", "deltas": [], "sources": None, "error": "", "at": time.time(),
-        "usage": None,
+        "usage": None, "error_code": None, "quota": None,
     }
     with _ASKS_LOCK:
         _ASKS[ask_id] = job
@@ -1658,11 +2068,15 @@ def api_ask():
                 memory=mem_text,
                 history=history,
                 settings_path=workspace.settings_path,
+                quota_guard=quota_guard,
+                before_usage_save=before_ask_cache_save,
                 on_usage=lambda snapshot: job.update({"usage": snapshot}),
                 log=log,
                 on_delta=lambda t: job["deltas"].append(t),
             )
             job["answer"] = result.get("answer") or ""
+            job["error_code"] = result.get("error_code")
+            job["quota"] = result.get("quota")
             if result.get("error"):
                 job["error"] = result["error"]
             if not job["answer"] and not job["error"]:
@@ -1678,9 +2092,16 @@ def api_ask():
                                         answer=job["answer"],
                                         passages=job["sources"]["passages"],
                                         web=job["sources"]["web"], error=job["error"],
-                                        thread=thread)
+                                        thread=thread, before_save=before_ask_cache_save,
+                                        cache_lock=_workspace_cache_lock(workspace))
                 job["thread"] = saved["thread"]           # 首轮时后端生成，回给前端继续用
             job["status"] = "error" if (job["error"] and not job["answer"]) else "done"
+        except QuotaExceeded as exc:
+            job["status"] = "error"
+            job["error"] = "本月额度不足"
+            job["error_code"] = "quota_exceeded"
+            job["quota"] = {"resource": exc.resource, "remaining": str(exc.remaining)}
+            job.setdefault("logs", []).append(f"[quota] {exc.resource} quota exceeded")
         except Exception as exc:                        # 任何意外都要变成一句话给用户
             job["status"] = "error"
             job["error"] = f"{type(exc).__name__}: {exc}"[:300]
@@ -1718,6 +2139,8 @@ def api_ask_stream(ask_id: str):
             if job["status"] != "running":
                 yield _sse("done", {"status": job["status"], "answer": job.get("answer") or "",
                                     "error": job.get("error") or "",
+                                    "error_code": job.get("error_code"),
+                                    "quota": job.get("quota"),
                                     "sources": job.get("sources")})
                 return
             time.sleep(0.15)
@@ -1837,8 +2260,22 @@ def api_covers_backfill():
         if not url:
             failed.append({"dir": d.name, "why": "元信息里没有封面链接"})
             continue
-        (filled if cover_mod.fetch(url, d) else failed).append(
-            d.name if cover_mod.find(d) else {"dir": d.name, "why": "下载失败"})
+        try:
+            _check_workspace_capacity(workspace, "", requested_cache_bytes=1)
+        except QuotaExceeded:
+            failed.append({"dir": d.name, "why": "缓存空间不足"})
+            continue
+        new_cover = cover_mod.fetch(url, d)
+        if not new_cover:
+            failed.append({"dir": d.name, "why": "下载失败"})
+            continue
+        try:
+            _check_workspace_cache_limit(workspace)
+        except QuotaExceeded:
+            new_cover.unlink(missing_ok=True)
+            failed.append({"dir": d.name, "why": "缓存空间不足"})
+            continue
+        filled.append(d.name)
     return jsonify({"filled": [x for x in filled if isinstance(x, str)],
                     "skipped": len(skipped), "failed": failed})
 
@@ -1961,6 +2398,7 @@ def api_usage():
         "live": live,
         "prices": usage_mod.MODEL_PRICES,
         "busy": _running_job_id(workspace.account_id) is not None,
+        "quota": _quota_summary(workspace.account_id),
     })
 
 
@@ -2035,7 +2473,7 @@ def api_export_all():
 
 @app.get("/api/queue")
 def api_queue_get():
-    return jsonify(queue_mod.snapshot())
+    return jsonify(queue_mod.snapshot(owner_id=_workspace().account_id))
 
 
 @app.post("/api/queue")
@@ -2043,6 +2481,7 @@ def api_queue_get():
 def api_queue_post():
     """入队。body: {"urls": "一行一条" 或 ["...", ...], "opts": {...}, "pick": 1}"""
     data = request.get_json(force=True, silent=True) or {}
+    owner_id = _workspace().account_id
     raw = data.get("urls") or data.get("url") or ""
     opts = data.get("opts") if isinstance(data.get("opts"), dict) else {}
     # 没有显式给选项时，把首页当前的选项快照进去（避免之后改了默认值导致理解偏差）
@@ -2052,44 +2491,51 @@ def api_queue_post():
                 opts[key] = data[key]
     try:
         added = queue_mod.add(raw, opts=opts, pick=int(data.get("pick") or 1),
-                              source="manual")
+                              source="manual", owner_id=owner_id)
+    except QuotaExceeded as exc:
+        return jsonify({"error": "quota_exceeded", "resource": exc.resource,
+                        "remaining": str(exc.remaining), "message": "队列额度已满"}), 429
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
-    return jsonify({"added": added, "queue": queue_mod.snapshot()})
+    return jsonify({"added": added, "queue": queue_mod.snapshot(owner_id=owner_id)})
 
 
 @app.delete("/api/queue/<item_id>")
 @_readonly_guard
 def api_queue_delete(item_id: str):
-    if not queue_mod.remove(item_id):
+    owner_id = _workspace().account_id
+    if not queue_mod.remove(item_id, owner_id=owner_id):
         return jsonify({"error": "队列里没有这一条"}), 404
-    return jsonify(queue_mod.snapshot())
+    return jsonify(queue_mod.snapshot(owner_id=owner_id))
 
 
 @app.post("/api/queue/<item_id>/move")
 @_readonly_guard
 def api_queue_move(item_id: str):
     data = request.get_json(force=True, silent=True) or {}
+    owner_id = _workspace().account_id
     try:
-        pos = queue_mod.move(item_id, int(data.get("delta", -1)))
+        pos = queue_mod.move(item_id, int(data.get("delta", -1)), owner_id=owner_id)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 404
-    return jsonify({"position": pos, "queue": queue_mod.snapshot()})
+    return jsonify({"position": pos, "queue": queue_mod.snapshot(owner_id=owner_id)})
 
 
 @app.post("/api/queue/clear")
 @_readonly_guard
 def api_queue_clear():
     data = request.get_json(force=True, silent=True) or {}
-    removed = queue_mod.clear(keep_failed=bool(data.get("keep_failed")))
-    return jsonify({"removed": removed, "queue": queue_mod.snapshot()})
+    owner_id = _workspace().account_id
+    removed = queue_mod.clear(keep_failed=bool(data.get("keep_failed")), owner_id=owner_id)
+    return jsonify({"removed": removed, "queue": queue_mod.snapshot(owner_id=owner_id)})
 
 
 @app.post("/api/queue/retry")
 @_readonly_guard
 def api_queue_retry():
-    n = queue_mod.retry_failed()
-    return jsonify({"retried": n, "queue": queue_mod.snapshot()})
+    owner_id = _workspace().account_id
+    n = queue_mod.retry_failed(owner_id=owner_id)
+    return jsonify({"retried": n, "queue": queue_mod.snapshot(owner_id=owner_id)})
 
 
 @app.post("/api/queue/run")
@@ -2099,10 +2545,10 @@ def api_queue_run():
     workspace = _workspace()
     job_id = run_queue_once(workspace=workspace)
     if not job_id:
-        busy = _running_job_id(workspace.account_id)
+        busy = _running_job_id()
         return jsonify({"error": "当前有任务在跑" if busy else "队列里没有待跑的链接",
                         "busy": bool(busy)}), 409
-    return jsonify({"job_id": job_id, "queue": queue_mod.snapshot()})
+    return jsonify({"job_id": job_id, "queue": queue_mod.snapshot(owner_id=workspace.account_id)})
 
 
 # ---------------------------------------------------------------- 订阅
@@ -2132,7 +2578,7 @@ def api_feeds_add():
         return jsonify({"error": f"订阅失败：{type(exc).__name__}: {exc}"[:300]}), 400
     # 首次订阅若要求补跑，立刻把 backfill 的那几集入队
     found = feeds_mod.check(entry["id"], feeds_path=workspace.feeds_path) if entry.get("backfill") else []
-    added = _enqueue_feed_episodes(found) if found else []
+    added = _enqueue_feed_episodes(found, owner_id=workspace.account_id) if found else []
     return jsonify({"feed": entry, "enqueued": len(added),
                     "feeds": feeds_mod.snapshot(feeds_path=workspace.feeds_path)})
 
@@ -2216,7 +2662,7 @@ def _episode_from_feed(item: dict) -> dict:
     }
 
 
-def _enqueue_feed_episodes(items: list[dict], dest: str = "") -> list[dict]:
+def _enqueue_feed_episodes(items: list[dict], dest: str = "", *, owner_id: str | None = None) -> list[dict]:
     added: list[dict] = []
     for it in items:
         opts = {"episode": _episode_from_feed(it)}
@@ -2227,6 +2673,7 @@ def _enqueue_feed_episodes(items: list[dict], dest: str = "") -> list[dict]:
                 it.get("feed_url") or it.get("episode_url"), opts=opts,
                 source=f"feed:{it.get('feed_id', '')}",
                 pick=int(it.get("pick") or 1), title=it.get("title") or "",
+                owner_id=owner_id,
             ))
         except ValueError:
             continue          # 队列满了就停，别让一次检查炸掉
@@ -2246,7 +2693,8 @@ def check_feeds_now(*, enqueue: bool = True, workspace=None) -> dict:
                       "pub_date": f.get("pub_date")} for f in found],
     }
     if enqueue and found and subs.get("auto_generate", True):
-        added = _enqueue_feed_episodes(found, subs.get("auto_dest") or "")
+        added = _enqueue_feed_episodes(found, subs.get("auto_dest") or "",
+                                       owner_id=workspace.account_id if workspace else None)
         result["enqueued"] = len(added)
     if found:
         result["feeds"] = feeds_mod.snapshot(feeds_path=feeds_path)
@@ -2255,17 +2703,36 @@ def check_feeds_now(*, enqueue: bool = True, workspace=None) -> dict:
 
 def run_queue_once(*, workspace=None) -> str | None:
     """取一条排队中的任务开跑，返回 job_id；没有可跑的返回 None。"""
-    if _running_job_id(workspace.account_id if workspace is not None else None):
-        return None
-    item = queue_mod.next_pending()
-    if not item:
-        return None
-    claimed = queue_mod.claim(item["id"])
-    if not claimed:
-        return None
-    return _new_job(claimed["url"], claimed.get("opts") or {},
-                    source=claimed.get("source") or "queue", queue_id=claimed["id"],
-                    workspace=workspace)
+    with _WORKER_ADMISSION_LOCK:
+        lease = _acquire_worker_lease()
+        if lease is None:
+            return None
+        try:
+            _recover_abandoned_work()
+            if _running_job_id():
+                return None
+            if workspace is not None:
+                item = queue_mod.next_pending(owner_id=workspace.account_id)
+                if not item:
+                    return None
+                claimed = queue_mod.claim(item["id"], owner_id=workspace.account_id)
+            else:
+                claimed = queue_mod.next_fair_job()
+                if claimed is None:
+                    item = queue_mod.next_pending()  # local CLI/test compatibility queue
+                    claimed = queue_mod.claim(item["id"]) if item else None
+                elif claimed.get("owner_id"):
+                    workspace = workspace_for(claimed["owner_id"], data_root())
+            if not claimed:
+                return None
+            return _new_job(claimed["url"], claimed.get("opts") or {},
+                            source=claimed.get("source") or "queue", queue_id=claimed["id"],
+                            workspace=workspace,
+                            quota_guard=_quota_guard(workspace.account_id) if workspace is not None else None,
+                            worker_lease=lease)
+        finally:
+            if not lease.transferred:
+                lease.release()
 
 
 def _wait_job(job_id: str, timeout: float = 6 * 3600, poll: float = 0.5) -> dict | None:
@@ -2285,12 +2752,14 @@ _scheduler_stop = threading.Event()
 _scheduler_started = False
 
 
-def _maybe_check_feeds() -> None:
-    subs = settings_mod.load()["subscriptions"]
+def _maybe_check_feeds(workspace=None) -> None:
+    settings_path = workspace.settings_path if workspace is not None else None
+    feeds_path = workspace.feeds_path if workspace is not None else None
+    subs = settings_mod.load(settings_path=settings_path)["subscriptions"]
     if not subs.get("enabled") or not subs.get("interval_minutes"):
         return
-    if feeds_mod.due(int(subs["interval_minutes"])):
-        check_feeds_now()
+    if feeds_mod.due(int(subs["interval_minutes"]), feeds_path=feeds_path):
+        check_feeds_now(workspace=workspace)
 
 
 def _scheduler_loop() -> None:
@@ -2300,10 +2769,11 @@ def _scheduler_loop() -> None:
     可能压根没在跑，把回写挂在这里会让条目永远停在 running。
     """
     while not _scheduler_stop.wait(5.0):
-        try:
-            _maybe_check_feeds()
-        except Exception:
-            pass
+        for owner_id in _system_store().enabled_account_ids():
+            try:
+                _maybe_check_feeds(workspace_for(owner_id, data_root()))
+            except Exception:
+                pass
         try:
             job_id = run_queue_once()
         except Exception:
@@ -2311,18 +2781,27 @@ def _scheduler_loop() -> None:
         if not job_id:
             continue
         _wait_job(job_id)          # 等它跑完再取下一条（转写吃满 GPU，不并发）
-        queue_mod.recover_running()   # 万一有别的 worker 崩了，别让条目卡住
 
 
 def start_scheduler() -> bool:
     """启动后台调度线程（幂等）。测试与 CLI 里不会自动调用。"""
     global _scheduler_started
-    if os.environ.get("PA_SCHEDULER", "1") == "0" or _scheduler_started:
+    if _scheduler_started:
         return False
-    # 上次进程被杀时留下的 running 条目先归位，否则队列会被它堵住
-    recovered = queue_mod.recover_running()
+    # 只有没有其他本机服务进程持有 worker lease 时才回收中断任务。
+    lease = _acquire_worker_lease()
+    recovered = settled_holds = 0
+    if lease is not None:
+        try:
+            recovered, settled_holds = _recover_abandoned_work()
+        finally:
+            lease.release()
     if recovered:
         print(f"队列：回收了 {recovered} 条上次中断的任务，已重新排队")
+    if settled_holds:
+        print(f"配额：按预留上限结算了 {settled_holds} 条中断任务")
+    if os.environ.get("PA_SCHEDULER", "0").strip().lower() in {"0", "false", "no", "off", ""}:
+        return False
 
     def guard() -> None:
         global _scheduler_started

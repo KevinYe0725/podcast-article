@@ -258,6 +258,28 @@ def test_recorder_flush_writes_file_when_called(tmp_path):
     assert back["off"] == {"hit": 50, "miss": 150, "out": 20}, "周六的调用应落进空闲桶"
 
 
+def test_recorder_cache_rejection_preserves_previous_usage_file(tmp_path):
+    from decimal import Decimal
+    from podcast_article.platform_store import QuotaExceeded
+
+    workdir = tmp_path / "episode"
+    workdir.mkdir()
+    path = workdir / "usage.json"
+    previous = '{"calls": 1, "model": "old"}'
+    path.write_text(previous, encoding="utf-8")
+    rec = usage.Recorder(
+        "deepseek-flash", workdir,
+        before_save=lambda target, size: (_ for _ in ()).throw(
+            QuotaExceeded("cache_bytes", 1, 1, 0, size)),
+    )
+    rec.note("deepseek-flash", {"prompt_tokens": 10, "completion_tokens": 1}, when=cn(2026, 1, 10, 10))
+
+    with pytest.raises(QuotaExceeded):
+        rec.flush()
+
+    assert path.read_text(encoding="utf-8") == previous
+
+
 def test_recorder_without_workdir_json_still_serializable(tmp_path):
     rec = usage.Recorder("deepseek-flash", None)
     rec.note("deepseek-flash", {"prompt_tokens": 1, "completion_tokens": 1},

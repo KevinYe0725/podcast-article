@@ -235,7 +235,7 @@ def clean_usage_slot(monkeypatch):
 
 
 @pytest.fixture()
-def stores(tmp_path, monkeypatch):
+def stores(tmp_path, monkeypatch, client):
     """把队列 / 订阅 / 设置都指到临时目录，返回三个落盘路径。"""
     from podcast_article import feeds, queue
     from podcast_article import settings as st
@@ -248,6 +248,7 @@ def stores(tmp_path, monkeypatch):
     monkeypatch.setattr(queue, "QUEUE_PATH", paths["queue"])
     monkeypatch.setattr(feeds, "FEEDS_PATH", paths["feeds"])
     monkeypatch.setattr(st, "SETTINGS_PATH", paths["settings"])
+    paths["owner_id"] = client.get("/api/auth/me").get_json()["id"]
     return paths
 
 
@@ -581,8 +582,8 @@ def test_queue_move_up_with_negative_delta(client, stores):
 def test_queue_retry_puts_failed_back_to_pending(client, stores):
     from podcast_article import queue
 
-    added = queue.add("https://a.com/1")
-    queue.finish(added[0]["id"], "error", error="x")
+    added = queue.add("https://a.com/1", owner_id=stores["owner_id"])
+    queue.finish(added[0]["id"], "error", error="x", owner_id=stores["owner_id"])
 
     resp = client.post("/api/queue/retry")
     assert resp.status_code == 200, f"重试应成功，实际 {resp.status_code}"
@@ -595,9 +596,9 @@ def test_queue_retry_puts_failed_back_to_pending(client, stores):
 def test_queue_clear_keeps_pending(client, stores):
     from podcast_article import queue
 
-    added = queue.add("https://a.com/1\nhttps://a.com/2\nhttps://a.com/3")
-    queue.finish(added[0]["id"], "done", dir_name="某目录")
-    queue.finish(added[1]["id"], "error", error="崩了")
+    added = queue.add("https://a.com/1\nhttps://a.com/2\nhttps://a.com/3", owner_id=stores["owner_id"])
+    queue.finish(added[0]["id"], "done", dir_name="某目录", owner_id=stores["owner_id"])
+    queue.finish(added[1]["id"], "error", error="崩了", owner_id=stores["owner_id"])
 
     resp = client.post("/api/queue/clear")
     assert resp.status_code == 200, f"清空应成功，实际 {resp.status_code}"
@@ -609,9 +610,9 @@ def test_queue_clear_keeps_pending(client, stores):
 def test_queue_get_reports_counts_and_active(client, stores):
     from podcast_article import queue
 
-    added = queue.add("https://a.com/1\nhttps://a.com/2\nhttps://a.com/3")
-    queue.claim(added[0]["id"])                       # → running
-    queue.finish(added[1]["id"], "done", dir_name="某目录")
+    added = queue.add("https://a.com/1\nhttps://a.com/2\nhttps://a.com/3", owner_id=stores["owner_id"])
+    queue.claim(added[0]["id"], owner_id=stores["owner_id"])                       # → running
+    queue.finish(added[1]["id"], "done", dir_name="某目录", owner_id=stores["owner_id"])
 
     body = client.get("/api/queue").get_json()
     assert body["counts"] == {"pending": 1, "running": 1, "done": 1, "error": 0, "skipped": 0}, \
@@ -689,7 +690,7 @@ def test_feeds_check_enqueues_new_episode_snapshot(client, stores, fake_feed):
     assert body["enqueued"] == 1, f"应入队 1 条，实际 {body['enqueued']}"
     assert [e["title"] for e in body["episodes"]] == ["新的一集"], f"发现列表错误：{body['episodes']}"
 
-    items = queue.snapshot()["items"]
+    items = queue.snapshot(owner_id=stores["owner_id"])["items"]
     assert len(items) == 1, f"队列应多一条，实际 {len(items)} 条"
     item = items[0]
     assert item["state"] == "pending", f"应是待跑，实际 {item['state']}"
@@ -714,7 +715,7 @@ def test_feeds_check_enqueue_false_only_reports(client, stores, fake_feed):
     body = client.post("/api/feeds/check", json={"enqueue": False}).get_json()
     assert body["found"] == 1, f"仍应发现 1 集，实际 {body['found']}"
     assert body["enqueued"] == 0, f"enqueue=false 时不该入队，实际 {body['enqueued']}"
-    assert queue.snapshot()["items"] == [], "队列不该有变化"
+    assert queue.snapshot(owner_id=stores["owner_id"])["items"] == [], "队列不该有变化"
 
 
 def test_feeds_check_respects_auto_generate_off(client, stores, fake_feed):
@@ -727,7 +728,7 @@ def test_feeds_check_respects_auto_generate_off(client, stores, fake_feed):
     body = client.post("/api/feeds/check", json={}).get_json()
     assert body["found"] == 1, f"仍应发现 1 集，实际 {body['found']}"
     assert body["enqueued"] == 0, f"关掉自动生成后不该入队，实际 {body['enqueued']}"
-    assert queue.snapshot()["items"] == [], "队列不该有变化"
+    assert queue.snapshot(owner_id=stores["owner_id"])["items"] == [], "队列不该有变化"
 
 
 def test_feeds_settings_saves_interval_minutes(client, stores):
@@ -777,8 +778,7 @@ def test_run_returns_409_when_job_running(client, monkeypatch):
         assert resp.status_code == 409, f"已有任务在跑应 409，实际 {resp.status_code}"
         body = resp.get_json()
         assert body["busy"] is True, f"busy 应是 True，实际 {body['busy']!r}"
-        assert body["job_id"] == "job-busy001", f"应告诉前端在跑哪个任务，实际 {body['job_id']!r}"
-        assert body["url"] == "https://example.com/busy", f"应回传在跑的链接，实际 {body['url']!r}"
+        assert "job_id" not in body and "url" not in body, "不能把另一个任务的标识或链接回给成员"
     finally:
         webapp._JOBS.pop("job-busy001", None)
 
@@ -792,7 +792,7 @@ def test_run_extracts_link_from_pasted_text(client, monkeypatch):
 
     calls = []
 
-    def fake_new_job(url, opts, *, source="manual", queue_id=None, workspace=None):
+    def fake_new_job(url, opts, *, source="manual", queue_id=None, workspace=None, **kwargs):
         calls.append(url)
         return "job-fake-paste"
 
@@ -829,7 +829,7 @@ def test_run_creates_job_when_idle(client, monkeypatch):
 
     calls = []
 
-    def fake_new_job(url, opts, *, source="manual", queue_id=None, workspace=None):
+    def fake_new_job(url, opts, *, source="manual", queue_id=None, workspace=None, **kwargs):
         calls.append({"url": url, "opts": opts, "source": source, "queue_id": queue_id})
         return "job-fake001"
 

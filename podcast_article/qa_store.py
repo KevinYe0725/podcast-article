@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import time
 import uuid
+from contextlib import nullcontext
 from pathlib import Path
 
 MAX_ITEMS = 50
@@ -72,7 +73,8 @@ def new_thread() -> str:
 
 def append(workdir: Path, *, selection: str, question: str, answer: str,
            passages: list[dict] | None = None, web: dict | None = None,
-           error: str = "", thread: str | None = None) -> dict:
+           error: str = "", thread: str | None = None, before_save=None,
+           cache_lock=None) -> dict:
     """追加一条记录并落盘，返回存下来的那条（含生成的 id）。"""
     record = {
         "id": "a" + uuid.uuid4().hex[:8],
@@ -88,9 +90,19 @@ def append(workdir: Path, *, selection: str, question: str, answer: str,
         "web": _slim_web(web),
         "error": (error or "")[:500],
     }
-    items = load(workdir)                       # 已按时间倒序
-    items.insert(0, record)
-    _save(workdir, items[:MAX_ITEMS])
+    with cache_lock if cache_lock is not None else nullcontext():
+        items = load(workdir)                   # 已按时间倒序
+        items.insert(0, record)
+        payload = {"items": items[:MAX_ITEMS]}
+        guard = None
+        if before_save:
+            path = _path(workdir)
+            guard = before_save(path, len(json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")))
+        if guard is not None and hasattr(guard, "__enter__"):
+            with guard:
+                _save(workdir, items[:MAX_ITEMS])
+        else:
+            _save(workdir, items[:MAX_ITEMS])
     return record
 
 
