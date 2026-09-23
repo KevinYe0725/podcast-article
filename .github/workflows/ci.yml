@@ -9,6 +9,9 @@ jobs:
   python:
     name: 后端测试（pytest）
     runs-on: ubuntu-latest
+    env:
+      # Tests mock network calls; this only satisfies client construction.
+      DEEPSEEK_API_KEY: sk-test
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
