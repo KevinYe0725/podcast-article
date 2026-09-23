@@ -1,0 +1,59 @@
+name: Deploy podcast article service
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: podcast-production
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      SERVER_PATH: /srv/podcast-article
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Sync service and restart systemd
+        env:
+          SERVER_HOST: ${{ secrets.PODCAST_SERVER_HOST }}
+          SERVER_USER: ${{ secrets.PODCAST_SERVER_USER }}
+          SERVER_SSH_PRIVATE_KEY: ${{ secrets.PODCAST_SERVER_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$SERVER_HOST"
+          test -n "$SERVER_USER"
+          test -n "$SERVER_SSH_PRIVATE_KEY"
+
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$SERVER_SSH_PRIVATE_KEY" > "$HOME/.ssh/id_ed25519"
+          chmod 600 "$HOME/.ssh/id_ed25519"
+          ssh-keyscan -H "$SERVER_HOST" >> "$HOME/.ssh/known_hosts"
+
+          ssh "$SERVER_USER@$SERVER_HOST" "install -d -m 755 '$SERVER_PATH' '$SERVER_PATH/data/output'"
+          rsync -az --delete \
+            --exclude .git --exclude .venv --exclude output --exclude node_modules \
+            --exclude __pycache__ --exclude .env --exclude settings.json \
+            --exclude library.json --exclude queue.json --exclude feeds.json \
+            --exclude mcp_servers.json --exclude data \
+            -e "ssh -o BatchMode=yes" ./ "$SERVER_USER@$SERVER_HOST:$SERVER_PATH/"
+          scp deploy/podcast-article.service \
+            "$SERVER_USER@$SERVER_HOST:/etc/systemd/system/podcast-article.service"
+
+          ssh "$SERVER_USER@$SERVER_HOST" "set -e; cd '$SERVER_PATH'; \
+            python3 -m venv .venv 2>/dev/null || true; \
+            .venv/bin/pip install --disable-pip-version-check -i https://mirrors.aliyun.com/pypi/simple/ .; \
+            chown -R root:root '$SERVER_PATH'; \
+            chmod -R u+rwX,go+rX '$SERVER_PATH'; \
+            chown -R podcast:podcast '$SERVER_PATH/data'; \
+            systemctl daemon-reload; systemctl enable podcast-article; systemctl restart podcast-article; \
+            sleep 3; systemctl is-active podcast-article; \
+            curl -fsS --max-time 5 http://127.0.0.1:8788/api/config >/dev/null"

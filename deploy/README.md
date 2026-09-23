@@ -113,6 +113,16 @@ ls -1dt */ | tail -n +21 | while read d; do rm -f "$d"/audio.*; done   # 可选�
 
 建议进 crontab 每周跑一次。删掉音频后文章照常阅读，只是时间戳点不开播放。
 
+## GitHub Actions 自动部署
+
+`.github/workflows/deploy.yml` 会在这个仓库的 `main` 推送后，通过 SSH 同步代码、更新虚拟环境并重启 `podcast-article.service`。在 GitHub 仓库设置：
+
+- `PODCAST_SERVER_HOST`：ECS 公网 IP
+- `PODCAST_SERVER_USER`：通常为 `root`
+- `PODCAST_SERVER_SSH_PRIVATE_KEY`：部署私钥全文
+
+工作流不会同步 `data/`、本地配置或密钥文件，也不会覆盖服务器的 `/etc/podcast-article/server.env`。第一次部署前仍需在服务器准备 `python3.12-venv`、`podcast` 用户、systemd 服务和环境变量。
+
 ## 排障（这几条都是实测踩到的）
 
 | 现象 | 原因与处理 |
