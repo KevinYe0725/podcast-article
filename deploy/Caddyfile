@@ -11,7 +11,7 @@ podcast.squareconf.cn {
 	# SSE 必须关掉缓冲：否则「下载百分比 / 转写剩余时间」会攒在代理里，进度条不动
 	reverse_proxy {$PA_APP_UPSTREAM:127.0.0.1:8788} {
 		flush_interval -1
-		header_up X-Real-IP {remote_host}
+		# 前置的 Portfolio Hub Caddy 会把真实客户端地址写入 X-Real-IP；这里保留该值。
 	}
 
 	# 音频文件是 40MB 量级，允许断点续传（Range 由应用处理）
