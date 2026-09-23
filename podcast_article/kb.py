@@ -190,12 +190,18 @@ CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 """
 
 
-def db_path() -> Path:
-    return DB_PATH
+def db_path(path: Path | None = None) -> Path:
+    return Path(path) if path is not None else DB_PATH
+
+
+def _connection_path(conn: sqlite3.Connection) -> Path:
+    row = conn.execute("PRAGMA database_list").fetchone()
+    raw = row[2] if row else ""
+    return Path(raw).resolve() if raw else db_path().resolve()
 
 
 def connect(path: Path | None = None) -> sqlite3.Connection:
-    p = Path(path or DB_PATH)
+    p = db_path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(p), timeout=30)
     conn.row_factory = sqlite3.Row
@@ -608,9 +614,10 @@ def _episode_df(conn: sqlite3.Connection,
     if fp is None:
         return None
     passages, stamp = fp
-    if not (_DF_CACHE["db"] == str(db_path()) and _DF_CACHE["passages"] == passages
+    conn_db = str(_connection_path(conn))
+    if not (_DF_CACHE["db"] == conn_db and _DF_CACHE["passages"] == passages
             and _DF_CACHE["stamp"] == stamp):
-        _DF_CACHE.update({"db": str(db_path()), "passages": passages, "stamp": stamp,
+        _DF_CACHE.update({"db": conn_db, "passages": passages, "stamp": stamp,
                           "episodes": -1, "df": {}})
     if _DF_CACHE["episodes"] < 0:
         try:
@@ -831,11 +838,11 @@ def embed_pending(conn: sqlite3.Connection, *, dirs: list[str] | None = None,
 
 
 def index_all(output_root: Path, *, force: bool = False, embed: bool = True,
-              progress=None, log=print) -> dict:
+              progress=None, log=print, db_path: Path | None = None) -> dict:
     """索引整个书库（只有真的变了才会写库），最后补齐缺失的向量。"""
     root = Path(output_root)
-    dirs = sorted([d for d in root.iterdir() if d.is_dir() and not d.name.startswith(".")])
-    conn = ensure_schema(connect())
+    dirs = sorted([d for d in root.iterdir() if d.is_dir() and not d.name.startswith(".")]) if root.is_dir() else []
+    conn = ensure_schema(connect(db_path))
     total = 0
     added_vecs = 0
     try:
@@ -851,7 +858,7 @@ def index_all(output_root: Path, *, force: bool = False, embed: bool = True,
                      (str(time.time()),))
         conn.commit()
         return {"episodes": len(dirs), "passages": total, "vectors": added_vecs,
-                "db": str(db_path())}
+                "db": str(_connection_path(conn))}
     finally:
         conn.close()
 
@@ -886,7 +893,7 @@ def _load_vectors(conn: sqlite3.Connection):
     import numpy as np
     if (_VEC_CACHE["mat"] is not None and _VEC_CACHE["ids"] is not None
             and _VEC_CACHE["model"] == EMBED_MODEL
-            and _VEC_CACHE["db"] == str(db_path())):        # 换库（测试/多库）必须重读
+            and _VEC_CACHE["db"] == str(_connection_path(conn))):        # 换库（测试/多库）必须重读
         return _VEC_CACHE
     rows = conn.execute("SELECT passage_id, dim, vec FROM embeddings WHERE model=?",
                         (EMBED_MODEL,)).fetchall()
@@ -896,7 +903,7 @@ def _load_vectors(conn: sqlite3.Connection):
     ids = np.array([r["passage_id"] for r in rows], dtype="int64")
     mat = np.vstack([_unpack(r["vec"], r["dim"]) for r in rows]).astype("float32")
     mat /= np.maximum(np.linalg.norm(mat, axis=1, keepdims=True), 1e-9)
-    _VEC_CACHE.update({"model": EMBED_MODEL, "ids": ids, "mat": mat, "db": str(db_path())})
+    _VEC_CACHE.update({"model": EMBED_MODEL, "ids": ids, "mat": mat, "db": str(_connection_path(conn))})
     return _VEC_CACHE
 
 
@@ -1143,7 +1150,7 @@ def _pick_diverse(kept: list[dict], k: int, per_dir: int) -> list[dict]:
 
 
 def search(query: str, *, k: int = 8, mode: str = "auto", dirs: list[str] | None = None,
-           conn: sqlite3.Connection | None = None) -> dict:
+           conn: sqlite3.Connection | None = None, db_path: Path | None = None) -> dict:
     """混合检索：词法（FTS5/BM25）+ 向量，用 RRF 融合，再做一层软重排（见 _rerank）。
 
     mode: auto（有向量就混合）/ lexical / semantic。
@@ -1151,7 +1158,7 @@ def search(query: str, *, k: int = 8, mode: str = "auto", dirs: list[str] | None
     这样答案可以追溯到具体一句，而不是"我看着像"。
     """
     own = conn is None
-    conn = conn or ensure_schema(connect())
+    conn = conn or ensure_schema(connect(db_path))
     try:
         has_vec = _load_vectors(conn) is not None
         use_sem = mode in ("semantic", "auto") and has_vec
@@ -1196,18 +1203,20 @@ def _hit_public(hit: dict, *, limit: int = 320) -> dict:
 # ============================================================ 实体
 
 def entities(*, limit: int = 60, etype: str | None = None, min_count: int = 2,
-             generic_ratio: float = 0.85, conn: sqlite3.Connection | None = None) -> list[dict]:
+             generic_ratio: float = 0.85, conn: sqlite3.Connection | None = None,
+             db_path: Path | None = None) -> list[dict]:
     """实体榜。默认把「几乎每集都出现」的泛词滤掉（美国/公司/市场这种），
     它们排在榜首只会把真正有信息量的人物、机构挤下去。"""
     total_docs = None if conn else None
     return _entities_impl(limit=limit, etype=etype, min_count=min_count,
-                          generic_ratio=generic_ratio, conn=conn)
+                          generic_ratio=generic_ratio, conn=conn, db_path=db_path)
 
 
 def _entities_impl(*, limit: int, etype: str | None, min_count: int,
-                   generic_ratio: float, conn: sqlite3.Connection | None):
+                   generic_ratio: float, conn: sqlite3.Connection | None,
+                   db_path: Path | None = None):
     own = conn is None
-    conn = conn or ensure_schema(connect())
+    conn = conn or ensure_schema(connect(db_path))
     try:
         doc_total = conn.execute(
             "SELECT COUNT(DISTINCT dir) FROM docs").fetchone()[0] or 1
@@ -1228,10 +1237,11 @@ def _entities_impl(*, limit: int, etype: str | None, min_count: int,
             conn.close()
 
 
-def entity_detail(name: str, *, limit: int = 40, conn: sqlite3.Connection | None = None) -> dict:
+def entity_detail(name: str, *, limit: int = 40, conn: sqlite3.Connection | None = None,
+                  db_path: Path | None = None) -> dict:
     """某个实体的全部出处（按集分组，带时间戳）。"""
     own = conn is None
-    conn = conn or ensure_schema(connect())
+    conn = conn or ensure_schema(connect(db_path))
     try:
         row = conn.execute("SELECT * FROM entities WHERE name=?", (name,)).fetchone()
         if not row:
@@ -1269,14 +1279,14 @@ def _migrate_memory_columns(conn: sqlite3.Connection) -> None:
 
 def memory_add(text: str, *, kind: str = "fact", tags: str = "", source_dir: str = "",
                source_kind: str = "user", weight: float = 1.0, pinned: bool = False,
-               conn: sqlite3.Connection | None = None) -> dict:
+               conn: sqlite3.Connection | None = None, db_path: Path | None = None) -> dict:
     """写一条记忆。kind 见 MEMORY_KINDS；pinned 的记忆永远参与检索。"""
     kind = kind if kind in MEMORY_KINDS else "fact"
     text = re.sub(r"\s+", " ", str(text or "")).strip()
     if len(text) < 2:
         raise ValueError("记忆内容太短")
     own = conn is None
-    conn = conn or ensure_schema(connect())
+    conn = conn or ensure_schema(connect(db_path))
     try:
         now = time.time()
         cur = conn.execute(
@@ -1292,9 +1302,10 @@ def memory_add(text: str, *, kind: str = "fact", tags: str = "", source_dir: str
             conn.close()
 
 
-def memory_get(mid: int, *, conn: sqlite3.Connection | None = None) -> dict | None:
+def memory_get(mid: int, *, conn: sqlite3.Connection | None = None,
+               db_path: Path | None = None) -> dict | None:
     own = conn is None
-    conn = conn or ensure_schema(connect())
+    conn = conn or ensure_schema(connect(db_path))
     try:
         row = conn.execute("SELECT * FROM memory WHERE id=?", (mid,)).fetchone()
         return dict(row) if row else None
@@ -1304,10 +1315,10 @@ def memory_get(mid: int, *, conn: sqlite3.Connection | None = None) -> dict | No
 
 
 def memory_list(*, kind: str | None = None, query: str = "", limit: int = 200,
-                conn: sqlite3.Connection | None = None) -> list[dict]:
+                conn: sqlite3.Connection | None = None, db_path: Path | None = None) -> list[dict]:
     """列记忆：置顶优先，然后新的在前；给了 query 就走 FTS5。"""
     own = conn is None
-    conn = conn or ensure_schema(connect())
+    conn = conn or ensure_schema(connect(db_path))
     try:
         if query.strip():
             toks = tokenize(query)
@@ -1333,9 +1344,9 @@ def memory_list(*, kind: str | None = None, query: str = "", limit: int = 200,
             conn.close()
 
 
-def memory_update(mid: int, **fields) -> dict | None:
+def memory_update(mid: int, *, db_path: Path | None = None, **fields) -> dict | None:
     """改记忆（文本 / 类型 / 置顶）。改文本要同步重建它的 FTS 行。"""
-    conn = ensure_schema(connect())
+    conn = ensure_schema(connect(db_path))
     try:
         row = conn.execute("SELECT * FROM memory WHERE id=?", (mid,)).fetchone()
         if not row:
@@ -1355,14 +1366,14 @@ def memory_update(mid: int, **fields) -> dict | None:
         conn.close()
 
 
-def memory_delete(mid: int) -> bool:
+def memory_delete(mid: int, *, db_path: Path | None = None) -> bool:
     """删一条记忆。返回**是否真的删掉了**。
 
     不能用 `conn.total_changes`：那个计数是整条连接累计的，而 `ensure_schema` 每次都会
     往 meta 写一条（于是它永远 > 0）—— 结果是「删一个不存在的 id 也回 true」，
     上层与界面都会以为删成功了，这是最容易被忽略的一种谎报。用 DELETE 的 rowcount。
     """
-    conn = ensure_schema(connect())
+    conn = ensure_schema(connect(db_path))
     try:
         cur = conn.execute("DELETE FROM memory WHERE id=?", (mid,))
         deleted = cur.rowcount > 0
@@ -1374,7 +1385,7 @@ def memory_delete(mid: int) -> bool:
 
 
 def memory_for_prompt(query: str = "", *, limit: int = 6,
-                      conn: sqlite3.Connection | None = None) -> list[dict]:
+                      conn: sqlite3.Connection | None = None, db_path: Path | None = None) -> list[dict]:
     """挑出该塞进 prompt 的记忆：置顶的 + 与当前问题相关的，去重。
 
     顺手记下**谁真的被用了**（use_count / last_used_at）。这不是统计癖：记忆腐化最常见
@@ -1385,7 +1396,7 @@ def memory_for_prompt(query: str = "", *, limit: int = 6,
     就永远是「用过」，这个信号立刻变成废数。
     """
     own = conn is None
-    conn = conn or ensure_schema(connect())
+    conn = conn or ensure_schema(connect(db_path))
     try:
         pinned = [dict(r) for r in conn.execute(
             "SELECT * FROM memory WHERE pinned=1 ORDER BY updated_at DESC LIMIT ?", (limit,))]
@@ -1408,10 +1419,11 @@ def memory_for_prompt(query: str = "", *, limit: int = 6,
             conn.close()
 
 
-def memory_never_used(*, conn: sqlite3.Connection | None = None) -> list[dict]:
+def memory_never_used(*, conn: sqlite3.Connection | None = None,
+                      db_path: Path | None = None) -> list[dict]:
     """一条都没被用过的记忆（按写入时间倒序）——「该不该留着」的复查清单。"""
     own = conn is None
-    conn = conn or ensure_schema(connect())
+    conn = conn or ensure_schema(connect(db_path))
     try:
         return [dict(r) for r in conn.execute(
             "SELECT * FROM memory WHERE use_count=0 ORDER BY created_at DESC").fetchall()]
@@ -1423,10 +1435,10 @@ def memory_never_used(*, conn: sqlite3.Connection | None = None) -> list[dict]:
 # ============================================================ 状态
 
 def stats(conn: sqlite3.Connection | None = None, *,
-          output_root: Path | None = None) -> dict:
+          output_root: Path | None = None, db_path: Path | None = None) -> dict:
     """书库与记忆的规模。output_root 由调用方给（Web 与 CLI 的输出目录可以不同）。"""
     own = conn is None
-    conn = conn or ensure_schema(connect())
+    conn = conn or ensure_schema(connect(db_path))
     try:
         q = lambda sql, *a: conn.execute(sql, a).fetchone()[0]  # noqa: E731
         docs = q("SELECT COUNT(*) FROM docs")
@@ -1436,19 +1448,20 @@ def stats(conn: sqlite3.Connection | None = None, *,
         mem = q("SELECT COUNT(*) FROM memory")
         last = conn.execute("SELECT value FROM meta WHERE key='last_index'").fetchone()
         try:
-            size = db_path().stat().st_size
+            path = _connection_path(conn)
+            size = path.stat().st_size
         except OSError:
             size = 0
         # 磁盘上有几集：这才是用户眼里的「书库有多大」。只报索引过的集数会误导 ——
         # 新生成、还没入库的文章会显得"凭空消失"（CLI 的 status 就踩过这个：显示 0 集）。
-        root = Path(output_root) if output_root else (PROJECT_ROOT / "output")
+        root = Path(output_root) if output_root else Path(os.environ.get("PA_OUTPUT_DIR") or (PROJECT_ROOT / "output"))
         try:
             on_disk = len([d for d in root.iterdir()
                            if d.is_dir() and not d.name.startswith(".")])
         except OSError:
             on_disk = 0
         return {
-            "db": str(db_path()), "size_bytes": size,
+            "db": str(_connection_path(conn)), "size_bytes": size,
             "docs": docs, "passages": passages, "vectors": vectors,
             "entities": ents, "memory": mem,
             "episodes_on_disk": on_disk,
@@ -1465,13 +1478,14 @@ def stats(conn: sqlite3.Connection | None = None, *,
             conn.close()
 
 
-def reindex(output_root: Path, *, force: bool = True, embed: bool = True, progress=None) -> dict:
+def reindex(output_root: Path, *, force: bool = True, embed: bool = True, progress=None,
+            db_path: Path | None = None) -> dict:
     """重建（派生数据，删了再来最省事）。"""
-    conn = ensure_schema(connect())
+    conn = ensure_schema(connect(db_path))
     try:
         for t in ("passage_entities", "passages_fts", "embeddings", "passages", "entities", "docs"):
             conn.execute(f"DELETE FROM {t}")
         conn.commit()
     finally:
         conn.close()
-    return index_all(output_root, force=force, embed=embed, progress=progress)
+    return index_all(output_root, force=force, embed=embed, progress=progress, db_path=db_path)

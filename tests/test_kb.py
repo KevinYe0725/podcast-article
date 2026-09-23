@@ -88,6 +88,37 @@ def test_index_and_count(kb_env):
     assert st["passages"] > 0
 
 
+def test_df_and_vector_caches_follow_each_explicit_database_path(tmp_path, monkeypatch):
+    alice_root = tmp_path / "users" / "alice" / "output"
+    bob_root = tmp_path / "users" / "bob" / "output"
+    alice_root.mkdir(parents=True)
+    bob_root.mkdir(parents=True)
+    _write_episode(alice_root, "alice-episode", "# Alice\n\nAlice-only zebraquery material. " * 12)
+    _write_episode(bob_root, "bob-episode", "# Bob\n\nBob-only geckorquery material. " * 12)
+    alice_db = tmp_path / "users" / "alice" / "kb.sqlite"
+    bob_db = tmp_path / "users" / "bob" / "kb.sqlite"
+
+    kb.index_all(alice_root, embed=False, db_path=alice_db)
+    kb.index_all(bob_root, embed=False, db_path=bob_db)
+    alice_hits = kb.search("zebraquery", db_path=alice_db)["hits"]
+    bob_hits = kb.search("geckorquery", db_path=bob_db)["hits"]
+    assert alice_hits and {hit["dir"] for hit in alice_hits} == {"alice-episode"}
+    assert bob_hits and {hit["dir"] for hit in bob_hits} == {"bob-episode"}
+    assert kb._DF_CACHE["db"] == str(bob_db)
+
+    # Seed a tiny deterministic vector in each database to exercise the cache key without a model download.
+    for database in (alice_db, bob_db):
+        with kb.connect(database) as conn:
+            passage_id = conn.execute("SELECT id FROM passages ORDER BY id LIMIT 1").fetchone()[0]
+            conn.execute("INSERT INTO embeddings(passage_id, model, dim, vec) VALUES(?,?,?,?)",
+                         (passage_id, kb.EMBED_MODEL, 2, kb._pack([1.0, 0.0])))
+    monkeypatch.setattr(kb, "_embeddings_for", lambda _texts: [[1.0, 0.0]])
+    kb.search("alice", mode="semantic", db_path=alice_db)
+    assert kb._VEC_CACHE["db"] == str(alice_db)
+    kb.search("bob", mode="semantic", db_path=bob_db)
+    assert kb._VEC_CACHE["db"] == str(bob_db)
+
+
 def test_index_is_incremental(kb_env):
     _write_episode(kb_env, "20240102-乙", "# 标题\n\n" + "旧内容 legacytoken 应该被换掉。" * 40)
     kb.index_all(kb_env, embed=False)

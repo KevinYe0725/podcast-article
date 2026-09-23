@@ -39,11 +39,16 @@ STATUS_LABELS = {"unread": "未读", "reading": "在读", "read": "已读", "lat
 DEFAULT_STATUS = "unread"
 
 
-def _load() -> dict:
-    if not STORE_PATH.exists():
+def _store_path(store_path: Path | None = None) -> Path:
+    return Path(store_path) if store_path is not None else STORE_PATH
+
+
+def _load(store_path: Path | None = None) -> dict:
+    path = _store_path(store_path)
+    if not path.exists():
         return {"categories": [], "assignments": {}, "status": {}}
     try:
-        data = json.loads(STORE_PATH.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return {"categories": [], "assignments": {}, "status": {}}
     data.setdefault("categories", [])
@@ -59,11 +64,13 @@ def _load() -> dict:
     return data
 
 
-def _save(data: dict) -> None:
+def _save(data: dict, store_path: Path | None = None) -> None:
     # 原子写：半截文件会让整份个人数据读不出来
-    tmp = STORE_PATH.with_suffix(STORE_PATH.suffix + ".tmp")
+    path = _store_path(store_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(STORE_PATH)
+    tmp.replace(path)
 
 
 def _status_map(data: dict) -> dict[str, str]:
@@ -85,9 +92,9 @@ def _status_map(data: dict) -> dict[str, str]:
     return out
 
 
-def snapshot() -> dict:
+def snapshot(*, store_path: Path | None = None) -> dict:
     """分类列表 + 文章归属 + 阅读状态（供接口直接返回）。"""
-    data = _load()
+    data = _load(store_path)
     counts: dict[str, int] = {}
     for cid in data["assignments"].values():
         counts[cid] = counts.get(cid, 0) + 1
@@ -105,100 +112,100 @@ def snapshot() -> dict:
     }
 
 
-def create(name: str) -> dict:
+def create(name: str, *, store_path: Path | None = None) -> dict:
     name = (name or "").strip()
     if not name:
         raise ValueError("分类名不能为空")
     if len(name) > 20:
         raise ValueError("分类名不要超过 20 个字")
-    data = _load()
+    data = _load(store_path)
     if any(c["name"] == name for c in data["categories"]):
         raise ValueError(f"已存在同名分类：{name}")
     color = PALETTE[len(data["categories"]) % len(PALETTE)]
     cat = {"id": "c" + uuid.uuid4().hex[:8], "name": name, "color": color}
     data["categories"].append(cat)
-    _save(data)
+    _save(data, store_path)
     return cat
 
 
-def rename(cid: str, name: str) -> dict:
+def rename(cid: str, name: str, *, store_path: Path | None = None) -> dict:
     name = (name or "").strip()
     if not name:
         raise ValueError("分类名不能为空")
-    data = _load()
+    data = _load(store_path)
     for c in data["categories"]:
         if c["id"] == cid:
             if any(o["name"] == name and o["id"] != cid for o in data["categories"]):
                 raise ValueError(f"已存在同名分类：{name}")
             c["name"] = name
-            _save(data)
+            _save(data, store_path)
             return c
     raise ValueError("分类不存在")
 
 
-def delete(cid: str) -> None:
-    data = _load()
+def delete(cid: str, *, store_path: Path | None = None) -> None:
+    data = _load(store_path)
     before = len(data["categories"])
     data["categories"] = [c for c in data["categories"] if c["id"] != cid]
     if len(data["categories"]) == before:
         raise ValueError("分类不存在")
     # 文章退回未分类，不删文章
     data["assignments"] = {k: v for k, v in data["assignments"].items() if v != cid}
-    _save(data)
+    _save(data, store_path)
 
 
-def assign(dir_name: str, cid: str | None) -> None:
+def assign(dir_name: str, cid: str | None, *, store_path: Path | None = None) -> None:
     """把一篇文章放进分类；cid 为空表示移出分类。"""
     dir_name = (dir_name or "").strip()
     if not dir_name:
         raise ValueError("缺少文章目录")
-    data = _load()
+    data = _load(store_path)
     if cid:
         if not any(c["id"] == cid for c in data["categories"]):
             raise ValueError("分类不存在")
         data["assignments"][dir_name] = cid
     else:
         data["assignments"].pop(dir_name, None)
-    _save(data)
+    _save(data, store_path)
 
 
-def category_of(dir_name: str) -> str | None:
-    return _load()["assignments"].get(dir_name)
+def category_of(dir_name: str, *, store_path: Path | None = None) -> str | None:
+    return _load(store_path)["assignments"].get(dir_name)
 
 
-def forget(dir_name: str) -> None:
+def forget(dir_name: str, *, store_path: Path | None = None) -> None:
     """文章目录消失时清掉它的归属记录与阅读状态。"""
-    data = _load()
+    data = _load(store_path)
     dirty = data["assignments"].pop(dir_name, None) is not None
     dirty = data["status"].pop(dir_name, None) is not None or dirty
     if dirty:
-        _save(data)
+        _save(data, store_path)
 
 
 # ---------------------------------------------------------------- 阅读状态
 
 
-def statuses() -> dict[str, str]:
+def statuses(*, store_path: Path | None = None) -> dict[str, str]:
     """{目录名: 状态}，只含显式记录过的文章。"""
-    return _status_map(_load())
+    return _status_map(_load(store_path))
 
 
-def status_of(dir_name: str) -> str:
+def status_of(dir_name: str, *, store_path: Path | None = None) -> str:
     """未记录时返回 DEFAULT_STATUS（未读），所以调用方不用处理 None。"""
-    return statuses().get(dir_name, DEFAULT_STATUS)
+    return statuses(store_path=store_path).get(dir_name, DEFAULT_STATUS)
 
 
-def set_status(dir_name: str, status: str | None) -> str:
+def set_status(dir_name: str, status: str | None, *, store_path: Path | None = None) -> str:
     """设置阅读状态。status 为空表示清除记录（回到默认的「未读」）。"""
     dir_name = (dir_name or "").strip()
     if not dir_name:
         raise ValueError("缺少文章目录")
     if status and status not in STATUSES:
         raise ValueError(f"未知的阅读状态：{status}（可选：{'、'.join(STATUSES)}）")
-    data = _load()
+    data = _load(store_path)
     if status:
         data["status"][dir_name] = {"s": status, "at": round(time.time(), 3)}
     else:
         data["status"].pop(dir_name, None)
-    _save(data)
+    _save(data, store_path)
     return status or DEFAULT_STATUS

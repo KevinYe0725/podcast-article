@@ -97,6 +97,11 @@ def authenticate_request():
         return redirect(url_for("login_page", must_change="1"))
     return None
 
+
+def _workspace():
+    """The immutable paths derived from this request's authenticated account."""
+    return g.workspace
+
 # ---------------------------------------------------------------- 只读镜像
 #
 # 部署到公网服务器时用 PA_READONLY=1：那台机器只负责「看」——文章、检索、
@@ -370,7 +375,9 @@ _ALLOWED_FILES = {"article.md", "transcript.txt", "transcript.json", "meta.json"
 
 
 def _new_job(url: str, opts: dict, *, source: str = "manual",
-             queue_id: str | None = None) -> str:
+             queue_id: str | None = None, workspace=None) -> str:
+    output_root = workspace.output_root if workspace is not None else OUTPUT_ROOT
+    settings_path = workspace.settings_path if workspace is not None else None
     job_id = uuid.uuid4().hex[:12]
     job = {
         "id": job_id,
@@ -401,11 +408,11 @@ def _new_job(url: str, opts: dict, *, source: str = "manual",
     def worker() -> None:
         try:
             # 请求没有显式指定时，落到设置页里的「生成默认值」
-            defaults = settings_mod.load()["generation"]
+            defaults = settings_mod.load(settings_path=settings_path)["generation"]
             lang = opts.get("lang") or defaults.get("language") or "auto"
             pipe = Pipeline(
                 url=url,
-                output_dir=OUTPUT_ROOT,
+                output_dir=output_root,
                 language=lang,
                 backend=(opts.get("backend")
                          or os.environ.get("PA_ASR_BACKEND")
@@ -425,6 +432,7 @@ def _new_job(url: str, opts: dict, *, source: str = "manual",
                 progress=progress,
                 on_usage=on_usage,
                 episode=opts.get("episode") or None,
+                settings_path=settings_path,
             )
             article_path = pipe.run()
             workdir = article_path.parent
@@ -437,7 +445,7 @@ def _new_job(url: str, opts: dict, *, source: str = "manual",
                 job["meta"] = json.loads(meta_file.read_text(encoding="utf-8"))
             job["status"] = "done"
             log("[done] 完成 ✔")
-            _after_done(workdir.name, opts, log)
+            _after_done(workdir.name, opts, log, workspace=workspace)
         except Exception as exc:
             job["status"] = "error"
             job["error"] = str(exc)
@@ -468,19 +476,20 @@ def _finish_queue_item(job: dict) -> None:
         pass          # 条目被用户删掉了，不用管
 
 
-def _after_done(dir_name: str, opts: dict, log) -> None:
+def _after_done(dir_name: str, opts: dict, log, *, workspace=None) -> None:
     """任务成功后的小动作：订阅自动归类、新文章自动入库。失败不影响主流程。"""
     try:
         dest = (opts or {}).get("auto_dest")
         if dest:
-            library_mod.assign(dir_name, dest)
+            library_mod.assign(dir_name, dest,
+                               store_path=workspace.library_path if workspace is not None else None)
             log(f"[done] 已归入分类：{dest}")
     except Exception as exc:                 # 归类失败不该让「文章已生成」变成失败
         log(f"[done] 自动归类失败：{exc}")
-    _auto_index(dir_name, log)
+    _auto_index(dir_name, log, workspace=workspace)
 
 
-def _auto_index(dir_name: str, log=print) -> None:
+def _auto_index(dir_name: str, log=print, *, workspace=None) -> None:
     """新文章生成后**自动进知识库**：用户要的是「收集库」，不该每次手动点一次重建。
 
     只索引这一篇（增量），失败只写一行日志 —— 文章已经生成好了，索引是锦上添花，
@@ -489,9 +498,11 @@ def _auto_index(dir_name: str, log=print) -> None:
     if READONLY:
         return
     try:
-        conn = kb_mod.ensure_schema(kb_mod.connect())
+        output_root = workspace.output_root if workspace is not None else OUTPUT_ROOT
+        db_path = workspace.kb_path if workspace is not None else None
+        conn = kb_mod.ensure_schema(kb_mod.connect(db_path))
         try:
-            r = kb_mod.index_dir(conn, OUTPUT_ROOT / dir_name, force=False,
+            r = kb_mod.index_dir(conn, output_root / dir_name, force=False,
                                  log=lambda *_a, **_k: None)
         finally:
             conn.close()
@@ -594,7 +605,7 @@ def api_run():
             "busy": True, "job_id": busy, "url": current.get("url", ""),
             "source": current.get("source", ""),
         }), 409
-    job_id = _new_job(url, data)
+    job_id = _new_job(url, data, workspace=_workspace())
     return jsonify({"job_id": job_id})
 
 
@@ -700,10 +711,11 @@ def api_notion():
     return _publish_with({"target": "builtin"})
 
 
-def _episode_ctx(dir_name: str):
+def _episode_ctx(dir_name: str, workspace=None):
     """读取一集的文章与元信息，组装成发布上下文。返回 (ctx, error_response)。"""
-    base = (OUTPUT_ROOT / (dir_name or "")).resolve()
-    if not dir_name or not base.is_dir() or OUTPUT_ROOT.resolve() not in base.parents:
+    output_root = workspace.output_root if workspace is not None else _workspace().output_root
+    base = (output_root / (dir_name or "")).resolve()
+    if not dir_name or not base.is_dir() or output_root.resolve() not in base.parents:
         return None, (jsonify({"error": "目录不存在"}), 404)
     article = base / "article.md"
     if not article.is_file():
@@ -728,7 +740,7 @@ def _episode_ctx(dir_name: str):
 def _publish_with(extra: dict | None = None):
     """把文章发布到指定目标：内置 Notion，或 mcp:<服务器>:<工具>。"""
     data = {**(request.get_json(force=True, silent=True) or {}), **(extra or {})}
-    ctx, err = _episode_ctx((data.get("dir") or "").strip())
+    ctx, err = _episode_ctx((data.get("dir") or "").strip(), _workspace())
     if err:
         return err
     target = (data.get("target") or "builtin").strip()
@@ -753,8 +765,9 @@ def api_publish():
 
 @app.get("/api/settings")
 def api_settings_get():
-    """设置页数据：个人资料、生成默认值、订阅调度、密钥状态（打码）、存储信息。"""
-    current = settings_mod.load()
+    """设置页数据：当前账号的偏好与存储信息。服务器凭据不通过成员接口显示。"""
+    workspace = _workspace()
+    current = settings_mod.load(settings_path=workspace.settings_path)
     return jsonify({
         "profile": current["profile"],
         "generation": current["generation"],
@@ -763,37 +776,33 @@ def api_settings_get():
         "tts": current["tts"],
         "tts_voices": tts_mod.macos_voices(),      # macOS 上可用的中文音色（给设置页做提示）
         "tts_available": bool(shutil.which("say")) or tts_mod.DEFAULTS["provider"] != "off",
-        "secrets": settings_mod.secret_status(),
-        "storage": settings_mod.storage_info(),
+        "server_credentials": "managed_by_server",
+        "storage": settings_mod.storage_info(output_root=workspace.output_root,
+                                              settings_path=workspace.settings_path),
     })
 
 
 @app.post("/api/settings")
 @_readonly_guard
 def api_settings_post():
-    """保存设置。body: {profile, generation, subscriptions, secrets}
-
-    secrets 里空字符串表示保持原值（密钥不会被误清空），非空则写入 .env。
-    """
+    """保存当前账号偏好。服务端模型密钥由管理员管理，不接受成员写入。"""
     data = request.get_json(force=True, silent=True) or {}
+    if data.get("secrets"):
+        return jsonify({"error": "server_credentials_managed"}), 400
+    workspace = _workspace()
     saved = settings_mod.save(profile=data.get("profile"),
                               generation=data.get("generation"),
                               subscriptions=data.get("subscriptions"),
                               assistant=data.get("assistant"),
-                              tts=data.get("tts"))
-    changed = settings_mod.update_env(data.get("secrets") or {})
-    if changed:
-        # 让当前进程立即用上新值
-        for key in changed:
-            os.environ[key] = settings_mod.read_env().get(key, os.environ.get(key, ""))
+                              tts=data.get("tts"),
+                              settings_path=workspace.settings_path)
     return jsonify({
         "profile": saved["profile"],
         "generation": saved["generation"],
         "subscriptions": saved["subscriptions"],
         "assistant": saved["assistant"],
         "tts": saved["tts"],
-        "secrets": settings_mod.secret_status(),
-        "env_changed": changed,
+        "server_credentials": "managed_by_server",
     })
 
 
@@ -957,9 +966,10 @@ def api_mcp_call():
 @app.get("/api/library")
 def api_library():
     """列出 output/ 下所有已生成的单集（按时间倒序）+ 分类归属 + 阅读状态 + 花费。"""
-    items = _library_items()
-    cat_state = library_mod.snapshot()
-    totals = usage_mod.summary_over(OUTPUT_ROOT)
+    workspace = _workspace()
+    items = _library_items(output_root=workspace.output_root)
+    cat_state = library_mod.snapshot(store_path=workspace.library_path)
+    totals = usage_mod.summary_over(workspace.output_root)
     return jsonify({
         "items": items,
         "categories": cat_state["categories"],
@@ -968,7 +978,7 @@ def api_library():
         "status_counts": cat_state["status_counts"],
         "status_labels": cat_state["status_labels"],
         "usage_total": totals,
-        "search_stats": search_mod.stats(OUTPUT_ROOT),
+        "search_stats": search_mod.stats(workspace.output_root),
         "queue_active": queue_mod.snapshot()["active"],
     })
 
@@ -976,7 +986,7 @@ def api_library():
 @app.get("/api/categories")
 def api_categories():
     """分类列表（含各自文章数）与文章归属。"""
-    return jsonify(library_mod.snapshot())
+    return jsonify(library_mod.snapshot(store_path=_workspace().library_path))
 
 
 @app.post("/api/categories")
@@ -984,7 +994,7 @@ def api_categories():
 def api_category_create():
     data = request.get_json(force=True, silent=True) or {}
     try:
-        cat = library_mod.create(data.get("name", ""))
+        cat = library_mod.create(data.get("name", ""), store_path=_workspace().library_path)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     return jsonify({"category": cat})
@@ -994,7 +1004,7 @@ def api_category_create():
 def api_category_rename(cid: str):
     data = request.get_json(force=True, silent=True) or {}
     try:
-        cat = library_mod.rename(cid, data.get("name", ""))
+        cat = library_mod.rename(cid, data.get("name", ""), store_path=_workspace().library_path)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     return jsonify({"category": cat})
@@ -1004,7 +1014,7 @@ def api_category_rename(cid: str):
 @_readonly_guard
 def api_category_delete(cid: str):
     try:
-        library_mod.delete(cid)
+        library_mod.delete(cid, store_path=_workspace().library_path)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 404
     return jsonify({"ok": True})
@@ -1016,10 +1026,11 @@ def api_assign():
     """把文章放进分类（category_id 为空 → 移出分类）。body: {"dir", "category_id"}"""
     data = request.get_json(force=True, silent=True) or {}
     try:
-        library_mod.assign(data.get("dir", ""), (data.get("category_id") or "").strip() or None)
+        library_mod.assign(data.get("dir", ""), (data.get("category_id") or "").strip() or None,
+                           store_path=_workspace().library_path)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
-    return jsonify(library_mod.snapshot())
+    return jsonify(library_mod.snapshot(store_path=_workspace().library_path))
 
 
 @app.delete("/api/episode/<job_dir>")
@@ -1032,8 +1043,9 @@ def api_episode_delete(job_dir: str):
     """
     data = request.get_json(force=True, silent=True) or {}
     scope = data.get("scope", "all")
-    base = (OUTPUT_ROOT / job_dir).resolve()
-    if not job_dir or not base.is_dir() or OUTPUT_ROOT.resolve() not in base.parents:
+    workspace = _workspace()
+    base = (workspace.output_root / job_dir).resolve()
+    if not job_dir or not base.is_dir() or workspace.output_root.resolve() not in base.parents:
         return jsonify({"error": "目录不存在"}), 404
 
     freed = 0
@@ -1047,7 +1059,7 @@ def api_episode_delete(job_dir: str):
         else:
             freed = sum(f.stat().st_size for f in base.rglob("*") if f.is_file())
             shutil.rmtree(base)
-            library_mod.forget(job_dir)
+            library_mod.forget(job_dir, store_path=workspace.library_path)
     except OSError as exc:
         return jsonify({"error": f"删除失败：{exc}"}), 500
     return jsonify({"ok": True, "scope": scope, "freed": freed, "dir": job_dir})
@@ -1065,9 +1077,9 @@ _KB_JOB: dict = {"state": "idle", "done": 0, "total": 0, "note": "", "error": ""
 
 @app.get("/api/kb/status")
 def api_kb_status():
+    workspace = _workspace()
     try:
-        # output_root 传进去：Web 的输出目录可能被 PA_OUTPUT_DIR 改过，不能靠默认值
-        st = kb_mod.stats(output_root=OUTPUT_ROOT)
+        st = kb_mod.stats(output_root=workspace.output_root, db_path=workspace.kb_path)
     except Exception as exc:
         return jsonify({"error": f"{type(exc).__name__}: {exc}"[:200]}), 500
     st["indexing"] = _KB_JOB
@@ -1084,17 +1096,20 @@ def api_kb_reindex():
         _KB_JOB.update({"state": "running", "done": 0, "total": 0, "note": "准备中",
                         "error": "", "result": None})
 
-    def work(force: bool) -> None:
+    workspace = _workspace()
+
+    def work(force: bool, workspace) -> None:
         def progress(done: int, total: int, note: str) -> None:
             _KB_JOB.update({"done": done, "total": total, "note": note})
         try:
-            r = kb_mod.index_all(OUTPUT_ROOT, force=force, progress=progress)
+            r = kb_mod.index_all(workspace.output_root, force=force, progress=progress,
+                                 db_path=workspace.kb_path)
             _KB_JOB.update({"state": "done", "result": r, "note": ""})
         except Exception as exc:
             _KB_JOB.update({"state": "error", "error": f"{type(exc).__name__}: {exc}"[:200]})
 
     force = bool((request.get_json(force=True, silent=True) or {}).get("force"))
-    threading.Thread(target=work, args=(force,), daemon=True).start()
+    threading.Thread(target=work, args=(force, workspace), daemon=True).start()
     return jsonify({"state": "running", "indexing": _KB_JOB})
 
 
@@ -1107,8 +1122,9 @@ def api_kb_search():
     k = min(30, max(1, int(request.args.get("k") or 8)))
     mode = (request.args.get("mode") or "auto").lower()
     dirs = [d for d in (request.args.get("dir") or "").split(",") if d] or None
+    workspace = _workspace()
     try:
-        res = kb_mod.search(q, k=k, mode=mode, dirs=dirs)
+        res = kb_mod.search(q, k=k, mode=mode, dirs=dirs, db_path=workspace.kb_path)
     except Exception as exc:
         return jsonify({"error": f"{type(exc).__name__}: {exc}"[:200]}), 500
     res["hits"] = [kb_mod._hit_public(h) for h in res["hits"]]
@@ -1117,7 +1133,7 @@ def api_kb_search():
     try:
         res["memory"] = [{"id": m["id"], "text": m["text"], "kind": m["kind"],
                           "pinned": bool(m["pinned"]), "source_dir": m.get("source_dir") or ""}
-                         for m in kb_mod.memory_list(query=q, limit=5)]
+                         for m in kb_mod.memory_list(query=q, limit=5, db_path=workspace.kb_path)]
     except Exception:
         res["memory"] = []
     return jsonify(res)
@@ -1137,8 +1153,9 @@ def api_kb_ask():
         return jsonify({"error": "问题太短"}), 400
     # 候选给到 10：重排要做去重与每集上限，多给几条才有得挑（融合池 = k*3）。
     k = min(12, max(3, int(data.get("k") or 10)))
+    workspace = _workspace()
     try:
-        res = kb_mod.search(q, k=k)
+        res = kb_mod.search(q, k=k, db_path=workspace.kb_path)
     except Exception as exc:
         return jsonify({"error": f"{type(exc).__name__}: {exc}"[:200]}), 500
     hits = [kb_mod._hit_public(h, limit=700) for h in res["hits"]]
@@ -1146,7 +1163,7 @@ def api_kb_ask():
         return jsonify({"answer": "书库里没有检索到相关内容。可以先重建索引，或换个说法。",
                         "sources": [], "mode": res["mode"]})
 
-    memories = kb_mod.memory_for_prompt(q)
+    memories = kb_mod.memory_for_prompt(q, db_path=workspace.kb_path)
     try:
         # 作答规则统一在 podcast_article/library_ask.py（Web / CLI / MCP 共用一份）
         answer = library_ask.answer(q, hits, [m["text"] for m in memories])
@@ -1163,13 +1180,14 @@ def api_kb_entities():
     etype = (request.args.get("type") or "").strip() or None
     limit = min(200, max(1, int(request.args.get("limit") or 60)))
     min_count = max(1, int(request.args.get("min_count") or 2))
-    return jsonify({"entities": kb_mod.entities(limit=limit, etype=etype, min_count=min_count),
+    return jsonify({"entities": kb_mod.entities(limit=limit, etype=etype, min_count=min_count,
+                                                 db_path=_workspace().kb_path),
                     "types": list(kb_mod.ENTITY_TYPES)})
 
 
 @app.get("/api/kb/entity/<path:name>")
 def api_kb_entity(name: str):
-    d = kb_mod.entity_detail(name)
+    d = kb_mod.entity_detail(name, db_path=_workspace().kb_path)
     if not d.get("found"):
         return jsonify({"error": "没有这个实体"}), 404
     return jsonify(d)
@@ -1181,7 +1199,7 @@ def api_kb_entity(name: str):
 def api_memory_list():
     q = (request.args.get("q") or "").strip()
     kind = (request.args.get("kind") or "").strip() or None
-    items = kb_mod.memory_list(kind=kind, query=q)
+    items = kb_mod.memory_list(kind=kind, query=q, db_path=_workspace().kb_path)
     return jsonify({"items": items, "kinds": list(kb_mod.MEMORY_KINDS)})
 
 
@@ -1189,11 +1207,13 @@ def api_memory_list():
 @_readonly_guard
 def api_memory_add():
     data = request.get_json(force=True, silent=True) or {}
+    workspace = _workspace()
     try:
         item = kb_mod.memory_add(
             data.get("text") or "", kind=data.get("kind") or "fact",
             tags=data.get("tags") or "", source_dir=data.get("dir") or "",
-            source_kind=data.get("source") or "user", pinned=bool(data.get("pinned")))
+            source_kind=data.get("source") or "user", pinned=bool(data.get("pinned")),
+            db_path=workspace.kb_path)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     return jsonify(item)
@@ -1203,8 +1223,9 @@ def api_memory_add():
 @_readonly_guard
 def api_memory_update(mid: int):
     data = request.get_json(force=True, silent=True) or {}
-    item = kb_mod.memory_update(mid, **{k: v for k, v in data.items()
-                                        if k in ("text", "kind", "tags", "pinned")})
+    item = kb_mod.memory_update(mid, db_path=_workspace().kb_path,
+                                **{k: v for k, v in data.items()
+                                   if k in ("text", "kind", "tags", "pinned")})
     if not item:
         return jsonify({"error": "没有这条记忆"}), 404
     return jsonify(item)
@@ -1213,7 +1234,7 @@ def api_memory_update(mid: int):
 @app.delete("/api/memory/<int:mid>")
 @_readonly_guard
 def api_memory_delete(mid: int):
-    return jsonify({"ok": kb_mod.memory_delete(mid)})
+    return jsonify({"ok": kb_mod.memory_delete(mid, db_path=_workspace().kb_path)})
 
 
 # ---------------------------------------------------------------- 朗读（TTS）
@@ -1226,14 +1247,19 @@ def api_memory_delete(mid: int):
 #   · 内容与音色一起哈希，没变就复用，不重复付费。
 _TTS_LOCK = threading.Lock()
 _TTS_JOBS: dict[str, dict] = {}          # dir 名 -> {state, done, total, note, error}
-TTS_PREVIEW_STEM = Path(tempfile.gettempdir()) / "podcast-article-tts-preview"
 
 
-def _tts_cfg() -> dict:
-    s = settings_mod.load().get("tts") or {}
+def _tts_cfg(workspace=None) -> dict:
+    workspace = workspace or _workspace()
+    s = settings_mod.load(settings_path=workspace.settings_path).get("tts") or {}
     cfg = dict(tts_mod.DEFAULTS)
     cfg.update({k: v for k, v in s.items() if k in tts_mod.DEFAULTS})
     return cfg
+
+
+def _tts_preview_stem(workspace=None) -> Path:
+    workspace = workspace or _workspace()
+    return workspace.root / "tmp" / "tts-preview"
 
 
 def _tts_key() -> str:
@@ -1391,11 +1417,14 @@ def _audio_mime(suffix: str) -> str:
 @_readonly_guard
 def api_tts_preview():
     """试听：用当前设置读一句短话（保存设置后点一下就知道能不能用）。"""
-    cfg = _tts_cfg()
+    workspace = _workspace()
+    cfg = _tts_cfg(workspace)
     if cfg.get("provider") in ("", "off"):
         return jsonify({"ok": False, "error": "先选一个语音后端"}), 400
     try:
-        info = tts_mod.preview(cfg, _tts_key(), TTS_PREVIEW_STEM)
+        stem = _tts_preview_stem(workspace)
+        stem.parent.mkdir(parents=True, exist_ok=True)
+        info = tts_mod.preview(cfg, _tts_key(), stem)
     except Exception as exc:
         return jsonify({"ok": False, "error": f"{type(exc).__name__}: {exc}"[:300]})
     return jsonify({"ok": True, "url": f"/api/tts/preview?ts={int(time.time())}",
@@ -1406,8 +1435,9 @@ def api_tts_preview():
 @app.get("/api/tts/preview")
 def api_tts_preview_get():
     """试听音频本身。"""
+    stem = _tts_preview_stem()
     for suffix in (".m4a", ".mp3", ".wav", ".opus"):
-        p = TTS_PREVIEW_STEM.with_suffix(suffix)
+        p = stem.with_suffix(suffix)
         if p.exists():
             return send_file(p, conditional=True, mimetype=_audio_mime(suffix))
     return jsonify({"error": "还没有试听音频"}), 404
@@ -1416,8 +1446,8 @@ def api_tts_preview_get():
 @app.get("/api/audio/<job_dir>")
 def api_audio(job_dir: str):
     """本地音频流。conditional=True 让 werkzeug 处理 Range 请求，200MB 的文件也能拖动进度条。"""
-    base = (OUTPUT_ROOT / job_dir).resolve()
-    if not job_dir or not base.is_dir() or OUTPUT_ROOT.resolve() not in base.parents:
+    base = _safe_dir(job_dir)
+    if not base:
         return jsonify({"error": "目录不存在"}), 404
     path = _audio_path(base)
     if path:
@@ -1510,7 +1540,8 @@ def api_ask():
     if not selection and not question:
         return jsonify({"error": "先选中一段文字，或者写一个问题"}), 400
 
-    subs = settings_mod.load().get("assistant") or {}
+    workspace = _workspace()
+    subs = settings_mod.load(settings_path=workspace.settings_path).get("assistant") or {}
     use_web = data.get("web")
     use_web = bool(subs.get("web_default", True)) if use_web is None else bool(use_web)
     # 篇幅档位：默认简洁（用户反馈：原来的 400-900 字里只有一段是回答所问的）
@@ -1554,7 +1585,7 @@ def api_ask():
             # 只当「判断他关注点」的背景注入，并且**回给界面** —— 「AI 记得我什么」必须
             # 是看得见的，否则记忆跑偏时用户无从发现，更无从纠正。
             try:
-                memories = kb_mod.memory_for_prompt(_ask_query(selection, question))
+                memories = kb_mod.memory_for_prompt(_ask_query(selection, question), db_path=workspace.kb_path)
             except Exception:                 # 记忆坏了不该让提问失败
                 memories = []
             mem_text = "\n".join(f"- {m['text']}" for m in memories)
@@ -1577,6 +1608,7 @@ def api_ask():
                 mode=mode,
                 memory=mem_text,
                 history=history,
+                settings_path=workspace.settings_path,
                 log=log,
                 on_delta=lambda t: job["deltas"].append(t),
             )
@@ -1710,7 +1742,8 @@ def api_cover(job_dir: str):
     从**本地**发而不是让浏览器去热链图床：断网/防盗链都不该让卡片变成碎图。
     单集封面不会变，所以给一个长缓存。
     """
-    base = _safe_dir(job_dir)
+    workspace = _workspace()
+    base = _safe_dir(job_dir, output_root=workspace.output_root)
     if not base:
         return jsonify({"error": "目录不存在"}), 404
     path = cover_mod.find(base)
@@ -1728,8 +1761,10 @@ def api_covers_backfill():
     老文章是在这个功能之前生成的（当时只把封面 URL 存进了 meta.json），
     需要一次补齐；以后新生成的会自动下载。
     """
+    workspace = _workspace()
+    output_root = workspace.output_root
     filled, skipped, failed = [], [], []
-    for d in sorted(OUTPUT_ROOT.iterdir()) if OUTPUT_ROOT.exists() else []:
+    for d in sorted(output_root.iterdir()) if output_root.exists() else []:
         meta_file = d / "meta.json"
         if not d.is_dir() or not meta_file.exists():
             continue
@@ -1755,8 +1790,9 @@ def api_file(job_dir: str, name: str):
     """安全地取输出目录里的文件（白名单）。"""
     if name not in _ALLOWED_FILES:
         return jsonify({"error": "不支持的文件"}), 400
-    base = (OUTPUT_ROOT / job_dir).resolve()
-    if not base.is_dir() or OUTPUT_ROOT.resolve() not in base.parents:
+    output_root = _workspace().output_root
+    base = (output_root / job_dir).resolve()
+    if not base.is_dir() or output_root.resolve() not in base.parents:
         return jsonify({"error": "目录不存在"}), 404
     target = base / name
     if not target.exists():
@@ -1769,12 +1805,13 @@ def api_file(job_dir: str, name: str):
     return app.response_class(text, mimetype="text/plain")
 
 
-def _library_items() -> list[dict]:
+def _library_items(*, output_root: Path | None = None) -> list[dict]:
     """扫一遍输出目录，拼出历史库列表（按修改时间倒序）。"""
+    output_root = Path(output_root) if output_root is not None else _workspace().output_root
     items: list[dict] = []
-    if not OUTPUT_ROOT.exists():
+    if not output_root.exists():
         return items
-    for d in sorted(OUTPUT_ROOT.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
+    for d in sorted(output_root.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
         meta_file = d / "meta.json"
         if not d.is_dir() or not meta_file.exists():
             continue
@@ -1818,16 +1855,17 @@ def api_search():
         limit = min(100, max(1, int(request.args.get("limit") or 30)))
     except ValueError:
         limit = 30
+    workspace = _workspace()
     if not query:
         return jsonify({"query": "", "count": 0, "items": [],
-                        "stats": search_mod.stats(OUTPUT_ROOT)})
-    items = search_mod.search(OUTPUT_ROOT, query, limit=limit)
-    state = library_mod.snapshot()
+                        "stats": search_mod.stats(workspace.output_root)})
+    items = search_mod.search(workspace.output_root, query, limit=limit)
+    state = library_mod.snapshot(store_path=workspace.library_path)
     for it in items:
         it["category"] = state["assignments"].get(it["dir"])
         it["status"] = state["status"].get(it["dir"], library_mod.DEFAULT_STATUS)
     return jsonify({"query": query, "count": len(items), "items": items,
-                    "stats": search_mod.stats(OUTPUT_ROOT)})
+                    "stats": search_mod.stats(workspace.output_root)})
 
 
 # ---------------------------------------------------------------- 阅读状态
@@ -1838,11 +1876,14 @@ def api_status():
     """设置阅读状态。body: {"dir": "...", "status": "unread|reading|read|later"}（空 = 清除）"""
     data = request.get_json(force=True, silent=True) or {}
     dir_name = (data.get("dir") or "").strip()
+    workspace = _workspace()
     try:
-        value = library_mod.set_status(dir_name, (data.get("status") or "").strip() or None)
+        value = library_mod.set_status(dir_name, (data.get("status") or "").strip() or None,
+                                       store_path=workspace.library_path)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
-    return jsonify({"dir": dir_name, "value": value, "state": library_mod.snapshot()})
+    return jsonify({"dir": dir_name, "value": value,
+                    "state": library_mod.snapshot(store_path=workspace.library_path)})
 
 
 # ---------------------------------------------------------------- 用量与费用
@@ -1850,9 +1891,10 @@ def api_status():
 @app.get("/api/usage")
 def api_usage():
     """累计 token 与费用（扫一遍所有 usage.json）+ 当前任务的实时用量。"""
+    workspace = _workspace()
     live = usage_mod.current()
     return jsonify({
-        "total": usage_mod.summary_over(OUTPUT_ROOT),
+        "total": usage_mod.summary_over(workspace.output_root),
         "live": usage_mod.describe(live.usage) if live else None,
         "prices": usage_mod.MODEL_PRICES,
         "busy": _running_job_id() is not None,
@@ -1861,10 +1903,11 @@ def api_usage():
 
 # ---------------------------------------------------------------- 导出
 
-def _safe_dir(dir_name: str) -> Path | None:
+def _safe_dir(dir_name: str, *, output_root: Path | None = None) -> Path | None:
     """把目录名解析成输出根目录下的真实目录；越界或不存在返回 None。"""
-    base = (OUTPUT_ROOT / (dir_name or "")).resolve()
-    if not dir_name or not base.is_dir() or OUTPUT_ROOT.resolve() not in base.parents:
+    root = Path(output_root) if output_root is not None else _workspace().output_root
+    base = (root / (dir_name or "")).resolve()
+    if not dir_name or not base.is_dir() or root.resolve() not in base.parents:
         return None
     return base
 
@@ -1880,10 +1923,11 @@ def api_export_episode(job_dir: str):
     fmt = (request.args.get("fmt") or "md").lower()
     if fmt not in ("md", "html", "txt"):
         return jsonify({"error": "只支持 md / html / txt"}), 400
-    if not _safe_dir(job_dir):
+    workspace = _workspace()
+    if not _safe_dir(job_dir, output_root=workspace.output_root):
         return jsonify({"error": "目录不存在"}), 404
     try:
-        name, payload, mime = export_mod.export_episode(OUTPUT_ROOT, job_dir, fmt)
+        name, payload, mime = export_mod.export_episode(workspace.output_root, job_dir, fmt)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     # 去掉 export 模块带的 charset：Flask 会再补一个，否则头里出现两次 charset=utf-8
@@ -1896,9 +1940,10 @@ def api_export_all():
     """整库导出 zip。GET /api/export?category=<id>&transcript=1"""
     category = (request.args.get("category") or "").strip()
     include_transcript = request.args.get("transcript", "1") != "0"
+    workspace = _workspace()
     dirs = []
-    state = library_mod.snapshot()
-    for item in _library_items():
+    state = library_mod.snapshot(store_path=workspace.library_path)
+    for item in _library_items(output_root=workspace.output_root):
         if not item["has_article"]:
             continue
         if category and state["assignments"].get(item["dir"]) != category:
@@ -1910,7 +1955,7 @@ def api_export_all():
     os.close(fd)
     tmp = Path(tmp_name)
     try:
-        info = export_mod.bundle(OUTPUT_ROOT, tmp, dirs=dirs,
+        info = export_mod.bundle(workspace.output_root, tmp, dirs=dirs,
                                  include_transcript=include_transcript)
         payload = tmp.read_bytes()
     except ValueError as exc:
@@ -2000,8 +2045,9 @@ def api_queue_run():
 
 @app.get("/api/feeds")
 def api_feeds_get():
-    snap = feeds_mod.snapshot()
-    snap["subscriptions"] = settings_mod.load()["subscriptions"]
+    workspace = _workspace()
+    snap = feeds_mod.snapshot(feeds_path=workspace.feeds_path)
+    snap["subscriptions"] = settings_mod.load(settings_path=workspace.settings_path)["subscriptions"]
     return jsonify(snap)
 
 
@@ -2010,19 +2056,21 @@ def api_feeds_get():
 def api_feeds_add():
     """订阅一个 feed。body: {"url", "auto": true, "backfill": 0}"""
     data = request.get_json(force=True, silent=True) or {}
+    workspace = _workspace()
     try:
         entry = feeds_mod.add((data.get("url") or "").strip(),
                               auto=bool(data.get("auto", True)),
-                              backfill=int(data.get("backfill") or 0))
+                              backfill=int(data.get("backfill") or 0),
+                              feeds_path=workspace.feeds_path)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     except Exception as exc:                       # 网络类异常也要给用户一句人话
         return jsonify({"error": f"订阅失败：{type(exc).__name__}: {exc}"[:300]}), 400
     # 首次订阅若要求补跑，立刻把 backfill 的那几集入队
-    found = feeds_mod.check(entry["id"]) if entry.get("backfill") else []
+    found = feeds_mod.check(entry["id"], feeds_path=workspace.feeds_path) if entry.get("backfill") else []
     added = _enqueue_feed_episodes(found) if found else []
     return jsonify({"feed": entry, "enqueued": len(added),
-                    "feeds": feeds_mod.snapshot()})
+                    "feeds": feeds_mod.snapshot(feeds_path=workspace.feeds_path)})
 
 
 @app.post("/api/feeds/discover")
@@ -2041,21 +2089,24 @@ def api_feeds_discover():
 @app.patch("/api/feeds/<fid>")
 def api_feeds_update(fid: str):
     data = request.get_json(force=True, silent=True) or {}
+    workspace = _workspace()
     try:
-        entry = feeds_mod.update(fid, **{k: v for k, v in data.items() if k != "id"})
+        entry = feeds_mod.update(fid, feeds_path=workspace.feeds_path,
+                                 **{k: v for k, v in data.items() if k in ("auto", "backfill", "title")})
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 404
-    return jsonify({"feed": entry, "feeds": feeds_mod.snapshot()})
+    return jsonify({"feed": entry, "feeds": feeds_mod.snapshot(feeds_path=workspace.feeds_path)})
 
 
 @app.delete("/api/feeds/<fid>")
 @_readonly_guard
 def api_feeds_delete(fid: str):
+    workspace = _workspace()
     try:
-        feeds_mod.remove(fid)
+        feeds_mod.remove(fid, feeds_path=workspace.feeds_path)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 404
-    return jsonify(feeds_mod.snapshot())
+    return jsonify(feeds_mod.snapshot(feeds_path=workspace.feeds_path))
 
 
 @app.post("/api/feeds/check")
@@ -2064,7 +2115,7 @@ def api_feeds_check():
     """立刻检查所有订阅。body: {"enqueue": true} 发现新单集时是否入队。"""
     data = request.get_json(force=True, silent=True) or {}
     try:
-        return jsonify(check_feeds_now(enqueue=bool(data.get("enqueue", True))))
+        return jsonify(check_feeds_now(enqueue=bool(data.get("enqueue", True)), workspace=_workspace()))
     except Exception as exc:
         return jsonify({"error": f"检查失败：{type(exc).__name__}: {exc}"[:300]}), 400
 
@@ -2074,7 +2125,7 @@ def api_feeds_check():
 def api_feeds_settings():
     """保存订阅调度设置（存在 settings.json 的 subscriptions 段）。body: {...}"""
     data = request.get_json(force=True, silent=True) or {}
-    saved = settings_mod.save(subscriptions=data)
+    saved = settings_mod.save(subscriptions=data, settings_path=_workspace().settings_path)
     return jsonify(saved["subscriptions"])
 
 
@@ -2118,10 +2169,12 @@ def _enqueue_feed_episodes(items: list[dict], dest: str = "") -> list[dict]:
     return added
 
 
-def check_feeds_now(*, enqueue: bool = True) -> dict:
+def check_feeds_now(*, enqueue: bool = True, workspace=None) -> dict:
     """检查所有订阅；发现新单集按设置决定是否自动入队。"""
-    subs = settings_mod.load()["subscriptions"]
-    found = feeds_mod.check()
+    settings_path = workspace.settings_path if workspace else None
+    feeds_path = workspace.feeds_path if workspace else None
+    subs = settings_mod.load(settings_path=settings_path)["subscriptions"]
+    found = feeds_mod.check(feeds_path=feeds_path)
     result = {
         "found": len(found),
         "enqueued": 0,
@@ -2132,7 +2185,7 @@ def check_feeds_now(*, enqueue: bool = True) -> dict:
         added = _enqueue_feed_episodes(found, subs.get("auto_dest") or "")
         result["enqueued"] = len(added)
     if found:
-        result["feeds"] = feeds_mod.snapshot()
+        result["feeds"] = feeds_mod.snapshot(feeds_path=feeds_path)
     return result
 
 

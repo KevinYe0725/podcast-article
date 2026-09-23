@@ -125,11 +125,9 @@ def test_ask_can_disable_web(client, monkeypatch):
 
 def test_ask_web_default_follows_settings(client, monkeypatch):
     """不传 web 时跟随设置里的 assistant.web_default。"""
-    from podcast_article import settings as st
-
     _fake_deepdive(monkeypatch)
     calls = _fake_search(monkeypatch)
-    st.save(assistant={"web_default": False})
+    client.post("/api/settings", json={"assistant": {"web_default": False}})
 
     resp = client.post("/api/ask", json={"dir": "20240101-测试台-测试单集", "selection": "x"})
     assert resp.get_json()["web"] is False, "应跟随设置里的默认值"

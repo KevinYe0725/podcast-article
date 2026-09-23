@@ -1095,8 +1095,6 @@ async function pushArticle() {
 }
 
 /* ---------------- 设置 ---------------- */
-const SECRET_KEYS = ["DEEPSEEK_API_KEY", "DEEPSEEK_MODEL", "NOTION_TOKEN", "NOTION_DATABASE_ID", "NOTION_PARENT_PAGE_ID", "TTS_API_KEY"];
-
 async function openSettings(tab) {
   closeAssist();                 // 抽屉会盖住设置页
   // 阅读页是固定整屏的一层，盖在主界面之上；设置页在 #main 里，不先收掉阅读页就会
@@ -1148,13 +1146,6 @@ async function loadSettings() {
   $("s_name").value = p.name || "";
   $("s_interests").value = p.interests || "";
   $("s_plang").value = p.language || "zh";
-  SECRET_KEYS.forEach((k) => { const el = $("k_" + k); if (el) el.value = ""; });
-  for (const [k, v] of Object.entries(d.secrets || {})) {
-    const tag = $("st_" + k);
-    if (!tag) continue;
-    tag.textContent = v.configured ? "已配置 " + v.masked : "未配置";
-    tag.className = "fstate" + (v.configured ? " ok" : "");
-  }
   const t = d.tts || {};
   if ($("t_provider")) {
     $("t_provider").value = t.provider || "off";
@@ -1191,7 +1182,7 @@ async function loadSettings() {
   $("storagerows").innerHTML = [
     ["输出目录", s.output_dir], ["已生成", `${s.episodes} 集 · ${s.size_mb} MB`],
     ["本地模型", (s.models || []).join("、") || "—"],
-    ["设置文件", s.settings_path], ["环境变量", s.env_path],
+    ["设置文件", s.settings_path],
   ].map(([k, v]) => `<div class="inforow"><span class="k">${esc(k)}</span><span class="v">${esc(String(v))}</span></div>`).join("");
 
   // 订阅调度
@@ -1296,46 +1287,14 @@ async function saveSettings() {
       length_mode: $("as_mode").value,
     },
     tts: ttsFormValues(),
-    secrets: {},
   };
-  // 密钥留空 = 不改动，因此只提交真正输入的字段
-  SECRET_KEYS.forEach((k) => { const el = $("k_" + k); if (el && el.value.trim()) payload.secrets[k] = el.value.trim(); });
   const resp = await fetch("/api/settings", {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
   });
   const d = await resp.json();
   if (!resp.ok) { toast("⚠ " + esc(d.error || "保存失败")); return; }
   await loadSettings();
-  toast(d.env_changed && d.env_changed.length
-    ? `✦ 已保存，并写回 .env：${esc(d.env_changed.join("、"))}`
-    : "✦ 已保存");
-}
-
-async function verifyKey(what, btn) {
-  const out = $("v_" + what), keyName = what === "deepseek" ? "DEEPSEEK_API_KEY" : "NOTION_TOKEN";
-  const typed = ($("k_" + keyName).value || "").trim();
-  btn.disabled = true;
-  out.className = "vres"; out.textContent = "检测中…";
-  try {
-    // 先落盘再检测：否则测试的是旧密钥，会误导
-    if (typed) {
-      await fetch("/api/settings", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ secrets: { [keyName]: typed } }),
-      });
-      await loadSettings();
-      btn.disabled = true;
-    }
-    const resp = await fetch("/api/settings/verify", {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ what }),
-    });
-    const d = await resp.json();
-    out.className = "vres " + (d.ok ? "ok" : "bad");
-    out.textContent = (d.ok ? "✓ " : "✕ ") + (d.detail || d.error || "");
-  } catch (e) {
-    out.className = "vres bad"; out.textContent = "✕ " + String(e);
-  }
-  btn.disabled = false;
+  toast("✦ 已保存");
 }
 
 /* ---------------- 时间戳回听（本地音频）---------------- */
@@ -3383,16 +3342,6 @@ async function testSearchService(btn) {
   btn.disabled = true;
   out.className = "vres"; out.textContent = "搜索中…";
   try {
-    const typed = { TAVILY_API_KEY: ($("as_tavily").value || "").trim(),
-                    SERPER_API_KEY: ($("as_serper").value || "").trim() };
-    const secrets = Object.fromEntries(Object.entries(typed).filter(([, v]) => v));
-    if (Object.keys(secrets).length) {
-      await fetch("/api/settings", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ secrets }),
-      });
-      await loadSearchService();
-    }
     const d = await (await fetch("/api/search-service/test", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ query: "DeepSeek" }),

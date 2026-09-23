@@ -126,7 +126,7 @@ def test_delete_unknown_dir_404(client):
     assert client.delete("/api/episode/不存在", json={"scope": "all"}).status_code == 404
 
 
-def test_settings_roundtrip_and_secret_write(client, monkeypatch, tmp_path):
+def test_settings_roundtrip_and_reject_server_secret_write(client, monkeypatch, tmp_path):
     from podcast_article import settings as st
 
     env = tmp_path / ".env"
@@ -136,17 +136,21 @@ def test_settings_roundtrip_and_secret_write(client, monkeypatch, tmp_path):
     resp = client.post("/api/settings", json={
         "profile": {"name": "Kevin", "interests": "AI"},
         "generation": {"length_mode": "concise"},
-        "secrets": {"DEEPSEEK_API_KEY": "sk-new"},
     })
     body = resp.get_json()
     assert body["profile"]["name"] == "Kevin"
     assert body["generation"]["length_mode"] == "concise"
-    assert body["env_changed"] == ["DEEPSEEK_API_KEY"]
-    assert "sk-new" in env.read_text(encoding="utf-8")
+    assert "secrets" not in body
+    assert "env_changed" not in body
+    assert env.read_text(encoding="utf-8") == "DEEPSEEK_API_KEY=sk-old\n"
+
+    rejected = client.post("/api/settings", json={"secrets": {"DEEPSEEK_API_KEY": "sk-new"}})
+    assert rejected.status_code == 400
+    assert rejected.get_json()["error"] == "server_credentials_managed"
 
     got = client.get("/api/settings").get_json()
     assert got["profile"]["name"] == "Kevin"
-    assert "sk-new" not in json.dumps(got["secrets"])       # 明文绝不回传
+    assert "secrets" not in got
 
 
 def test_mcp_preset_endpoint(client, monkeypatch, tmp_path):
@@ -711,9 +715,8 @@ def test_feeds_check_enqueue_false_only_reports(client, stores, fake_feed):
 
 def test_feeds_check_respects_auto_generate_off(client, stores, fake_feed):
     from podcast_article import queue
-    from podcast_article import settings as st
 
-    st.save(subscriptions={"auto_generate": False})
+    client.post("/api/settings", json={"subscriptions": {"auto_generate": False}})
     client.post("/api/feeds", json={"url": FEED_URL})
     fake_feed["content"] = _rss(["新的一集", "第一集", "第二集"])
 
@@ -752,7 +755,7 @@ def test_settings_saves_subscriptions_and_ignores_unknown_keys(client, stores):
     assert body["subscriptions"]["interval_minutes"] == 15, \
         f"应回显保存后的值，实际 {body['subscriptions']['interval_minutes']!r}"
     assert "xxx" not in body["subscriptions"], f"非法键应被忽略：{sorted(body['subscriptions'])}"
-    assert body["env_changed"] == [], f"没传密钥时不该改 .env，实际 {body['env_changed']}"
+    assert "env_changed" not in body
     assert client.get("/api/settings").get_json()["subscriptions"]["interval_minutes"] == 15
 
 
@@ -784,7 +787,7 @@ def test_run_extracts_link_from_pasted_text(client, monkeypatch):
 
     calls = []
 
-    def fake_new_job(url, opts, *, source="manual", queue_id=None):
+    def fake_new_job(url, opts, *, source="manual", queue_id=None, workspace=None):
         calls.append(url)
         return "job-fake-paste"
 
@@ -821,7 +824,7 @@ def test_run_creates_job_when_idle(client, monkeypatch):
 
     calls = []
 
-    def fake_new_job(url, opts, *, source="manual", queue_id=None):
+    def fake_new_job(url, opts, *, source="manual", queue_id=None, workspace=None):
         calls.append({"url": url, "opts": opts, "source": source, "queue_id": queue_id})
         return "job-fake001"
 

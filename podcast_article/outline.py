@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
 from collections import OrderedDict
 
 from . import config, settings
@@ -268,10 +269,11 @@ def _parse_json(text: str) -> dict:
 # ------------------------------------------------------------------ 主流程
 
 def build_material(
-    title: str, podcast: str, author: str, shownotes_html: str | None, body: str
+    title: str, podcast: str, author: str, shownotes_html: str | None, body: str,
+    *, settings_path: Path | None = None,
 ) -> str:
     """构造每条消息共用的固定前缀（便于上下文缓存命中）。"""
-    profile = settings.profile_text()
+    profile = settings.profile_text(settings_path=settings_path)
     notes = html_to_text(shownotes_html)
     parts = [f"节目标题：{title}", f"播客/频道：{podcast}", f"主播/作者：{author or '未知'}"]
     if profile:

@@ -97,6 +97,7 @@ class Pipeline:
         progress=None,
         on_usage=None,
         episode: dict | None = None,
+        settings_path: Path | None = None,
         object_storage_client=None,
     ):
         self.url = url
@@ -117,6 +118,7 @@ class Pipeline:
         self.progress = progress  # progress(stage: str, data: dict)
         self.on_usage = on_usage  # on_usage(usage: dict)，每次 LLM 调用后回调（用于实时显示花费）
         self.episode = episode    # 预先解析好的单集快照（订阅发现时固定下来，见 webapp）
+        self.settings_path = settings_path
         self.object_storage = object_storage_client
 
     def _cloud_storage(self):
@@ -323,6 +325,7 @@ class Pipeline:
                 mode=self.mode,
                 polish=self.polish,
                 outlined=self.outlined,
+                settings_path=self.settings_path,
                 log=self.log,
                 progress=self.progress,
             )

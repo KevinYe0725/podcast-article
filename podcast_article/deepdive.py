@@ -885,10 +885,10 @@ def _web_lookup(question: str, selection: str, *, log=print, search=None):
 
 # ---------------------------------------------------------------- 用量记账
 
-def _profile() -> str:
+def _profile(settings_path: Path | None = None) -> str:
     """读者画像（设置页里填的）；读不出来就当没填——设置坏了不该让解读失败。"""
     try:
-        return settings.profile_text()
+        return settings.profile_text(settings_path=settings_path)
     except (OSError, ValueError):
         return ""
 
@@ -933,7 +933,8 @@ def stream_answer(*, workdir: Path | None, selection: str, question: str, title:
                   podcast: str, model: str | None = None, use_web: bool = True,
                   mode: str | None = None, log=print, on_delta=None, search=None,
                   memory: str = "",
-                  history: list[dict] | None = None) -> dict:
+                  history: list[dict] | None = None,
+                  settings_path: Path | None = None) -> dict:
     """主入口（流式）。返回 `{"answer", "passages", "web", "error"}`。
 
     - 先 `retrieve()` 拿原文片段（query = 选中文字 + 疑问，两者都可能在讲他关心的词）；
@@ -962,7 +963,7 @@ def stream_answer(*, workdir: Path | None, selection: str, question: str, title:
 
     system, user = build_prompt(
         selection=selection, question=question, title=title or "", podcast=podcast or "",
-        passages=passages, web=web_text, profile=_profile(), memory=memory, mode=mode,
+        passages=passages, web=web_text, profile=_profile(settings_path), memory=memory, mode=mode,
         history=history,
     )
 

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter
+from pathlib import Path
 
 from openai import OpenAI
 
@@ -454,6 +455,7 @@ def write_article(
     outlined: bool = True,
     log=print,
     progress=None,
+    settings_path: Path | None = None,
 ) -> str:
     """输入带时间戳的转写片段，输出 Markdown 文章。progress 同 Pipeline。
 
@@ -463,7 +465,7 @@ def write_article(
     """
     client = _client()
     model = llm_model or config.deepseek_model()
-    profile = settings.profile_text()  # 设置页里填的个人资料（可为空）
+    profile = settings.profile_text(settings_path=settings_path)  # 设置页里填的个人资料（可为空）
     system = _system_prompt(mode)
     mode_key = mode if mode in STRUCTURES else DEFAULT_MODE
 
@@ -484,7 +486,8 @@ def write_article(
             else:
                 material_body = _digest_segments(client, model, segments, max_chars, log, progress)
             material = outline.build_material(
-                title, podcast, author, shownotes_html, material_body
+                title, podcast, author, shownotes_html, material_body,
+                settings_path=settings_path,
             )
             log(f"[llm] 分节写作 · {mode_key} 档｜素材 {len(material_body)} 字符，"
                 f"预算约 {outline.budget_total(mode_key)} 字")

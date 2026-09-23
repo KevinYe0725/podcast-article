@@ -82,11 +82,12 @@ DEFAULTS: dict = {
 }
 
 
-def load() -> dict:
+def load(*, settings_path: Path | None = None) -> dict:
+    path = Path(settings_path) if settings_path is not None else SETTINGS_PATH
     data: dict = {}
-    if SETTINGS_PATH.exists():
+    if path.exists():
         try:
-            data = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+            data = json.loads(path.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             data = {}
     merged = {
@@ -101,8 +102,9 @@ def load() -> dict:
 
 def save(profile: dict | None = None, generation: dict | None = None,
          subscriptions: dict | None = None, assistant: dict | None = None,
-         tts: dict | None = None) -> dict:
-    current = load()
+         tts: dict | None = None, *, settings_path: Path | None = None) -> dict:
+    path = Path(settings_path) if settings_path is not None else SETTINGS_PATH
+    current = load(settings_path=path)
     if profile:
         current["profile"].update({k: v for k, v in profile.items() if k in PROFILE_DEFAULTS})
     if generation:
@@ -143,15 +145,16 @@ def save(profile: dict | None = None, generation: dict | None = None,
                 current["subscriptions"][key] = int(current["subscriptions"][key] or 0)
             except ValueError:
                 current["subscriptions"][key] = SUBSCRIPTION_DEFAULTS[key]
-    SETTINGS_PATH.write_text(
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
         json.dumps(current, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     return current
 
 
-def profile_text() -> str:
+def profile_text(*, settings_path: Path | None = None) -> str:
     """把个人资料转成注入 prompt 的一段文字；没填则返回空串。"""
-    p = load()["profile"]
+    p = load(settings_path=settings_path)["profile"]
     bits = []
     if p.get("name"):
         bits.append(f"读者称呼：{p['name']}")
@@ -226,9 +229,9 @@ def secret_status() -> dict:
     return out
 
 
-def storage_info() -> dict:
+def storage_info(*, output_root: Path | None = None, settings_path: Path | None = None) -> dict:
     # 与 webapp 一致：PA_OUTPUT_DIR 优先（测试与多实例部署都会用到）
-    output = Path(os.environ.get("PA_OUTPUT_DIR") or (PROJECT_ROOT / "output"))
+    output = Path(output_root) if output_root is not None else Path(os.environ.get("PA_OUTPUT_DIR") or (PROJECT_ROOT / "output"))
     episodes, size = 0, 0
     if output.exists():
         for d in output.iterdir():
@@ -242,6 +245,5 @@ def storage_info() -> dict:
         "episodes": episodes,
         "size_mb": round(size / 1048576, 1),
         "models": models,
-        "settings_path": str(SETTINGS_PATH),
-        "env_path": str(ENV_PATH),
+        "settings_path": str(Path(settings_path) if settings_path is not None else SETTINGS_PATH),
     }

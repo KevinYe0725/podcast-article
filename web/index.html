@@ -275,14 +275,14 @@
   <div class="sethead">
     <div>
       <h1>设置</h1>
-      <p class="setintro">个人信息、密钥与生成偏好。密钥只写不读——接口只回报是否已配置，明文不会回到浏览器；输入框留空表示保持原值。</p>
+      <p class="setintro">个人资料与使用偏好。AI 模型和服务密钥由服务器管理员管理，使用额度按账号记录。</p>
     </div>
     <button class="btn mini" onclick="closeSettings()">← 返回</button>
   </div>
 
   <div class="tabs">
     <button class="tab" data-tab="profile" data-active="true" onclick="switchTab('profile')">个人资料</button>
-    <button class="tab" data-tab="keys" onclick="switchTab('keys')">API 密钥</button>
+    <button class="tab" data-tab="keys" onclick="switchTab('keys')">AI 服务</button>
     <button class="tab" data-tab="dest" onclick="switchTab('dest')">发布目标</button>
     <button class="tab" data-tab="gen" onclick="switchTab('gen')">生成默认值</button>
     <button class="tab" data-tab="subs" onclick="switchTab('subs')">订阅调度</button>
@@ -316,34 +316,15 @@
 
   <section class="pane" id="pane-keys" style="display:none">
     <div class="field">
-      <div class="fhead"><label class="flabel">DeepSeek API Key</label><span class="fstate" id="st_DEEPSEEK_API_KEY"></span></div>
-      <input id="k_DEEPSEEK_API_KEY" type="password" autocomplete="off" placeholder="留空表示不修改" oninput="markDirty()">
-      <p class="fhint">用于精读成文，写入 .env 的 DEEPSEEK_API_KEY。
-        <button class="linkbtn" onclick="verifyKey('deepseek', this)">测试连接</button><span class="vres" id="v_deepseek"></span></p>
-    </div>
-    <div class="field">
-      <div class="fhead"><label class="flabel">DeepSeek 模型</label><span class="fstate" id="st_DEEPSEEK_MODEL"></span></div>
-      <input id="k_DEEPSEEK_MODEL" placeholder="留空使用默认（deepseek-flash）" oninput="markDirty()">
-      <p class="fhint">留空使用默认模型。通常改「生成默认值 → 成文模型」就够了。</p>
-    </div>
-    <div class="field">
-      <div class="fhead"><label class="flabel">Notion Token</label><span class="fstate" id="st_NOTION_TOKEN"></span></div>
-      <input id="k_NOTION_TOKEN" type="password" autocomplete="off" placeholder="留空表示不修改" oninput="markDirty()">
-      <p class="fhint">Notion Internal Integration 密钥（ntn_…）。
-        <button class="linkbtn" onclick="verifyKey('notion', this)">测试连接</button><span class="vres" id="v_notion"></span></p>
+      <div class="fhead"><label class="flabel">服务端 AI</label><span class="fstate ok">已集中管理</span></div>
+      <p class="fhint">文章生成与 AI 助手使用服务器配置的模型服务。你的账号用量单独统计；这里不会显示或修改服务器密钥。</p>
     </div>
   </section>
 
   <section class="pane" id="pane-dest" style="display:none">
     <div class="field">
-      <div class="fhead"><label class="flabel">Notion 数据库 ID</label><span class="fstate" id="st_NOTION_DATABASE_ID"></span></div>
-      <input id="k_NOTION_DATABASE_ID" placeholder="每篇文章作为数据库的一行" oninput="markDirty()">
-      <p class="fhint">在 Notion 打开目标数据库，从链接里取 32 位 ID；别忘了把该数据库「连接」给你的 integration。</p>
-    </div>
-    <div class="field">
-      <div class="fhead"><label class="flabel">Notion 父页面 ID</label><span class="fstate" id="st_NOTION_PARENT_PAGE_ID"></span></div>
-      <input id="k_NOTION_PARENT_PAGE_ID" placeholder="作为某个页面的子页面" oninput="markDirty()">
-      <p class="fhint">两个都填时优先写入数据库。也可以完全不用内置集成，改在「MCP 服务器」里配置 Notion 官方 MCP。</p>
+      <div class="fhead"><label class="flabel">发布目标</label></div>
+      <p class="fhint">Notion 连接将在账号专属集成设置中配置。</p>
     </div>
   </section>
 
@@ -466,13 +447,8 @@
       </p>
       <div id="as_providers" style="margin-top:10px"></div>
       <div class="field" style="border-top:none;padding-top:0">
-        <div class="fhead"><label class="flabel" for="as_tavily">Tavily API Key</label>
-          <span class="fstate" id="as_tavily_state"></span></div>
-        <input id="as_tavily" type="password" autocomplete="off" placeholder="留空表示不修改（tvly-…）" oninput="markDirty()">
-        <div class="fhead" style="margin-top:12px"><label class="flabel" for="as_serper">Serper API Key</label>
-          <span class="fstate" id="as_serper_state"></span></div>
-        <input id="as_serper" type="password" autocomplete="off" placeholder="留空表示不修改" oninput="markDirty()">
         <p class="fhint">
+          需要密钥的搜索服务由服务器管理员配置。
           <button class="linkbtn" onclick="testSearchService(this)">测试联网搜索</button>
           <span class="vres" id="as_testres"></span>
         </p>

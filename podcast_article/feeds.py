@@ -48,11 +48,16 @@ _UPDATABLE = ("auto", "backfill", "title")
 
 # ------------------------------------------------------------------ 存取
 
-def _load() -> dict:
-    if not FEEDS_PATH.exists():
+def _feeds_path(feeds_path: Path | None = None) -> Path:
+    return Path(feeds_path) if feeds_path is not None else FEEDS_PATH
+
+
+def _load(feeds_path: Path | None = None) -> dict:
+    path = _feeds_path(feeds_path)
+    if not path.exists():
         return {"feeds": []}
     try:
-        data = json.loads(FEEDS_PATH.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return {"feeds": []}
     if not isinstance(data, dict):
@@ -67,14 +72,15 @@ def _load() -> dict:
     return data
 
 
-def _save(data: dict) -> None:
+def _save(data: dict, feeds_path: Path | None = None) -> None:
     """原子写：先写同目录临时文件再 rename，避免留下半截 json。"""
+    path = _feeds_path(feeds_path)
     payload = json.dumps(data, ensure_ascii=False, indent=2)
-    FEEDS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    tmp = FEEDS_PATH.with_name(f"{FEEDS_PATH.name}.{os.getpid()}.tmp")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     try:
         tmp.write_text(payload, encoding="utf-8")
-        os.replace(tmp, FEEDS_PATH)
+        os.replace(tmp, path)
     finally:
         if tmp.exists():
             try:
@@ -207,18 +213,18 @@ def _show_title(parsed) -> str:
 
 # ------------------------------------------------------------------ 读接口
 
-def load() -> dict:
+def load(*, feeds_path: Path | None = None) -> dict:
     """读原始存储（含 seen 明细）。"""
-    return _load()
+    return _load(feeds_path)
 
 
-def snapshot() -> dict:
+def snapshot(*, feeds_path: Path | None = None) -> dict:
     """给接口直接返回：{"feeds": [...], "total_new": int}。
 
     每项额外带 "new_count"（本轮发现但可能还没处理的条数，这里不比对新单集，固定给 0），
     并去掉可能很长的 seen 明细，只留 "seen_count"。
     """
-    data = _load()
+    data = _load(feeds_path)
     items: list[dict] = []
     for feed in data["feeds"]:
         item = {k: v for k, v in feed.items() if k != "seen"}
@@ -228,9 +234,9 @@ def snapshot() -> dict:
     return {"feeds": items, "total_new": 0}
 
 
-def get(fid: str) -> dict | None:
+def get(fid: str, *, feeds_path: Path | None = None) -> dict | None:
     """按 id 取一条订阅（含 seen 明细），没有则 None。"""
-    return _find(_load(), fid)
+    return _find(_load(feeds_path), fid)
 
 
 # ------------------------------------------------------------------ 写接口
@@ -242,6 +248,7 @@ def add(
     auto: bool = True,
     backfill: int = 0,
     timeout: float = 25.0,
+    feeds_path: Path | None = None,
 ) -> dict:
     """订阅一个 feed（会真的抓一次）。
 
@@ -260,7 +267,7 @@ def add(
     if backfill < 0:
         raise ValueError("backfill 不能为负数")
 
-    data = _load()
+    data = _load(feeds_path)
     key = _norm_url(url)
     for feed in data["feeds"]:
         if _norm_url(feed.get("url", "")) == key:
@@ -293,22 +300,22 @@ def add(
         "seen": seen,
     }
     data["feeds"].append(feed)
-    _save(data)
+    _save(data, feeds_path)
     return feed
 
 
-def remove(fid: str) -> None:
-    data = _load()
+def remove(fid: str, *, feeds_path: Path | None = None) -> None:
+    data = _load(feeds_path)
     before = len(data["feeds"])
     data["feeds"] = [f for f in data["feeds"] if f.get("id") != fid]
     if len(data["feeds"]) == before:
         raise ValueError(f"订阅不存在：{fid}")
-    _save(data)
+    _save(data, feeds_path)
 
 
-def update(fid: str, **fields) -> dict:
+def update(fid: str, *, feeds_path: Path | None = None, **fields) -> dict:
     """只允许改 auto / backfill / title，其他键忽略。"""
-    data = _load()
+    data = _load(feeds_path)
     feed = _require(data, fid)
     for key in _UPDATABLE:
         if key not in fields:
@@ -324,7 +331,7 @@ def update(fid: str, **fields) -> dict:
         else:
             value = str(value or "").strip()
         feed[key] = value
-    _save(data)
+    _save(data, feeds_path)
     return feed
 
 
@@ -363,7 +370,8 @@ def discover(url: str, *, limit: int = 5, timeout: float = 25.0) -> dict:
 
 # ------------------------------------------------------------------ 轮询
 
-def check(fid: str | None = None, *, timeout: float = 25.0) -> list[dict]:
+def check(fid: str | None = None, *, timeout: float = 25.0,
+          feeds_path: Path | None = None) -> list[dict]:
     """抓取（一个或全部）feed，找出没见过的单集，标记 seen 后返回它们。
 
     返回项：{"feed_id","feed_title","feed_url","episode_url","audio_url","title",
@@ -373,7 +381,7 @@ def check(fid: str | None = None, *, timeout: float = 25.0) -> list[dict]:
       且 **不更新** last_checked、不把单集标记成 seen（下次成功了还会再报）。
     - 顺序：按 pub_date 旧→新（补跑历史是时间正序），同 feed 内按 pick 倒序（也是旧→新）。
     """
-    data = _load()
+    data = _load(feeds_path)
     if fid is not None:
         targets = [_require(data, fid)]
     else:
@@ -415,7 +423,7 @@ def check(fid: str | None = None, *, timeout: float = 25.0) -> list[dict]:
         feed["last_checked"] = time.time()
         feed["last_error"] = ""
 
-    _save(data)
+    _save(data, feeds_path)
 
     # 没有 pub_date 的排在最后（不知道时间就没法谈先后，仍保持原顺序稳定）
     found.sort(
@@ -428,9 +436,10 @@ def check(fid: str | None = None, *, timeout: float = 25.0) -> list[dict]:
     return found
 
 
-def due(interval_minutes: int = 60, *, now: float | None = None) -> list[str]:
+def due(interval_minutes: int = 60, *, now: float | None = None,
+        feeds_path: Path | None = None) -> list[str]:
     """距上次检查已超过 interval_minutes 的 feed id（从未检查过也算 due）。"""
-    data = _load()
+    data = _load(feeds_path)
     at = time.time() if now is None else now
     try:
         seconds = max(0.0, float(interval_minutes) * 60)

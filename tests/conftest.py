@@ -23,6 +23,7 @@ from pathlib import Path
 
 import pytest
 from flask.testing import FlaskClient
+from podcast_article.workspace import data_root, workspace_for
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
@@ -49,21 +50,24 @@ class AuthTestClient(FlaskClient):
 
 
 @pytest.fixture()
-def tmp_output(tmp_path, monkeypatch):
+def tmp_output(tmp_path, monkeypatch, auth_system):
     """把输出根目录与所有个人数据文件都指向临时目录。"""
-    out = tmp_path / "output"
-    out.mkdir()
+    webapp, _, admin, _ = auth_system
+    workspace = workspace_for(admin.id, data_root())
+    out = workspace.output_root
+    out.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("PA_OUTPUT_DIR", str(out))
 
     from podcast_article import feeds, kb, library, mcp_config, queue
     from podcast_article import settings as st
 
-    monkeypatch.setattr(library, "STORE_PATH", tmp_path / "library.json")
-    monkeypatch.setattr(st, "SETTINGS_PATH", tmp_path / "settings.json")
+    monkeypatch.setattr(library, "STORE_PATH", workspace.library_path)
+    monkeypatch.setattr(st, "SETTINGS_PATH", workspace.settings_path)
     monkeypatch.setattr(st, "ENV_PATH", tmp_path / ".env")
     monkeypatch.setattr(queue, "QUEUE_PATH", tmp_path / "queue.json")
-    monkeypatch.setattr(feeds, "FEEDS_PATH", tmp_path / "feeds.json")
-    monkeypatch.setattr(kb, "DB_PATH", tmp_path / "kb.sqlite")
+    monkeypatch.setattr(feeds, "FEEDS_PATH", workspace.feeds_path)
+    monkeypatch.setattr(kb, "DB_PATH", workspace.kb_path)
+    webapp.OUTPUT_ROOT = out
     if hasattr(mcp_config, "SERVERS_PATH"):
         monkeypatch.setattr(mcp_config, "SERVERS_PATH", tmp_path / "mcp_servers.json")
     return out
@@ -113,10 +117,16 @@ def episode(tmp_output):
 
 
 @pytest.fixture()
-def auth_system(tmp_path, monkeypatch):
+def test_admin_password_hash():
+    from podcast_article.auth import hash_password
+
+    return hash_password("test administrator passphrase")
+
+
+@pytest.fixture()
+def auth_system(tmp_path, monkeypatch, test_admin_password_hash):
     import importlib
 
-    from podcast_article.auth import hash_password
     from podcast_article.platform_store import PlatformStore
 
     data = tmp_path / "auth-data"
@@ -128,7 +138,8 @@ def auth_system(tmp_path, monkeypatch):
     importlib.reload(webapp)
     store = PlatformStore(data / "platform.sqlite")
     password = "test administrator passphrase"
-    admin = store.bootstrap_admin("test-admin", hash_password(password), now=1_700_000_000)
+    admin = store.bootstrap_admin("test-admin", test_admin_password_hash, now=1_700_000_000)
+    webapp.OUTPUT_ROOT = workspace_for(admin.id, data_root()).output_root
     webapp.app.config.update(
         TESTING=True,
         PLATFORM_STORE=store,
