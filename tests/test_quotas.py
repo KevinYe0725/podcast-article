@@ -30,7 +30,7 @@ def _member(store, admin, username, quota):
 
 def test_llm_quote_is_decimal_and_uses_conservative_price_and_input_bytes():
     quote = quote_llm_upper_bound("deepseek-flash", prompt_utf8_bytes=1_000, max_tokens=100)
-    assert quote == Decimal("0.0028")
+    assert quote == Decimal("0.00315")
     assert isinstance(quote, Decimal)
 
 
@@ -156,7 +156,7 @@ def test_llm_guard_settles_actual_usage_and_releases_unused_quote(platform_store
     alice = _member(platform_store, platform_admin, "alice", AccountQuota(3_600, Decimal("0.01")))
     guard = LLMQuotaGuard(platform_store, alice.id, "2026-09")
     reservation = guard.reserve_llm_call("deepseek-flash", "system", "user", max_tokens=100)
-    assert reservation.price_table_version == "deepseek-2026-09-v1"
+    assert reservation.price_table_version == "deepseek-2026-09-24-usd-cny-7_5-v2"
     settled = guard.settle_llm_call(reservation, "deepseek-flash", {
         "prompt_tokens": 10, "prompt_cache_hit_tokens": 0,
         "prompt_cache_miss_tokens": 10, "completion_tokens": 5,

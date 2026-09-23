@@ -553,14 +553,14 @@ MCP · podcast-article（4 个工具）
 | 语音转写 | 本地 mlx-whisper | **免费** |
 | 精读成文 | DeepSeek API | 2 小时播客约 **几分钱** |
 
-费用不是估的，是**记出来的**：每次调用都从 API 的 `usage` 里取 `prompt_tokens` / `prompt_cache_hit_tokens` / `completion_tokens`。价格按 DeepSeek 官方价目表（元 / 百万 tokens），并且**分时段精确计价**（高峰 = 北京时间周一至周五 9:00-12:00、14:00-18:00，价格是空闲时段的两倍）：
+费用不是估的，是**记出来的**：每次调用都从 API 的 `usage` 里取 `prompt_tokens` / `prompt_cache_hit_tokens` / `completion_tokens`。DeepSeek 官方价目以美元 / 百万 tokens 公布；月度限额按人民币记账，应用使用固定的保守规划汇率 **7.5 元 / 美元**（约比 2026-09-23 官方中间价 6.7468 高 11%，不是服务商结算汇率）。发放生产邀请前应复核模型价格与换算假设。费用**分时段计价**（高峰 = 北京时间周一至周五 9:00-12:00、14:00-18:00，价格是空闲时段的两倍）：
 
 | 模型 | 输入（缓存命中） | 输入（未命中） | 输出 |
 |---|---|---|---|
-| `deepseek-flash` | 0.02 / 0.04 | 1.0 / 2.0 | 4.0 / 8.0 |
-| `deepseek-v4-pro` | 0.15 / 0.30 | 4.5 / 9.0 | 13.5 / 27.0 |
+| `deepseek-flash` | 0.0225 / 0.045 | 1.125 / 2.25 | 4.5 / 9.0 |
+| `deepseek-v4-pro` | 0.165 / 0.33 | 4.95 / 9.9 | 14.85 / 29.7 |
 
-（空闲 / 高峰。价格表来自 [api-docs.deepseek.com](https://api-docs.deepseek.com/zh-cn/quick_start/pricing)，如有变动以官方为准。）
+（空闲 / 高峰。来源：[DeepSeek 官方价目](https://api-docs.deepseek.com/zh-cn/quick_start/pricing)、[国家外汇管理局人民币汇率中间价](https://www.safe.gov.cn/safe/rmbhlzjj/)；以官方最新数据为准。）
 
 **缓存命中是省钱的关键**：逐节写作把文字稿当固定前缀放在每条消息最前面，DeepSeek 的上下文缓存会命中它——命中部分的输入单价只有未命中的 **1/50**，所以 8-12 次调用并不会把全文重复计费 8-12 遍。界面上的「缓存命中率」就是这条优化的直接读数。
 

@@ -155,34 +155,40 @@ def test_add_creates_buckets_when_missing():
 # ------------------------------------------------------------------- cost_cny
 
 
+def test_price_table_uses_conservative_usd_to_cny_planning_rate():
+    assert usage.USD_CNY_PLANNING_RATE == 7.5
+    assert usage.MODEL_PRICES["deepseek-flash"]["miss"] == (1.125, 2.25)
+    assert usage.MODEL_PRICES["deepseek-v4-pro"]["out"] == (14.85, 29.7)
+
+
 def test_cost_cny_flash_off_peak_hand_checked():
-    # flash 空闲档：未命中 1.0 元/百万，输出 4.0 元/百万
+    # USD provider pricing converted at the conservative 7.5 CNY/USD planning rate.
     u = make_usage("deepseek-flash", miss=1_000_000, out=1_000_000, peak=False)
     assert u["off"]["miss"] == 1_000_000
-    assert usage.cost_cny(u) == pytest.approx(5.0), \
-        f"空闲档 1M 未命中 + 1M 输出 应为 1 + 4 = 5.0 元，实际 {usage.cost_cny(u)}"
+    assert usage.cost_cny(u) == pytest.approx(5.625), \
+        f"空闲档 1M 未命中 + 1M 输出 应为 1.125 + 4.5 = 5.625 元，实际 {usage.cost_cny(u)}"
 
 
 def test_cost_cny_flash_peak_is_double():
     # flash 高峰档：未命中 2.0 元/百万，输出 8.0 元/百万
     u = make_usage("deepseek-flash", miss=1_000_000, out=1_000_000, peak=True)
     assert u["peak"]["miss"] == 1_000_000
-    assert usage.cost_cny(u) == pytest.approx(10.0), \
-        f"高峰档同样的量应为 2 + 8 = 10.0 元，实际 {usage.cost_cny(u)}"
+    assert usage.cost_cny(u) == pytest.approx(11.25), \
+        f"高峰档同样的量应为 2.25 + 9 = 11.25 元，实际 {usage.cost_cny(u)}"
 
 
 def test_cost_cny_pro_prices_hit_miss_and_out():
-    # pro 空闲档：命中 0.15 / 未命中 4.5 / 输出 13.5（元每百万）
+    # pro off-peak: 0.165 / 4.95 / 14.85 CNY per million.
     u = make_usage("deepseek-v4-pro", hit=1_000_000, miss=1_000_000, out=1_000_000)
-    assert usage.cost_cny(u) == pytest.approx(18.15), \
-        f"pro 空闲档 0.15 + 4.5 + 13.5 应为 18.15 元，实际 {usage.cost_cny(u)}"
+    assert usage.cost_cny(u) == pytest.approx(19.965), \
+        f"pro 空闲档 0.165 + 4.95 + 14.85 应为 19.965 元，实际 {usage.cost_cny(u)}"
 
 
 def test_cost_cny_unknown_model_falls_back_to_flash():
     unknown = make_usage("某用户自己填的模型", miss=1_000_000, out=1_000_000)
     cost = usage.cost_cny(unknown)
-    assert cost == pytest.approx(5.0), \
-        f"未知模型应退回 flash 价格（5.0 元），而不是抛异常或算成 0，实际 {cost}"
+    assert cost == pytest.approx(5.625), \
+        f"未知模型应退回 flash 价格（5.625 元），而不是抛异常或算成 0，实际 {cost}"
     assert usage.prices_for("某用户自己填的模型") == usage.MODEL_PRICES["deepseek-flash"], \
         "prices_for() 对未知模型也应返回 flash 价目表"
 
@@ -350,11 +356,11 @@ def test_summary_over_counts_episodes_and_total_cost(tmp_path):
     root.mkdir()
 
     ep1 = root / "ep1"; ep1.mkdir()
-    u1 = make_usage("deepseek-flash", miss=1_000_000, out=1_000_000)               # 5.0 元
+    u1 = make_usage("deepseek-flash", miss=1_000_000, out=1_000_000)               # 5.625 元
     u1["elapsed_s"] = 2.0
     usage.save(ep1, u1)
     ep2 = root / "ep2"; ep2.mkdir()
-    u2 = make_usage("deepseek-flash", miss=1_000_000)                              # 1.0 元
+    u2 = make_usage("deepseek-flash", miss=1_000_000)                              # 1.125 元
     u2["elapsed_s"] = 0.5
     usage.save(ep2, u2)
 
@@ -365,8 +371,8 @@ def test_summary_over_counts_episodes_and_total_cost(tmp_path):
     assert s["episodes"] == 2, f"只应统计有 usage.json 的两集，实际 {s['episodes']}"
     assert s["calls"] == 2, f"总调用次数应为 2，实际 {s['calls']}"
     assert s["elapsed_s"] == pytest.approx(2.5), f"耗时应按集相加，实际 {s['elapsed_s']}"
-    assert s["cost_cny"] == pytest.approx(6.0), \
-        f"总费用应为 5.0 + 1.0 = 6.0 元，实际 {s['cost_cny']}"
+    assert s["cost_cny"] == pytest.approx(6.75), \
+        f"总费用应为 5.625 + 1.125 = 6.75 元，实际 {s['cost_cny']}"
     assert s["miss_tokens"] == 2_000_000 and s["out_tokens"] == 1_000_000
 
 
@@ -395,25 +401,25 @@ def test_summary_over_by_model_uses_that_models_prices(tmp_path):
     root = tmp_path / "output"
     root.mkdir()
     pro_dir = root / "pro"; pro_dir.mkdir()
-    usage.save(pro_dir, make_usage("deepseek-v4-pro", miss=1_000_000))   # pro 空闲档 = 4.5 元
+    usage.save(pro_dir, make_usage("deepseek-v4-pro", miss=1_000_000))   # pro 空闲档 = 4.95 元
 
     pro = usage.summary_over(root)["by_model"]["deepseek-v4-pro"]
     assert pro["model"] == "deepseek-v4-pro", f"分组里应保留模型名，实际 {pro['model']}"
-    assert pro["cost_cny"] == pytest.approx(4.5), \
-        f"pro 分组应按 pro 的价格算（4.5 元），实际 {pro['cost_cny']}"
+    assert pro["cost_cny"] == pytest.approx(4.95), \
+        f"pro 分组应按 pro 的价格算（4.95 元），实际 {pro['cost_cny']}"
 
 
 def test_summary_over_mixed_models_total_equals_sum_of_parts(tmp_path):
     root = tmp_path / "output"
     root.mkdir()
     a = root / "flash"; a.mkdir()
-    usage.save(a, make_usage("deepseek-flash", miss=1_000_000, out=1_000_000))     # 5.0 元
+    usage.save(a, make_usage("deepseek-flash", miss=1_000_000, out=1_000_000))     # 5.625 元
     b = root / "pro"; b.mkdir()
-    usage.save(b, make_usage("deepseek-v4-pro", miss=1_000_000))                   # 4.5 元
+    usage.save(b, make_usage("deepseek-v4-pro", miss=1_000_000))                   # 4.95 元
 
     s = usage.summary_over(root)
-    assert s["cost_cny"] == pytest.approx(9.5), \
-        f"顶层总费用应等于各模型费用之和 5.0 + 4.5 = 9.5 元，实际 {s['cost_cny']}"
+    assert s["cost_cny"] == pytest.approx(10.575), \
+        f"顶层总费用应等于各模型费用之和 5.625 + 4.95 = 10.575 元，实际 {s['cost_cny']}"
 
 
 def test_summary_over_missing_root_is_zero(tmp_path):
@@ -432,7 +438,7 @@ def test_summary_over_skips_broken_usage_file(tmp_path):
 
     s = usage.summary_over(root)
     assert s["episodes"] == 1, f"读不出来的 usage.json 不应被算成一集，实际 {s['episodes']}"
-    assert s["cost_cny"] == pytest.approx(1.0)
+    assert s["cost_cny"] == pytest.approx(1.125)
 
 
 # ------------------------------------------------------- 模块级记录器生命周期

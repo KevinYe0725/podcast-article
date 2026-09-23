@@ -386,9 +386,11 @@ def test_usage_totals_from_saved_records(client, episode):
     assert total["episodes"] == 1, f"应统计到 1 集，实际 {total['episodes']}"
     assert total["total_tokens"] == 3500, \
         f"total_tokens 应为 1000+2000+500=3500，实际 {total['total_tokens']}"
-    # 空闲时段 flash：命中 0.02 / 未命中 1.0 / 输出 4.0（元每百万 token）
-    expected = round(1000 / 1_000_000 * 0.02 + 2000 / 1_000_000 * 1.0
-                     + 500 / 1_000_000 * 4.0, 4)
+    # 费用按当前版本的 CNY 规划价计算，单价由 usage 模块集中维护。
+    prices = usage.MODEL_PRICES["deepseek-flash"]
+    expected = round(1000 / 1_000_000 * prices["hit"][0]
+                     + 2000 / 1_000_000 * prices["miss"][0]
+                     + 500 / 1_000_000 * prices["out"][0], 4)
     assert total["cost_cny"] == expected, f"费用应为 {expected} 元，实际 {total['cost_cny']}"
     assert "deepseek-flash" in total["by_model"], f"应按模型分组，实际 {list(total['by_model'])}"
     assert total["by_model"]["deepseek-flash"]["total_tokens"] == 3500

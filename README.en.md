@@ -577,14 +577,14 @@ So two things follow: **the web query is short keywords, not the raw sentence** 
 | Transcription | Local mlx-whisper | **Free** |
 | Article writing | DeepSeek API | ~**a few cents** per 2-hour episode |
 
-Cost isn't estimated, it's **recorded**: every call reads `prompt_tokens` / `prompt_cache_hit_tokens` / `completion_tokens` from the API's `usage`. Pricing follows DeepSeek's official table (CNY per million tokens) and is **time-of-day aware** (peak = Mon-Fri 09:00-12:00 and 14:00-18:00 Beijing time, at twice the off-peak rate):
+Cost isn't estimated, it's **recorded**: every call reads `prompt_tokens` / `prompt_cache_hit_tokens` / `completion_tokens` from the API's `usage`. DeepSeek publishes prices in USD per million tokens; this app enforces monthly limits in CNY using a fixed conservative planning rate of **CNY 7.5 per USD** (about 11% above the official 2026-09-23 central parity of 6.7468; this is not the provider's settlement rate). Recheck model prices and the conversion assumption before issuing production invites. Pricing is **time-of-day aware** (peak = Mon-Fri 09:00-12:00 and 14:00-18:00 Beijing time, at twice the off-peak rate):
 
 | Model | Input (cache hit) | Input (cache miss) | Output |
 |---|---|---|---|
-| `deepseek-flash` | 0.02 / 0.04 | 1.0 / 2.0 | 4.0 / 8.0 |
-| `deepseek-v4-pro` | 0.15 / 0.30 | 4.5 / 9.0 | 13.5 / 27.0 |
+| `deepseek-flash` | 0.0225 / 0.045 | 1.125 / 2.25 | 4.5 / 9.0 |
+| `deepseek-v4-pro` | 0.165 / 0.33 | 4.95 / 9.9 | 14.85 / 29.7 |
 
-(off-peak / peak. Source: [api-docs.deepseek.com](https://api-docs.deepseek.com/quick_start/pricing) — check the official page for the latest.)
+(off-peak / peak. Sources: [DeepSeek official pricing](https://api-docs.deepseek.com/quick_start/pricing) and [China SAFE RMB central parity rates](https://www.safe.gov.cn/safe/rmbhlzjj/) — check the current official values before setting production caps.)
 
 **Cache hits are what make this cheap**: section-by-section writing places the transcript as a fixed prefix at the front of every message, so DeepSeek's context cache hits it — cached input costs **1/50** of uncached input. That's why 8-12 calls don't bill the full transcript 8-12 times. The "cache hit rate" shown in the UI is the direct readout of that optimisation.
 

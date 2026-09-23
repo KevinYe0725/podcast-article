@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 from . import usage
 from .platform_store import PlatformStore, QuotaExceeded, Reservation
 
-PRICE_TABLE_VERSION = "deepseek-2026-09-v1"
+PRICE_TABLE_VERSION = "deepseek-2026-09-24-usd-cny-7_5-v2"
 
 class UnknownModelPrice(ValueError):
     def __init__(self, model: str):

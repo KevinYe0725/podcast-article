@@ -5,11 +5,14 @@
 里带 usage（需要显式 stream_options={"include_usage": True}），把它累加起来即可，
 不需要任何估算。
 
-价格来源：https://api-docs.deepseek.com/zh-cn/quick_start/pricing
-（元 / 百万 tokens，2026-09 抓取）
+DeepSeek 官方价目以 USD / 百万 tokens 公布：
+https://api-docs.deepseek.com/zh-cn/quick_start/pricing
+配额按 CNY 记账，使用固定的保守规划汇率 7.5 CNY/USD；这比 2026-09-23
+人民币汇率中间价 6.7468 高约 11%，为汇率波动留出余量。该换算价不是供应商结算价，
+发放生产邀请前应复核模型价格和换算假设。
 
-    deepseek-flash    输入(缓存命中) 0.02 / 输入(未命中) 1.0 / 输出 4.0
-    deepseek-v4-pro   输入(缓存命中) 0.15 / 输入(未命中) 4.5 / 输出 13.5
+    deepseek-flash    输入(缓存命中) 0.0225 / 输入(未命中) 1.125 / 输出 4.5
+    deepseek-v4-pro   输入(缓存命中) 0.165  / 输入(未命中) 4.95  / 输出 14.85
 
 注意官方是**分时段计价**：高峰时段（北京时间周一至周五 9:00-12:00、14:00-18:00）
 是空闲时段的两倍，其余时间（含周末全天）算空闲。所以记账不是存一个单价，
@@ -27,17 +30,20 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-# 元 / 百万 tokens：(空闲时段, 高峰时段)
+# 固定的保守规划换算率，不代表 DeepSeek 的实际结算汇率。
+USD_CNY_PLANNING_RATE = 7.5
+
+# 元 / 百万 tokens：(空闲时段, 高峰时段)。由官方 USD 价格乘规划换算率得出。
 MODEL_PRICES: dict[str, dict[str, tuple[float, float]]] = {
     "deepseek-flash": {
-        "hit": (0.02, 0.04),      # 输入·缓存命中
-        "miss": (1.0, 2.0),       # 输入·缓存未命中
-        "out": (4.0, 8.0),        # 输出
+        "hit": (0.0225, 0.045),   # 输入·缓存命中
+        "miss": (1.125, 2.25),    # 输入·缓存未命中
+        "out": (4.5, 9.0),        # 输出
     },
     "deepseek-v4-pro": {
-        "hit": (0.15, 0.30),
-        "miss": (4.5, 9.0),
-        "out": (13.5, 27.0),
+        "hit": (0.165, 0.33),
+        "miss": (4.95, 9.9),
+        "out": (14.85, 29.7),
     },
 }
 FALLBACK_MODEL = "deepseek-flash"
