@@ -12,20 +12,8 @@ export PA_PLATFORM_DB="$PA_DATA_ROOT/platform.sqlite"
 export PA_USER_SECRETS_KEY="$(uv run python -c 'import base64,os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())')"
 export PA_UI_SESSION_FILE="$TMP/session.json"
 mkdir -p "$OUT" "$PA_DATA_ROOT"
-python3 - "$REPO" "$TMP/root-files.before" <<'PY'
-import json, os, sys
-root, manifest = sys.argv[1:]
-snapshot = {}
-for entry in os.scandir(root):
-    try:
-        if entry.is_file(follow_symlinks=True):
-            info = entry.stat(follow_symlinks=True)
-            snapshot[entry.name] = [info.st_size, info.st_mtime_ns]
-    except FileNotFoundError:
-        pass
-with open(manifest, "w", encoding="utf-8") as handle:
-    json.dump(snapshot, handle)
-PY
+python3 root_file_guard.test.py
+python3 root_file_guard.py snapshot "$REPO" > "$TMP/root-files.before.json"
 export PA_OUTPUT_DIR="$OUT"
 export PA_LIBRARY_FILE="$TMP/library.json"   # 分类数据也要隔离，别碰真实 library.json
 export PA_QUEUE_FILE="$TMP/queue.json"       # 批量队列（后台调度会读写它）
@@ -61,25 +49,7 @@ cleanup() {
   kill "$SERVER_PID" 2>/dev/null
   pkill -f "webapp.py --port $PORT" 2>/dev/null
   wait "$SERVER_PID" 2>/dev/null
-  python3 - "$REPO" "$TMP/root-files.before" <<'PY'
-import json, os, sys
-root, manifest = sys.argv[1:]
-with open(manifest, encoding="utf-8") as handle:
-    before = json.load(handle)
-after = {}
-for entry in os.scandir(root):
-    try:
-        if entry.is_file(follow_symlinks=True):
-            info = entry.stat(follow_symlinks=True)
-            after[entry.name] = [info.st_size, info.st_mtime_ns]
-    except FileNotFoundError:
-        pass
-changed = sorted(name for name in set(before) | set(after) if before.get(name) != after.get(name))
-if changed:
-    print("✕ UI 测试期间仓库根文件发生变化：" + ", ".join(changed))
-    raise SystemExit(1)
-print("✓ 仓库根文件大小与修改时间保持不变")
-PY
+  python3 root_file_guard.py verify "$REPO" "$TMP/root-files.before.json"
   GUARD_STATUS=$?
   rm -rf "$TMP"
   [ "$GUARD_STATUS" = 0 ] || exit "$GUARD_STATUS"
