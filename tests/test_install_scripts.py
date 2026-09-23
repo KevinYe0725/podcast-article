@@ -92,7 +92,7 @@ def test_server_deployment_enables_cloud_asr_without_tracking_secrets():
 
     assert "EnvironmentFile=/etc/podcast-article/server.env" in service
     assert "User=podcast" in service
-    assert "--host 127.0.0.1 --port 8788" in service
+    assert "--host 172.17.0.1 --port 8788" in service
     assert "PA_READONLY=0" in service
     assert "PA_ASR_BACKEND=cloud" in service
     assert "DASHSCOPE_API_KEY=" not in service
