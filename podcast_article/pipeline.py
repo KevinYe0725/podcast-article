@@ -259,7 +259,11 @@ class Pipeline:
                 key = meta.get("audio_object_key")
                 if not key:
                     raise RuntimeError("云端转写缺少 OSS 音频对象")
-                audio_url = self._cloud_storage().signed_url(key)
+                try:
+                    asr_url_expires = max(3600, int(os.environ.get("PA_ASR_URL_EXPIRES", "86400")))
+                except ValueError:
+                    asr_url_expires = 86400
+                audio_url = self._cloud_storage().signed_url(key, expires=asr_url_expires)
             segments = transcribe.transcribe(
                 audio_file,
                 language=self.language,

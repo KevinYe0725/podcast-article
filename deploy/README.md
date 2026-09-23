@@ -86,6 +86,7 @@ systemctl enable --now podcast-article caddy
 
 在 `/etc/podcast-article/server.env` 配置 `DASHSCOPE_API_KEY`、`OSS_ACCESS_KEY_ID`、
 `OSS_ACCESS_KEY_SECRET`、`OSS_BUCKET`、`OSS_ENDPOINT`、`OSS_PREFIX` 和 `DEEPSEEK_API_KEY`。
+ASR 提交用的 OSS 签名 URL 默认有效 24 小时（`PA_ASR_URL_EXPIRES=86400`），播放接口仍使用短时签名。
 不要把此文件上传到仓库。
 
 ## 日常更新

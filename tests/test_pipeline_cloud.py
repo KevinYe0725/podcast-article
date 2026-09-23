@@ -8,6 +8,7 @@ from podcast_article.pipeline import Pipeline
 class FakeStorage:
     def __init__(self):
         self.uploads = []
+        self.signs = []
 
     def object_key(self, path: Path, episode_slug: str, *, sha256=None):
         return f"audio/{episode_slug}/{path.name}"
@@ -25,6 +26,7 @@ class FakeStorage:
         return False
 
     def signed_url(self, object_key, *, expires=900):
+        self.signs.append((object_key, expires))
         return f"https://oss.example/{object_key}?expires={expires}"
 
 
@@ -73,4 +75,5 @@ def test_cloud_transcript_uses_signed_object_url(tmp_path, monkeypatch):
     segments = pipeline._stage_transcript(episode_for(audio), workdir, audio)
 
     assert segments == [{"start": 0.0, "end": 1.0, "text": "你好"}]
-    assert seen["audio_url"] == "https://oss.example/audio/episode/audio.mp3?expires=900"
+    assert seen["audio_url"] == "https://oss.example/audio/episode/audio.mp3?expires=86400"
+    assert storage.signs == [("audio/episode/audio.mp3", 86400)]

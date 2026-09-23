@@ -11,6 +11,7 @@ WorkingDirectory=/srv/podcast-article
 EnvironmentFile=/etc/podcast-article/server.env
 Environment=PA_READONLY=0
 Environment=PA_ASR_BACKEND=cloud
+Environment=PA_ASR_URL_EXPIRES=86400
 Environment=PA_OUTPUT_DIR=/srv/podcast-article/data/output
 Environment=PA_LIBRARY_FILE=/srv/podcast-article/data/library.json
 Environment=PA_QUEUE_FILE=/srv/podcast-article/data/queue.json
