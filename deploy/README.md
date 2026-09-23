@@ -149,6 +149,73 @@ ls -1dt */ | tail -n +21 | while read d; do rm -f "$d"/audio.*; done   # 可选�
 
 工作流不会同步 `data/`、本地配置或密钥文件，也不会覆盖服务器的 `/etc/podcast-article/server.env`。第一次部署前仍需在服务器准备 `python3.12-venv`、`podcast` 用户、systemd 服务和环境变量。
 
+## 多账号发布前备份与回滚
+
+这部分是批准发布后的操作清单；本地开发和验收阶段不执行。发布前先确认有足够备份空间，并把备份复制到独立的安全位置。`server.env` 含服务商密钥和用户密钥加密密钥，只能在服务器上以 `0600` 保存，不要放进 GitHub Actions 或发到聊天中。
+
+在服务器 root shell 中设置 `PORTFOLIO_DEPLOY_PATH` 为 Portfolio Hub Actions 当前使用的 `DEPLOY_PATH`，然后备份数据、代码、密钥文件、两层 Caddy 配置、Compose 配置和当前镜像 tag。停止 Podcast Article 服务后再打包，确保 SQLite 数据完整：
+
+```bash
+set -euo pipefail
+PORTFOLIO_DEPLOY_PATH=/替换为当前的Portfolio部署目录
+BACKUP_ROOT="/srv/backups/podcast-article/$(date -u +%Y%m%dT%H%M%SZ)"
+df -h /srv
+install -d -m 0700 "$BACKUP_ROOT"
+
+systemctl stop podcast-article
+trap 'systemctl start podcast-article' EXIT
+tar --acls --xattrs -cpf "$BACKUP_ROOT/data.tar" -C /srv/podcast-article data
+tar --acls --xattrs \
+  --exclude=.git --exclude=.venv --exclude=data --exclude=.env \
+  --exclude=mcp_servers.json --exclude=output --exclude=library.json \
+  --exclude=queue.json --exclude=feeds.json --exclude=settings.json \
+  -cpf "$BACKUP_ROOT/code.tar" -C /srv/podcast-article .
+install -m 0600 /etc/podcast-article/server.env "$BACKUP_ROOT/server.env"
+cp -p /etc/caddy/Caddyfile "$BACKUP_ROOT/podcast-Caddyfile"
+cp -p "$PORTFOLIO_DEPLOY_PATH/Caddyfile" "$BACKUP_ROOT/portfolio-Caddyfile"
+cp -p "$PORTFOLIO_DEPLOY_PATH/compose.yaml" "$BACKUP_ROOT/portfolio-compose.yaml"
+cp -p "$PORTFOLIO_DEPLOY_PATH/.env" "$BACKUP_ROOT/portfolio.env"
+grep '^APP_IMAGE=' "$PORTFOLIO_DEPLOY_PATH/.env" > "$BACKUP_ROOT/portfolio-image-tag.txt"
+APP_IMAGE="$(sed -n 's/^APP_IMAGE=//p' "$PORTFOLIO_DEPLOY_PATH/.env")"
+docker image save "$APP_IMAGE" | gzip -1 > "$BACKUP_ROOT/portfolio-image.tar.gz"
+systemctl start podcast-article
+trap - EXIT
+```
+
+核对 `portfolio-image-tag.txt` 和镜像归档已写入备份，再运行 `migrate-legacy --dry-run`。先检查清单和来源路径；仅在你确认后才运行 `--apply`。给朋友创建邀请前，按 DeepSeek 官方 USD 价目与 `usage.py` 中保守的 CNY 换算重新核对每月 LLM 上限；转写上限按秒设置，OSS 与上传上限也要按你愿意承担的额度填写。`podcast-admin invite create` 会要求五项上限都显式提供。
+
+回滚时先设置 `BACKUP_ROOT` 为选定的备份目录、`PORTFOLIO_DEPLOY_PATH` 为 Actions 使用的部署目录，然后在服务器执行。旧数据先解压到临时目录，再用 `rsync --delete` 精确还原代码；排除项保护工作区、虚拟环境和本机密钥文件。失败版本的数据目录会改名留存，不会递归删除。
+
+```bash
+set -euo pipefail
+RESTORE_CODE="$BACKUP_ROOT/restore-code"
+mkdir -p "$RESTORE_CODE"
+systemctl stop podcast-article
+if [ -e /srv/podcast-article/data ]; then
+  mv /srv/podcast-article/data "/srv/podcast-article/data.failed-$(date -u +%Y%m%dT%H%M%SZ)"
+fi
+tar --acls --xattrs -xpf "$BACKUP_ROOT/data.tar" -C /srv/podcast-article
+tar --acls --xattrs -xpf "$BACKUP_ROOT/code.tar" -C "$RESTORE_CODE"
+rsync -a --delete \
+  --exclude=.venv/ --exclude=data/ --exclude=.env --exclude=mcp_servers.json \
+  --exclude=output/ --exclude=library.json --exclude=queue.json \
+  --exclude=feeds.json --exclude=settings.json \
+  "$RESTORE_CODE/" /srv/podcast-article/
+install -m 0600 "$BACKUP_ROOT/server.env" /etc/podcast-article/server.env
+cp -p "$BACKUP_ROOT/podcast-Caddyfile" /etc/caddy/Caddyfile
+cp -p "$BACKUP_ROOT/portfolio-Caddyfile" "$PORTFOLIO_DEPLOY_PATH/Caddyfile"
+cp -p "$BACKUP_ROOT/portfolio-compose.yaml" "$PORTFOLIO_DEPLOY_PATH/compose.yaml"
+cp -p "$BACKUP_ROOT/portfolio.env" "$PORTFOLIO_DEPLOY_PATH/.env"
+docker load --input "$BACKUP_ROOT/portfolio-image.tar.gz"
+(cd "$PORTFOLIO_DEPLOY_PATH" && docker compose up -d --pull never --wait app && docker compose restart caddy)
+systemctl start podcast-article
+systemctl restart caddy
+```
+
+检查两个服务状态和全部公开路由。保留旧镜像 tag 直到新版本验收完成。回滚流程不需要、也不得删除 OSS 对象。
+
+当前实现用 SSH 传送 Portfolio Hub 的压缩镜像归档并在服务器执行 `docker load`，不从服务器拉取 GHCR 应用镜像；这条传输路径尚未在生产服务器上测速或执行。
+
 ## 排障（这几条都是实测踩到的）
 
 | 现象 | 原因与处理 |
