@@ -252,7 +252,7 @@ class Pipeline:
                 self.log(f"[text] 使用平台字幕：{len(segments)} 个片段（跳过 ASR）")
 
         if not segments:
-            self.log("[text] 平台无可用字幕（或已禁用），进入本地语音转写…")
+            self.log("[text] 平台无可用字幕（或已禁用），进入语音转写…")
             audio_url = None
             if self.backend == "cloud":
                 meta = _read_json(workdir / "meta.json")

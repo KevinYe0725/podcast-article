@@ -38,7 +38,9 @@ def _has_cloud() -> bool:
 
 
 def available_backends() -> list[str]:
-    order = ["mlx", "faster"]
+    # Keep local backends first for developer machines, then use cloud ASR when
+    # it is the only configured option (or when callers select it explicitly).
+    order = ["mlx", "faster", "cloud"]
     checks = {"mlx": _has_mlx, "faster": _has_faster, "cloud": _has_cloud}
     return [b for b in order if checks[b]()]
 
@@ -62,10 +64,11 @@ def transcribe(
             raise RuntimeError(
                 "没有可用的转写后端。安装其一：\n"
                 "  uv add mlx-whisper        (Apple Silicon 推荐)\n"
-                "  uv add --optional faster faster-whisper   (CPU 通用)"
+                "  uv add --optional faster faster-whisper   (CPU 通用)\n"
+                "  配置 DASHSCOPE_API_KEY                    (云端 ASR)"
             )
-        else:
-            candidates = [backend]
+    else:
+        candidates = [backend]
 
     if backend == "cloud" and not audio_url:
         raise ValueError("cloud 转写需要 audio_url")
