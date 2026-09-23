@@ -129,7 +129,7 @@ ls -1dt */ | tail -n +21 | while read d; do rm -f "$d"/audio.*; done   # 可选�
 | --- | --- |
 | `certificate obtained successfully` 之后就通 | 443 必须是通的（Caddy 会用 TLS-ALPN-01）；80 只用于跳转 |
 | Let's Encrypt 报 `invalidContact` | Caddyfile 里配了 `email`，且域名是 example.com 之类的保留域；删掉 email 即可 |
-| 502 Bad Gateway | 上游地址不对：宿主安装是 `127.0.0.1:8788`，容器里是 `app:8787`（用 `{$PA_APP_UPSTREAM}` 占位） |
+| 502 Bad Gateway | 上游地址不对：宿主安装服务监听 Docker 网桥 `172.17.0.1:8788`，容器方案才使用 `app:8787`（用 `{$PA_APP_UPSTREAM}` 占位） |
 | 应用起不来、日志 `Permission denied` | rsync 过来的文件是 600；`chmod -R u+rwX,go+rX /srv/podcast-article` |
 | `docker pull` 卡住 / timeout | 这台服务器的 Docker Hub 不通（`registry-1.docker.io` 超时），所以用宿主安装 |
 | 页面能开但进度条不动 | 反代没关 SSE 缓冲：确认 `flush_interval -1` |
