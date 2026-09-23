@@ -2,10 +2,10 @@
 
 服务器负责下载、OSS 归档、云端转写和 DeepSeek 成文；不在 2 vCPU 主机上安装本地 Whisper。
 
-工作台域名为 `podcast.squareconf.cn`。将该域名的 A 记录指向服务器 IP，并在 Caddy 中配置 Basic Auth。
+工作台域名为 `podcast.squareconf.cn`。将该域名的 A 记录指向服务器 IP。Flask 负责登录、会话与账号权限，Caddy 只提供 HTTPS 和反向代理。
 
 ```
-手机 / 电脑浏览器 ──HTTPS + 密码──▶ Caddy ──▶ Flask（云端 ASR）──▶ /srv/podcast-article/data/ + OSS
+手机 / 电脑浏览器 ──HTTPS──▶ Caddy ──▶ Flask（登录、账号权限、云端 ASR）──▶ /srv/podcast-article/data/ + OSS
 ```
 
 实际部署目标：阿里云 ECS Ubuntu 24.04，2 vCPU / 约 1.7G / 40G，工作台域名 `podcast.squareconf.cn`。
@@ -15,7 +15,7 @@
 - 2 vCPU 主机不适合运行本地 Whisper，服务器改用阿里云百炼 `paraformer-v2`。
 - 音频上传到私有 OSS 并长期保留，转写完成后不删除对象。
 - ASR、OSS、DeepSeek 凭据只放 `/etc/podcast-article/server.env`，权限为 `0600`。
-- 工作台由 Caddy Basic Auth 保护，防止公开接口被滥用产生费用。
+- 工作台采用邀请注册和 Flask 账号登录；服务端按账号隔离数据并执行用量限制。
 
 ## 服务器上的最终形态（宿主安装，不用 Docker）
 
@@ -27,7 +27,7 @@
     platform.sqlite                  账号、会话、队列与用量
     users/<账号 UUID>/                各账号独立的数据工作区
 /usr/local/bin/caddy                  Caddy 静态二进制（v2.11.4）
-/etc/caddy/Caddyfile                  站点配置（HTTPS + basic auth）
+/etc/caddy/Caddyfile                  站点配置（HTTPS + 反向代理）
 /etc/systemd/system/podcast-article.service
 /etc/systemd/system/caddy.service
 ```
@@ -68,9 +68,8 @@ python3 -m venv /srv/podcast-article/.venv
 chown -R root:root /srv/podcast-article && chmod -R u+rwX,go+rX /srv/podcast-article
 chown -R podcast:podcast /srv/podcast-article/data
 
-# 6) Caddy 密码哈希（不要配 email，填 example.com 会被 Let's Encrypt 拒）
-caddy hash-password --plaintext '你的密码'
-cp /srv/podcast-article/deploy/Caddyfile /etc/caddy/Caddyfile   # 把哈希填进 basic_auth
+# 6) Caddy 站点配置（不要配 email，填 example.com 会被 Let's Encrypt 拒）
+cp /srv/podcast-article/deploy/Caddyfile /etc/caddy/Caddyfile
 
 # 7) systemd（见下），然后
 systemctl enable --now podcast-article caddy
@@ -78,6 +77,7 @@ systemctl enable --now podcast-article caddy
 
 `podcast-article.service` 的要点：`User=podcast`、`PA_READONLY=0`、`PA_ASR_BACKEND=cloud`、`PA_SCHEDULER=0`、
 `PA_DATA_ROOT=/srv/podcast-article/data`、`ProtectSystem=full` + `ReadWritePaths=/srv/podcast-article/data`。各账号工作区由该根目录派生。
+公开访问后由 Flask 登录页处理账号身份；管理员先执行 `podcast-admin bootstrap`，再通过 `podcast-admin invite create` 为朋友生成一次性邀请链接。不要在 Caddy 配置或浏览器存储中放置共享密码。
 
 在 `/etc/podcast-article/server.env` 配置 `DASHSCOPE_API_KEY`、`OSS_ACCESS_KEY_ID`、
 `OSS_ACCESS_KEY_SECRET`、`OSS_BUCKET`、`OSS_ENDPOINT`、`OSS_PREFIX` 和 `DEEPSEEK_API_KEY`。
@@ -157,5 +157,5 @@ ls -1dt */ | tail -n +21 | while read d; do rm -f "$d"/audio.*; done   # 可选�
 | 应用起不来、日志 `Permission denied` | rsync 过来的文件是 600；`chmod -R u+rwX,go+rX /srv/podcast-article` |
 | `docker pull` 卡住 / timeout | 这台服务器的 Docker Hub 不通（`registry-1.docker.io` 超时），所以用宿主安装 |
 | 页面能开但进度条不动 | 反代没关 SSE 缓冲：确认 `flush_interval -1` |
-| 生成按钮点了报 401 | 正常 —— 工作台由 Caddy Basic Auth 保护 |
+| 生成按钮点了报 401 | 登录会话已过期时应用会返回登录页；重新登录后继续 |
 | 音频 404 | 音频还没同步，或被保留策略清理 |

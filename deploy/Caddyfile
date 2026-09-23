@@ -1,21 +1,11 @@
 # 公网云端转写工作台的反代配置
 #
-# 当前部署域名为 podcast.squareconf.cn。先把该域名的 A 记录指向服务器，
-# 再将 basic_auth 中的占位哈希替换为真实哈希。
-#
-# 密码哈希这样生成（明文不进命令行参数以外的地方，也不落盘）：
-#   caddy hash-password --plaintext '你的密码'        # 宿主安装
-#   docker run --rm caddy:2-alpine caddy hash-password --plaintext '你的密码'   # 容器
+# 当前部署域名为 podcast.squareconf.cn。用户登录、会话和权限由 Flask 应用处理。
 #
 # 注意：**不要**配 email。填 example.com 之类的占位邮箱会被 Let's Encrypt 拒绝
 # （invalidContact: contact email has forbidden domain），不填不影响签发。
 podcast.squareconf.cn {
 	encode zstd gzip
-
-	# 公网入口要密码：ASR 和 DeepSeek 都会产生费用
-	basic_auth {
-		kevin $2a$14$REPLACE_WITH_GENERATED_HASH
-	}
 
 	# 上游：宿主安装是 127.0.0.1:8788，容器里是 app:8787（compose 用环境变量传进来）
 	# SSE 必须关掉缓冲：否则「下载百分比 / 转写剩余时间」会攒在代理里，进度条不动
