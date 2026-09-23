@@ -3360,6 +3360,126 @@ async function testSearchService(btn) {
   btn.disabled = false;
 }
 
+/* ---------------- 账号会话 ---------------- */
+let currentAccount = null;
+let redirectingAfterAuthFailure = false;
+
+function clearLocalAppState() {
+  try { localStorage.clear(); } catch (_) {}
+  try { sessionStorage.clear(); } catch (_) {}
+  currentAccount = null;
+  libItems = []; libCats = []; libAssign = {}; libStatus = {};
+  mcpServers = []; mcpTools = {}; mcpPresets = [];
+  const grid = $("libgrid"); if (grid) grid.replaceChildren();
+  const results = $("results"); if (results) results.replaceChildren();
+}
+
+function expireSession() {
+  if (redirectingAfterAuthFailure) return;
+  redirectingAfterAuthFailure = true;
+  clearLocalAppState();
+  location.assign("/login");
+}
+
+function fmtQuotaDuration(seconds) {
+  if (seconds == null) return "不限";
+  const value = Number(seconds) || 0;
+  const hours = Math.floor(value / 3600), minutes = Math.round((value % 3600) / 60);
+  return hours ? `${hours} 小时${minutes ? ` ${minutes} 分` : ""}` : `${minutes} 分钟`;
+}
+
+function renderAccount(account) {
+  currentAccount = account;
+  const trigger = $("account-menu");
+  trigger.hidden = false;
+  $("account-name").textContent = account.username;
+  $("account-panel-name").textContent = account.username;
+  $("account-role").textContent = account.role === "admin" ? "管理员账号" : "个人账号";
+  const quota = account.quota || {}, asr = quota.asr || {}, llm = quota.llm || {};
+  const llmLimit = llm.limit_cny == null ? "不限" : `¥${Number(llm.limit_cny).toFixed(2)}`;
+  $("account-quota").innerHTML = `<div><span>本月转写</span><strong>${fmtQuotaDuration(asr.used_seconds)} / ${fmtQuotaDuration(asr.limit_seconds)}</strong></div><div><span>本月 AI 写作</span><strong>¥${Number(llm.used_cny || 0).toFixed(2)} / ${llmLimit}</strong></div>`;
+  const admin = account.role === "admin";
+  [document.querySelector('[data-tab="keys"]'), document.querySelector('[data-tab="mcp"]'), $("pane-keys"), $("pane-mcp")]
+    .filter(Boolean).forEach((node) => { node.hidden = !admin; });
+  document.querySelectorAll('[data-tab="keys"], [data-tab="mcp"]').forEach((node) => { node.style.display = admin ? "" : "none"; });
+}
+
+async function csrfPost(path, payload) {
+  const csrfResponse = await fetch("/api/auth/csrf", { credentials: "same-origin" });
+  const csrf = await csrfResponse.json();
+  return fetch(path, { method: "POST", credentials: "same-origin",
+    headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf.csrf_token || "" },
+    body: JSON.stringify(payload || {}) });
+}
+
+function initAccountControls() {
+  const trigger = $("account-menu");
+  trigger.addEventListener("click", () => {
+    const panel = $("account-panel"); panel.hidden = !panel.hidden;
+    trigger.setAttribute("aria-expanded", String(!panel.hidden));
+  });
+  document.addEventListener("click", (event) => {
+    if (!event.target.closest(".account-wrap")) {
+      $("account-panel").hidden = true; trigger.setAttribute("aria-expanded", "false");
+    }
+  });
+  $("account-logout").addEventListener("click", async () => {
+    try { await csrfPost("/api/auth/logout"); } finally { expireSession(); }
+  });
+  $("account-password-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget, error = $("account-password-error"), button = form.querySelector("button[type=submit]");
+    error.textContent = ""; button.disabled = true;
+    try {
+      const response = await csrfPost("/api/auth/password", {
+        current_password: $("account-current-password").value,
+        new_password: $("account-new-password").value,
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.message || "无法更改密码，请检查当前密码和新密码长度。");
+      form.reset(); $("account-panel").hidden = true; trigger.setAttribute("aria-expanded", "false"); toast("密码已更新");
+    } catch (failure) { error.textContent = failure.message || "无法更改密码，请重试。"; }
+    finally { button.disabled = false; }
+  });
+}
+
+async function initializeAuthenticatedApp() {
+  let response;
+  try { response = await fetch("/api/auth/me", { credentials: "same-origin" }); }
+  catch (_) { return expireSession(); }
+  if (!response.ok) return expireSession();
+  const identity = await response.json();
+  if (!identity.authenticated) return expireSession();
+  renderAccount(identity);
+  initAccountControls();
+
+  const nativeFetch = window.fetch.bind(window);
+  window.fetch = async (...args) => {
+    const result = await nativeFetch(...args);
+    const requestUrl = String(args[0]?.url || args[0] || "");
+    if (result.status === 401 && requestUrl.includes("/api/") && !requestUrl.includes("/api/auth/me")) expireSession();
+    return result;
+  };
+
+  loadServerConfig();
+  loadLibrary().then(() => { if (routeDir()) applyRoute(); });
+  if (identity.role === "admin") loadMcp();
+  loadSettings(); loadQueue(); loadFeeds(); pollCurrentJob();
+  updateComposerHint(); autoGrow(); syncFab();
+  $("result").addEventListener("scroll", updateReadProgress, { passive: true });
+  window.addEventListener("resize", updateReadProgress);
+  window.addEventListener("resize", renderUsagePill);
+  window.addEventListener("hashchange", applyRoute); window.addEventListener("popstate", applyRoute);
+  $("aq").addEventListener("input", () => {
+    const el = $("aq"); el.style.height = "auto"; el.style.height = Math.min(el.scrollHeight, 110) + "px";
+  });
+  $("aq").addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault(); askAI(); }
+  });
+  setInterval(() => { if (activeView === "queue") loadQueue(); }, 5000);
+  setInterval(() => loadLibrary(), 30000);
+}
+
 /* ---------------- 初始化 ---------------- */
 // 首页输入框是 textarea：<input type="text"> 按规范会**丢掉换行**，
 // 一次粘多条链接会被粘成一条（实测被 UI 测试抓到），所以必须用多行控件。
@@ -3384,37 +3504,4 @@ async function pollCurrentJob() {
   } catch (e) { /* 静默 */ }
 }
 
-loadServerConfig();                                          // 先问这台机器允许做什么（只读镜像？）
-loadLibrary().then(() => { if (routeDir()) applyRoute(); });   // 地址栏给了文章就先还原那一篇
-loadMcp();
-loadSettings();
-loadQueue();
-loadFeeds();
-pollCurrentJob();
-updateComposerHint();
-autoGrow();
-syncFab();
-// 阅读页：滚动时更新顶栏那条进度线；窗口尺寸变了重新算一次
-$("result").addEventListener("scroll", updateReadProgress, { passive: true });
-window.addEventListener("resize", updateReadProgress);
-// 转屏 / 拉窗口时顶栏用量胶囊要按新宽度换文案（手机短文案 ↔ 桌面完整文案）
-window.addEventListener("resize", renderUsagePill);
-// 地址栏变化（前进/后退，或手改 hash）→ 按地址栏还原界面
-window.addEventListener("hashchange", applyRoute);
-window.addEventListener("popstate", applyRoute);
-// 抽屉里的输入框也随内容长高
-$("aq").addEventListener("input", () => {
-  const el = $("aq");
-  el.style.height = "auto";
-  el.style.height = Math.min(el.scrollHeight, 110) + "px";
-});
-$("aq").addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); askAI(); }
-});
-
-// 队列页开着时轻量刷新；侧边栏计数也顺带更新
-setInterval(async () => {
-  if (activeView !== "queue") return;
-  loadQueue();
-}, 5000);
-setInterval(() => loadLibrary(), 30000);
+initializeAuthenticatedApp();

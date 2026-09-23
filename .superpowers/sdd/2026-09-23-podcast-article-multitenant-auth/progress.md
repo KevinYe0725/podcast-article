@@ -1,0 +1,4 @@
+# Podcast Article multi-account auth implementation ledger
+
+- Task 9 ruling: the plan omitted `webapp.py`, but `/login` and `/invite` returned inline page strings, so the new login assets could not be served. Repointed only those two GET routes to `web/login.html`; auth and session handlers stayed unchanged. Cost if wrong: two routes may need restoring to their inline pages.
+- Task 9 fixture ruling: per-account UI tests must seed feeds under `$PA_DATA_ROOT/users/$PA_TEST_USER_ID/feeds.json` and queue rows in the temporary PlatformStore at `$PA_DATA_ROOT/platform.sqlite`, because production routes now use those owner-scoped locations. Updated only UI test fixtures and runner setup; production ownership behavior stayed unchanged. Cost if wrong: the fixture helper should revert to legacy file fixtures.

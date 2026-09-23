@@ -1,31 +1,45 @@
 /**
  * 批量队列的前端交互测试。
  *
- * 隔离说明：队列文件在 run.sh 里被指到临时目录（PA_QUEUE_FILE），
- * 本测试直接读写那个文件来造数据与核对结果，绝不碰仓库根目录的 queue.json。
- * 另外 run.sh 设了 PA_SCHEDULER=0，所以后台不会自动把任务跑起来。
+ * 隔离说明：队列由 PlatformStore 按账号保存在 PA_DATA_ROOT/platform.sqlite。
+ * 本测试通过 session_seed.py 对临时测试账号造数和核对，不读写仓库根目录的 queue.json。
+ * run.sh 设了 PA_SCHEDULER=0，所以只有测试明确触发时才启动队列项。
  *
  * 链接一律用 http://127.0.0.1:9/...（discard 端口，没人监听）：一旦真的有任务
  * 被启动，它会立刻连接被拒并失败，既不会联网也不会挂住测试。
  */
 const { boot, report, sleep, until } = require("./harness");
-const fs = require("fs");
+const { spawnSync } = require("node:child_process");
 
-const QUEUE_FILE = process.env.PA_QUEUE_FILE;
+const QUEUE_FIXTURE = require("node:path").join(__dirname, "session_seed.py");
+const legacyIds = new Map();
 const LINKS = [
   "http://127.0.0.1:9/ep-one",
   "http://127.0.0.1:9/ep-two",
   "http://127.0.0.1:9/ep-three",
 ];
 
-const readQueue = () => {
-  try { return JSON.parse(fs.readFileSync(QUEUE_FILE, "utf8")); } catch (e) { return { items: [] }; }
+function queueFixture(mode, items) {
+  const result = spawnSync("uv", ["run", "python", QUEUE_FIXTURE, "--session-file", process.env.PA_UI_SESSION_FILE, mode], {
+    input: mode === "--queue-write" ? JSON.stringify(items) : undefined,
+    encoding: "utf8", env: process.env,
+  });
+  if (result.status !== 0) throw new Error("无法读取账号测试队列：" + (result.stderr || "seed helper failed"));
+  return JSON.parse(result.stdout);
+}
+const readQueue = () => ({ items: queueFixture("--queue-read").map((item) => ({
+  ...item, id: [...legacyIds].find(([, actual]) => actual === item.id)?.[0] || item.id,
+})) });
+const writeQueue = (items) => {
+  const created = queueFixture("--queue-write", items);
+  items.forEach((item, index) => { if (item.id && created[index]) legacyIds.set(item.id, created[index].id); });
+  return created;
 };
-const writeQueue = (items) => fs.writeFileSync(QUEUE_FILE, JSON.stringify({ items }, null, 2));
+const queueId = (id) => legacyIds.get(id) || id;
 const clearQueue = () => writeQueue([]);
 
 (async () => {
-  if (!QUEUE_FILE) { console.log("缺少 PA_QUEUE_FILE，必须通过 run.sh 运行"); process.exit(2); }
+  if (!process.env.PA_PLATFORM_DB || !process.env.PA_TEST_USER_ID) { console.log("缺少临时账号数据库，必须通过 run.sh 运行"); process.exit(2); }
   clearQueue();
 
   const out = {}, fails = [];
@@ -86,7 +100,7 @@ const clearQueue = () => writeQueue([]);
   await window.loadQueue();
   out.受控_初始顺序 = urls();
 
-  window.queueMove("q3", -1);
+  window.queueMove(queueId("q3"), -1);
   await until(() => urls().join() !== out.受控_初始顺序.join(), 5000, 100);
   out.下移后顺序 = urls();
   out.下移后文件顺序 = readQueue().items.map((i) => i.url);
@@ -94,7 +108,7 @@ const clearQueue = () => writeQueue([]);
     fails.push(`上移一条应改变顺序，期望第 2 位是 /c，实际 ${JSON.stringify(out.下移后顺序)}`);
   }
 
-  window.queueRemove("q1");
+  window.queueRemove(queueId("q1"));
   await until(() => rows().length === 2, 5000, 100);
   out.删除后行数 = rows().length;
   out.删除后文件条数 = readQueue().items.length;

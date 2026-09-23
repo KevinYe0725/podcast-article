@@ -7,7 +7,25 @@ REPO="$(cd ../.. && pwd)"
 PORT="${PA_TEST_PORT:-8791}"
 TMP="$(mktemp -d)"
 OUT="$TMP/output"
-mkdir -p "$OUT"
+export PA_DATA_ROOT="$TMP/data"
+export PA_PLATFORM_DB="$PA_DATA_ROOT/platform.sqlite"
+export PA_USER_SECRETS_KEY="$(uv run python -c 'import base64,os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())')"
+export PA_UI_SESSION_FILE="$TMP/session.json"
+mkdir -p "$OUT" "$PA_DATA_ROOT"
+python3 - "$REPO" "$TMP/root-files.before" <<'PY'
+import json, os, sys
+root, manifest = sys.argv[1:]
+snapshot = {}
+for entry in os.scandir(root):
+    try:
+        if entry.is_file(follow_symlinks=True):
+            info = entry.stat(follow_symlinks=True)
+            snapshot[entry.name] = [info.st_size, info.st_mtime_ns]
+    except FileNotFoundError:
+        pass
+with open(manifest, "w", encoding="utf-8") as handle:
+    json.dump(snapshot, handle)
+PY
 export PA_OUTPUT_DIR="$OUT"
 export PA_LIBRARY_FILE="$TMP/library.json"   # 分类数据也要隔离，别碰真实 library.json
 export PA_QUEUE_FILE="$TMP/queue.json"       # 批量队列（后台调度会读写它）
@@ -24,9 +42,15 @@ fi
 
 [ -d node_modules ] || npm install --silent --no-fund --no-audit
 
+export PA_TEST_USER_ID="$(uv run python session_seed.py --session-file "$PA_UI_SESSION_FILE")"
+export PA_OUTPUT_DIR="$PA_DATA_ROOT/users/$PA_TEST_USER_ID/output"
+export PA_FEEDS_FILE="$PA_DATA_ROOT/users/$PA_TEST_USER_ID/feeds.json"
+mkdir -p "$PA_OUTPUT_DIR"
 node seed.js
 
-( cd "$REPO" && PA_OUTPUT_DIR="$OUT" PA_LIBRARY_FILE="$PA_LIBRARY_FILE" \
+( cd "$REPO" && PA_DATA_ROOT="$PA_DATA_ROOT" PA_PLATFORM_DB="$PA_PLATFORM_DB" \
+    PA_USER_SECRETS_KEY="$PA_USER_SECRETS_KEY" PA_TEST_USER_ID="$PA_TEST_USER_ID" \
+    PA_UI_SESSION_FILE="$PA_UI_SESSION_FILE" PA_OUTPUT_DIR="$PA_OUTPUT_DIR" PA_LIBRARY_FILE="$PA_LIBRARY_FILE" \
     PA_KB_FILE="$PA_KB_FILE" \
     PA_QUEUE_FILE="$PA_QUEUE_FILE" PA_FEEDS_FILE="$PA_FEEDS_FILE" PA_SCHEDULER=0 \
     uv run python webapp.py --port "$PORT" >/tmp/pa-ui-test-server.log 2>&1 ) &
@@ -37,7 +61,28 @@ cleanup() {
   kill "$SERVER_PID" 2>/dev/null
   pkill -f "webapp.py --port $PORT" 2>/dev/null
   wait "$SERVER_PID" 2>/dev/null
+  python3 - "$REPO" "$TMP/root-files.before" <<'PY'
+import json, os, sys
+root, manifest = sys.argv[1:]
+with open(manifest, encoding="utf-8") as handle:
+    before = json.load(handle)
+after = {}
+for entry in os.scandir(root):
+    try:
+        if entry.is_file(follow_symlinks=True):
+            info = entry.stat(follow_symlinks=True)
+            after[entry.name] = [info.st_size, info.st_mtime_ns]
+    except FileNotFoundError:
+        pass
+changed = sorted(name for name in set(before) | set(after) if before.get(name) != after.get(name))
+if changed:
+    print("✕ UI 测试期间仓库根文件发生变化：" + ", ".join(changed))
+    raise SystemExit(1)
+print("✓ 仓库根文件大小与修改时间保持不变")
+PY
+  GUARD_STATUS=$?
   rm -rf "$TMP"
+  [ "$GUARD_STATUS" = 0 ] || exit "$GUARD_STATUS"
 }
 trap cleanup EXIT
 
@@ -52,7 +97,7 @@ fi
 # 注：runview.test.js 需要真实下载/转写（依赖网络），不进 CI，需要时手动跑
 # 每个测试都套 timeout：jsdom 里某个 promise 挂住时，宁可红掉也不要让 CI 卡死
 # 调试时可以只跑其中一个：PA_UI_TESTS=assistant.test.js bash run.sh
-DEFAULT_TESTS="close.test.js reader.test.js readonly.test.js tts.test.js mobile.test.js modal.test.js sidebar.test.js delete.test.js audio.test.js
+DEFAULT_TESTS="auth.test.js close.test.js reader.test.js readonly.test.js tts.test.js mobile.test.js modal.test.js sidebar.test.js delete.test.js audio.test.js
 search.test.js status.test.js queue.test.js feeds.test.js export.test.js nav.test.js
 memory.test.js assistant.test.js asklibrary.test.js"
 FAILED=0

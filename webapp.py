@@ -461,7 +461,7 @@ def _authenticated_response(account, next_path: str = "/"):
 
 @app.get("/login")
 def login_page():
-    return Response(_LOGIN_PAGE_HTML, mimetype="text/html")
+    return send_file(WEB_DIR / "login.html", mimetype="text/html")
 
 
 @app.get("/favicon.ico")
@@ -471,7 +471,7 @@ def favicon():
 
 @app.get("/invite")
 def invite_page():
-    return Response(_INVITE_PAGE_HTML, mimetype="text/html")
+    return send_file(WEB_DIR / "login.html", mimetype="text/html")
 
 
 @app.get("/api/auth/csrf")

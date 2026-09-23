@@ -11,7 +11,8 @@
  *  - 滚动：记录调用目标，便于断言「关掉文章后回到了列表」
  *  - 音频：jsdom 不实现播放，打桩成可控的假播放器
  */
-const { JSDOM } = require("jsdom");
+const { JSDOM, VirtualConsole } = require("jsdom");
+const fs = require("fs");
 
 // jsdom 不实现 EventSource，而页面用 SSE 推任务进度。不补上它的话，
 // 任何「真的启动一次任务」的测试都会在 new EventSource 处直接崩掉。
@@ -28,6 +29,9 @@ try {
 
 const BASE = process.env.PA_BASE || "http://127.0.0.1:8787";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const nodeFetch = globalThis.fetch.bind(globalThis);
+let seededSession = {};
+try { seededSession = JSON.parse(fs.readFileSync(process.env.PA_UI_SESSION_FILE, "utf8")); } catch (_) {}
 
 function EventSourceShim(url, opts) {
   const abs = /^https?:/i.test(String(url)) ? String(url) : BASE + String(url);
@@ -37,16 +41,24 @@ function EventSourceShim(url, opts) {
 /** 起一个真实页面。opts.beforeParse 会在页面脚本执行前拿到 window，可继续打桩。
     opts.url 可以指定带 hash 的地址（测「刷新阅读页」这类深链接）。 */
 async function boot(opts = {}) {
-  const html = await (await fetch(BASE + "/")).text();
+  const targetUrl = opts.url || BASE;
+  const target = new URL(targetUrl, BASE);
+  const html = await (await harnessFetch(BASE + target.pathname + target.search)).text();
   const scrolled = [];
+  const navigationAttempts = [];
+  const virtualConsole = new VirtualConsole();
+  virtualConsole.on("jsdomError", (error) => {
+    if (String(error.message).includes("Not implemented: navigation")) navigationAttempts.push(error.message);
+  });
   const dom = new JSDOM(html, {
-    url: opts.url || BASE,
+    url: targetUrl,
     runScripts: "dangerously",
     resources: "usable",
     pretendToBeVisual: true,
+    virtualConsole,
     beforeParse(w) {
       w.__scrolled = scrolled;
-      w.fetch = (u, o) => fetch(u.startsWith("http") ? u : BASE + u, o);
+      w.fetch = (u, o = {}) => harnessFetch(u.startsWith("http") ? u : BASE + u, o);
       w.scrollTo = () => {};
       w.Element.prototype.scrollIntoView = function () { scrolled.push(this.id || "(anon)"); };
       if (EventSourcePolyfill && !w.EventSource) w.EventSource = EventSourceShim;
@@ -58,7 +70,7 @@ async function boot(opts = {}) {
   await waitReady(window, opts.settle);
   const doc = window.document;
   return {
-    dom, window, doc, BASE, scrolled, sleep,
+    dom, window, doc, BASE, scrolled, navigationAttempts, sleep,
     $: (id) => doc.getElementById(id),
     /** 派发一次 Esc（用于验证分层退出） */
     esc: () => doc.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true })),
@@ -69,10 +81,31 @@ async function boot(opts = {}) {
   };
 }
 
+function harnessFetch(url, options = {}) {
+  const requestUrl = new URL(String(url.url || url), BASE);
+  const baseUrl = new URL(BASE);
+  if (requestUrl.origin !== baseUrl.origin || !["127.0.0.1", "localhost", "::1"].includes(requestUrl.hostname.toLowerCase())) {
+    return nodeFetch(url, options);
+  }
+  const headers = new Headers(options.headers || {});
+  const cookieParts = [];
+  if (seededSession.session_token) cookieParts.push(`pa_session=${seededSession.session_token}`);
+  if (seededSession.csrf_token) cookieParts.push(`pa_csrf=${seededSession.csrf_token}`);
+  if (cookieParts.length) headers.set("Cookie", cookieParts.join("; "));
+  const method = options.method || url.method || "GET";
+  if (seededSession.csrf_token && ["POST", "PUT", "PATCH", "DELETE"].includes(String(method).toUpperCase())) {
+    headers.set("X-CSRF-Token", seededSession.csrf_token);
+  }
+  return nodeFetch(url, { ...options, headers });
+}
+globalThis.fetch = harnessFetch;
+
 /** 页面的入口函数都挂在 window 上；等它出现再断言，避免和加载速度赛跑。 */
 async function waitReady(window, limit) {
   const deadline = Date.now() + (limit || 12000);
+  const pathname = window.location.pathname;
   while (Date.now() < deadline) {
+    if ((pathname === "/login" || pathname === "/invite") && window.__loginPageReady) return;
     if (typeof window.loadLibrary === "function" && window.document.getElementById("libgrid")) {
       // loadLibrary 是异步的，再给一轮网络往返的时间把卡片渲染出来
       await sleep(1200);

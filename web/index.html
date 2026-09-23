@@ -60,6 +60,24 @@
     <div style="display:flex;align-items:center;gap:12px">
       <button class="usagepill" id="usagepill" onclick="openSettings('storage')" title="看一眼累计用量与费用"></button>
       <div class="meta">本地转写 · DeepSeek 精读 · MCP</div>
+      <div class="account-wrap">
+        <button class="account-trigger" id="account-menu" type="button" aria-expanded="false" aria-controls="account-panel" hidden>
+          <span class="account-avatar" aria-hidden="true">K</span><span class="account-name" id="account-name"></span><span class="account-chevron" aria-hidden="true">⌄</span>
+        </button>
+        <section class="account-panel" id="account-panel" aria-label="账号设置" hidden>
+          <div class="account-panel-head"><span class="account-avatar" aria-hidden="true">K</span><div><strong id="account-panel-name"></strong><small id="account-role"></small></div></div>
+          <div class="account-quota" id="account-quota" aria-label="本月用量"></div>
+          <details class="account-password">
+            <summary>更改密码</summary>
+            <form id="account-password-form">
+              <label for="account-current-password">当前密码</label><input id="account-current-password" type="password" autocomplete="current-password" required>
+              <label for="account-new-password">新密码</label><input id="account-new-password" type="password" autocomplete="new-password" minlength="12" required>
+              <button type="submit">保存新密码</button><p id="account-password-error" role="status"></p>
+            </form>
+          </details>
+          <button class="account-logout" id="account-logout" type="button">退出登录 <span aria-hidden="true">↗</span></button>
+        </section>
+      </div>
       <button class="iconbtn" onclick="openSettings()" title="设置" aria-label="设置">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
           <circle cx="12" cy="12" r="3"></circle>

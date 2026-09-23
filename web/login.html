@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light"><title>Podcast Article · 账号访问</title>
+  <link rel="stylesheet" href="/static/login.css"><script src="/static/login.js" defer></script>
+</head>
+<body>
+  <main class="access-card">
+    <aside class="identity" aria-label="Podcast Article">
+      <a class="brand" href="/login"><span class="wave" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span><span>PODCAST <b>ARTICLE</b></span></a>
+      <div class="manifest"><p class="eyebrow" id="page-eyebrow">PRIVATE LISTENING LIBRARY</p><h1 id="manifest-title">把时间留给<br>值得听的内容。</h1><p class="manifest-copy">文章、回听线索与听后想法，都在你的独立空间里。</p></div>
+      <p class="identity-foot">ACCOUNT-LEVEL STORAGE <span>·</span> INVITE ONLY</p>
+    </aside>
+    <section class="form-panel" aria-live="polite">
+      <div class="formbrand">ACCOUNT ACCESS <span>／</span> PRIVATE BY DESIGN</div>
+      <section id="login-view" class="form-view" hidden><h2>欢迎回来</h2><p class="form-intro">登录后继续使用你的播客文章库。</p>
+        <form id="login-form" novalidate><label for="username">用户名</label><input id="username" name="username" autocomplete="username" required maxlength="64"><label for="password">密码</label><input id="password" name="password" type="password" autocomplete="current-password" required><button class="primary-action" type="submit">登录 <span aria-hidden="true">↗</span></button></form>
+        <p class="form-error" id="login-error" role="alert" aria-live="assertive"></p><p class="form-note">仅限受邀账号使用。登录不会在此设备保存你的密码。</p>
+      </section>
+      <section id="invite-view" class="form-view" hidden><h2>接受邀请</h2><p class="form-intro">创建账号后，你的文章和偏好将独立保存。</p>
+        <form id="invite-form" novalidate><label for="invite-username">用户名</label><input id="invite-username" name="username" autocomplete="username" required maxlength="64"><label for="invite-password">设置密码</label><input id="invite-password" name="password" type="password" autocomplete="new-password" required minlength="12"><p class="input-hint">至少 12 个字符，建议使用一组容易记住的长句。</p><button class="primary-action" type="submit">创建账号 <span aria-hidden="true">↗</span></button></form>
+        <p class="form-error" id="invite-error" role="alert" aria-live="assertive"></p><p class="form-note">邀请链接只使用一次。创建账号后即可开始整理与回听。</p>
+      </section>
+      <section id="password-view" class="form-view" hidden><h2>更新密码</h2><p class="form-intro">为保护账号，请设置一个新的长密码。</p>
+        <form id="password-form" novalidate><label for="current-password">当前密码</label><input id="current-password" type="password" autocomplete="current-password" required><label for="new-password">新密码</label><input id="new-password" type="password" autocomplete="new-password" required minlength="12"><button class="primary-action" type="submit">保存新密码 <span aria-hidden="true">↗</span></button></form><p class="form-error" id="password-error" role="alert" aria-live="assertive"></p>
+      </section>
+    </section>
+  </main>
+</body>
+</html>
