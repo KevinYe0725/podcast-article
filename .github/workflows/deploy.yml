@@ -36,6 +36,7 @@ jobs:
           install -d -m 700 "$HOME/.ssh"
           printf '%s' "$SERVER_SSH_PRIVATE_KEY_B64" | base64 --decode > "$HOME/.ssh/id_ed25519"
           chmod 600 "$HOME/.ssh/id_ed25519"
+          ssh-keygen -lf "$HOME/.ssh/id_ed25519"
           ssh-keyscan -H "$SERVER_HOST" >> "$HOME/.ssh/known_hosts"
 
           ssh -i "$HOME/.ssh/id_ed25519" -o IdentitiesOnly=yes "$SERVER_USER@$SERVER_HOST" "install -d -m 755 '$SERVER_PATH' '$SERVER_PATH/data/output'"
