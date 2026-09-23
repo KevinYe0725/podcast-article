@@ -119,7 +119,7 @@ ls -1dt */ | tail -n +21 | while read d; do rm -f "$d"/audio.*; done   # 可选�
 
 - `PODCAST_SERVER_HOST`：ECS 公网 IP
 - `PODCAST_SERVER_USER`：通常为 `root`
-- `PODCAST_SERVER_SSH_PRIVATE_KEY`：部署私钥全文
+- `PODCAST_SERVER_SSH_PRIVATE_KEY_B64`：部署私钥的 Base64 内容
 
 工作流不会同步 `data/`、本地配置或密钥文件，也不会覆盖服务器的 `/etc/podcast-article/server.env`。第一次部署前仍需在服务器准备 `python3.12-venv`、`podcast` 用户、systemd 服务和环境变量。
 

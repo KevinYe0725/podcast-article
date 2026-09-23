@@ -26,15 +26,15 @@ jobs:
         env:
           SERVER_HOST: ${{ secrets.PODCAST_SERVER_HOST }}
           SERVER_USER: ${{ secrets.PODCAST_SERVER_USER }}
-          SERVER_SSH_PRIVATE_KEY: ${{ secrets.PODCAST_SERVER_SSH_PRIVATE_KEY }}
+          SERVER_SSH_PRIVATE_KEY_B64: ${{ secrets.PODCAST_SERVER_SSH_PRIVATE_KEY_B64 }}
         run: |
           set -euo pipefail
           test -n "$SERVER_HOST"
           test -n "$SERVER_USER"
-          test -n "$SERVER_SSH_PRIVATE_KEY"
+          test -n "$SERVER_SSH_PRIVATE_KEY_B64"
 
           install -d -m 700 "$HOME/.ssh"
-          printf '%s\n' "$SERVER_SSH_PRIVATE_KEY" > "$HOME/.ssh/id_ed25519"
+          printf '%s' "$SERVER_SSH_PRIVATE_KEY_B64" | base64 --decode > "$HOME/.ssh/id_ed25519"
           chmod 600 "$HOME/.ssh/id_ed25519"
           ssh-keyscan -H "$SERVER_HOST" >> "$HOME/.ssh/known_hosts"
 
