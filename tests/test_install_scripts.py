@@ -114,3 +114,9 @@ def test_ui_runner_isolates_knowledge_database():
     script = (ROOT / "tests/ui/run.sh").read_text(encoding="utf-8")
     assert 'export PA_KB_FILE="$TMP/kb.sqlite"' in script
     assert 'PA_KB_FILE="$PA_KB_FILE"' in script
+
+
+def test_ui_runner_installs_node_dependencies_from_lockfile():
+    script = (ROOT / "tests/ui/run.sh").read_text(encoding="utf-8")
+    assert '[ -d node_modules ] || npm ci --silent --no-fund --no-audit' in script
+    assert 'npm install --silent' not in script

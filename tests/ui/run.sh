@@ -39,7 +39,7 @@ if curl -sf "$PA_BASE/" >/dev/null 2>&1; then
   exit 2
 fi
 
-[ -d node_modules ] || npm install --silent --no-fund --no-audit
+[ -d node_modules ] || npm ci --silent --no-fund --no-audit
 
 export PA_TEST_USER_ID="$(uv run python session_seed.py --session-file "$PA_UI_SESSION_FILE")"
 export PA_OUTPUT_DIR="$PA_DATA_ROOT/users/$PA_TEST_USER_ID/output"
