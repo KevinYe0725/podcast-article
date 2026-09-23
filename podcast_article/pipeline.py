@@ -309,8 +309,8 @@ class Pipeline:
         self.log(f"[write] 开始生成文章（文字稿约 {text_chars} 字）…")
         # 记账：重写文章时把上一次的花费一起带上（这一集真实花掉的钱是有意义的）
         model = self.llm_model or config.deepseek_model()
-        meter = usage.start(model, workdir, on_update=self.on_usage,
-                            started=usage.load(workdir))
+        meter = usage.Recorder(model, workdir, on_update=self.on_usage,
+                               started=usage.load(workdir))
         if self.on_usage:
             self.on_usage(usage.describe(meter.usage))
         try:
@@ -326,11 +326,12 @@ class Pipeline:
                 polish=self.polish,
                 outlined=self.outlined,
                 settings_path=self.settings_path,
+                usage_recorder=meter,
                 log=self.log,
                 progress=self.progress,
             )
         finally:
-            snapshot = usage.stop()
+            snapshot = meter.flush()
             if self.on_usage:
                 self.on_usage(usage.describe(snapshot))
         if snapshot.get("calls"):

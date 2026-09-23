@@ -21,7 +21,8 @@ def _client() -> OpenAI:
 
 
 def ask_once(system: str, user: str, *, model: str | None = None,
-             max_tokens: int = 1200, temperature: float = 0.3, log=None) -> str:
+             max_tokens: int = 1200, temperature: float = 0.3, log=None,
+             usage_recorder: usage.Recorder | None = None) -> str:
     """一次问答式调用（Web「问你的库」、CLI `ask`、MCP `ask_library` 共用）。
 
     为什么要有这个函数：`_chat` 的签名是 `(client, model, system, user, ...)`，
@@ -35,6 +36,7 @@ def ask_once(system: str, user: str, *, model: str | None = None,
         _client(), model or config.deepseek_model(), system, user,
         log=log or (lambda *_a, **_k: None),
         max_tokens=max_tokens, temperature=temperature,
+        usage_recorder=usage_recorder,
     )
 
 
@@ -43,6 +45,7 @@ def _chat(
     log=print, max_tokens: int = 8192, on_chars=None, temperature: float = 1.0,
     thinking: bool = False, reasoning_effort: str = "low",
     history: list[dict] | None = None,
+    usage_recorder: usage.Recorder | None = None,
 ) -> str:
     """流式调用。按 DeepSeek 思考模式文档区分两种模式：
 
@@ -98,7 +101,7 @@ def _chat(
     for chunk in stream:
         raw_usage = getattr(chunk, "usage", None)
         if raw_usage is not None:
-            usage.note(model, raw_usage)      # 记账：没有活动记录器时是空操作
+            usage.note(model, raw_usage, recorder=usage_recorder)
         choice = chunk.choices[0] if chunk.choices else None
         if choice is None:
             continue
@@ -310,7 +313,8 @@ def _density_ratio(before: str, after: str) -> float:
     return ad / bd
 
 
-def _polish(client, model: str, article: str, mode_key: str, log=print, on_chars=None) -> str:
+def _polish(client, model: str, article: str, mode_key: str, log=print, on_chars=None,
+            usage_recorder: usage.Recorder | None = None) -> str:
     """最小改动的编辑复检 + 机械闸门：细节保留率不达标就退回上一稿。"""
     lo, hi = MODE_TARGETS.get(mode_key, MODE_TARGETS[DEFAULT_MODE])
     system = _POLISH_SYSTEM.replace("{lo}", str(lo)).replace("{hi}", str(hi))
@@ -329,7 +333,8 @@ def _polish(client, model: str, article: str, mode_key: str, log=print, on_chars
         try:
             revised = _chat(client, model, system, f"{ask}\n\n{current}", log=log, on_chars=on_chars,
                             max_tokens=MODE_MAX_TOKENS.get(mode_key, 8192) + 500,
-                            temperature=0.3, thinking=False)  # 关思考时 temperature 才生效
+                            temperature=0.3, thinking=False,
+                            usage_recorder=usage_recorder)  # 关思考时 temperature 才生效
         except Exception as exc:  # 复检失败不该让整篇文章失败
             log(f"[llm] 复检跳过（{type(exc).__name__}: {exc}）")
             return current
@@ -401,7 +406,8 @@ def _segments_to_text(segments: list[dict]) -> str:
 
 
 def _digest_segments(client, model: str, segments: list[dict], max_chars: int,
-                     log=print, progress=None) -> str:
+                     log=print, progress=None,
+                     usage_recorder: usage.Recorder | None = None) -> str:
     """长文字稿：分段精读成素材摘要（供分节写作或单次汇总使用）。"""
     chunks = _chunk_segments(segments, chunk_chars=max(4_000, max_chars // 3))
     log(f"[llm] 文字稿较长，分段精读：{len(chunks)} 段")
@@ -412,7 +418,7 @@ def _digest_segments(client, model: str, segments: list[dict], max_chars: int,
             progress("llm", {"chunk": i, "total": len(chunks)})
         briefs.append(
             _chat(client, model, _CHUNK_SYSTEM, _segments_to_text(chunk), log=log,
-                  max_tokens=4096, thinking=False)
+                  max_tokens=4096, thinking=False, usage_recorder=usage_recorder)
         )
     return "\n\n".join(f"## 第 {i} 段素材\n{b}" for i, b in enumerate(briefs, 1))
 
@@ -456,6 +462,7 @@ def write_article(
     log=print,
     progress=None,
     settings_path: Path | None = None,
+    usage_recorder: usage.Recorder | None = None,
 ) -> str:
     """输入带时间戳的转写片段，输出 Markdown 文章。progress 同 Pipeline。
 
@@ -484,14 +491,16 @@ def write_article(
             if short_enough:
                 material_body = _segments_to_text(segments)
             else:
-                material_body = _digest_segments(client, model, segments, max_chars, log, progress)
+                material_body = _digest_segments(client, model, segments, max_chars, log, progress,
+                                                 usage_recorder=usage_recorder)
             material = outline.build_material(
                 title, podcast, author, shownotes_html, material_body,
                 settings_path=settings_path,
             )
             log(f"[llm] 分节写作 · {mode_key} 档｜素材 {len(material_body)} 字符，"
                 f"预算约 {outline.budget_total(mode_key)} 字")
-            article = outline.write_outlined(client, model, material, mode_key, log, progress)
+            article = outline.write_outlined(client, model, material, mode_key, log, progress,
+                                             usage_recorder=usage_recorder)
             return _finalize(_guard(article, log), mode_key, log)
         except Exception as exc:
             log(f"[llm] 分节写作失败（{type(exc).__name__}: {exc}），退回单次生成")
@@ -500,13 +509,15 @@ def write_article(
         log(f"[llm] 单次直读 · {mode_key} 档：全文 {len(user_msg)} 字符，模型 {model}")
         article = _chat(client, model, system, user_msg, log=log, on_chars=on_chars,
                         max_tokens=MODE_MAX_TOKENS.get(mode_key, 8192) + THINKING_ALLOWANCE,
-                        thinking=False)
+                        thinking=False, usage_recorder=usage_recorder)
         if polish:
-            article = _polish(client, model, article, mode_key, log=log, on_chars=on_chars)
+            article = _polish(client, model, article, mode_key, log=log, on_chars=on_chars,
+                              usage_recorder=usage_recorder)
         return _finalize(article, mode_key, log)
 
     # 分段精读 -> 汇总
-    digest = _digest_segments(client, model, segments, max_chars, log, progress)
+    digest = _digest_segments(client, model, segments, max_chars, log, progress,
+                              usage_recorder=usage_recorder)
     notes = html_to_text(shownotes_html)
     final_user = (
         f"节目标题：{title}\n播客/频道：{podcast}\n主播/作者：{author or '未知'}\n\n"
@@ -520,7 +531,8 @@ def write_article(
     log(f"[llm] 汇总成文 · {mode_key} 档（{len(final_user)} 字符素材）")
     article = _chat(client, model, system, final_user, log=log, on_chars=on_chars,
                     max_tokens=MODE_MAX_TOKENS.get(mode_key, 8192) + THINKING_ALLOWANCE,
-                    thinking=False)
+                    thinking=False, usage_recorder=usage_recorder)
     if polish:
-        article = _polish(client, model, article, mode_key, log=log, on_chars=on_chars)
+        article = _polish(client, model, article, mode_key, log=log, on_chars=on_chars,
+                          usage_recorder=usage_recorder)
     return _finalize(_guard(article, log), mode_key, log)

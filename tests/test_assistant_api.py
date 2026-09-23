@@ -182,8 +182,9 @@ def test_ask_unknown_id_404(client):
 
 
 def test_ask_stream_unknown_id_reports_error(client):
-    body = client.get("/api/ask/nope/stream").get_data(as_text=True)
-    assert "event: error" in body, f"不存在的提问应推 error 事件，实际 {body}"
+    response = client.get("/api/ask/nope/stream")
+    assert response.status_code == 404
+    assert response.get_json()["error"] == "提问不存在或已过期"
 
 
 # ------------------------------------------------------------------ /api/qa

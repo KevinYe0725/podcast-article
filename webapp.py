@@ -374,13 +374,22 @@ _ALLOWED_FILES = {"article.md", "transcript.txt", "transcript.json", "meta.json"
                   "usage.json", "outline.json", "qa.json"}
 
 
+def get_job(owner_id: str, job_id: str) -> dict | None:
+    """Return a task only to the account that created it."""
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        return job if job and job.get("owner_id") == owner_id else None
+
+
 def _new_job(url: str, opts: dict, *, source: str = "manual",
              queue_id: str | None = None, workspace=None) -> str:
     output_root = workspace.output_root if workspace is not None else OUTPUT_ROOT
     settings_path = workspace.settings_path if workspace is not None else None
+    owner_id = workspace.account_id if workspace is not None else "system"
     job_id = uuid.uuid4().hex[:12]
     job = {
         "id": job_id,
+        "owner_id": owner_id,
         "url": url,
         "source": source,          # manual（首页直接提交）/ queue / feed:<id> / lib（重新生成）
         "queue_id": queue_id,
@@ -577,10 +586,10 @@ def _md_to_html(text: str) -> str:
     return _linkify_timestamps(html)
 
 
-def _running_job_id() -> str | None:
+def _running_job_id(owner_id: str | None = None) -> str | None:
     with _JOBS_LOCK:
         for job_id, job in _JOBS.items():
-            if job["status"] == "running":
+            if job["status"] == "running" and (owner_id is None or job.get("owner_id") == owner_id):
                 return job_id
     return None
 
@@ -595,7 +604,8 @@ def api_run():
     url = links_mod.first_link(data.get("url") or "")
     if not url:
         return jsonify({"error": "请填写链接"}), 400
-    busy = _running_job_id()
+    workspace = _workspace()
+    busy = _running_job_id(workspace.account_id)
     if busy:
         # 明确告诉前端「在跑什么」，否则用户只会觉得按钮坏了
         with _JOBS_LOCK:
@@ -605,7 +615,7 @@ def api_run():
             "busy": True, "job_id": busy, "url": current.get("url", ""),
             "source": current.get("source", ""),
         }), 409
-    job_id = _new_job(url, data, workspace=_workspace())
+    job_id = _new_job(url, data, workspace=workspace)
     return jsonify({"job_id": job_id})
 
 
@@ -627,16 +637,17 @@ def api_config():
 @app.get("/api/jobs/current")
 def api_jobs_current():
     """当前正在运行的任务（供界面提示与自动化测试等待）。"""
+    owner_id = _workspace().account_id
     with _JOBS_LOCK:
         for job in _JOBS.values():
-            if job["status"] == "running":
+            if job["status"] == "running" and job.get("owner_id") == owner_id:
                 return jsonify({"job_id": job["id"], "url": job["url"], "status": "running"})
     return jsonify({"job_id": None, "status": "idle"})
 
 
 @app.get("/api/job/<job_id>")
 def api_job(job_id: str):
-    job = _JOBS.get(job_id)
+    job = get_job(_workspace().account_id, job_id)
     if not job:
         return jsonify({"error": "任务不存在"}), 404
     return jsonify(
@@ -662,12 +673,15 @@ def _sse(event: str, data: dict) -> str:
 @app.get("/api/stream/<job_id>")
 def api_stream(job_id: str):
     """SSE 实时推送：log / progress / status 三类事件。"""
+    owner_id = _workspace().account_id
+    if get_job(owner_id, job_id) is None:
+        return jsonify({"error": "任务不存在"}), 404
     def gen():
         last_log = 0
         last_prog = None
         last_usage = None
         while True:
-            job = _JOBS.get(job_id)
+            job = get_job(owner_id, job_id)
             if not job:
                 yield _sse("status", {"status": "error", "error": "任务不存在"})
                 return
@@ -1071,8 +1085,20 @@ def api_episode_delete(job_dir: str):
 # 知识库把跨集检索、实体索引、用户记忆补上，全部落在本地一个 SQLite 文件里
 # （派生数据，删了能重建），不需要任何外部服务。
 _KB_LOCK = threading.Lock()
-_KB_JOB: dict = {"state": "idle", "done": 0, "total": 0, "note": "", "error": "",
-                 "result": None}
+_KB_LOCKS: dict[str, threading.Lock] = {}
+_KB_JOBS: dict[str, dict] = {}
+
+
+def _kb_job(owner_id: str) -> dict:
+    with _KB_LOCK:
+        return _KB_JOBS.setdefault(owner_id, {
+            "state": "idle", "done": 0, "total": 0, "note": "", "error": "", "result": None,
+        })
+
+
+def _kb_owner_lock(owner_id: str) -> threading.Lock:
+    with _KB_LOCK:
+        return _KB_LOCKS.setdefault(owner_id, threading.Lock())
 
 
 @app.get("/api/kb/status")
@@ -1082,7 +1108,7 @@ def api_kb_status():
         st = kb_mod.stats(output_root=workspace.output_root, db_path=workspace.kb_path)
     except Exception as exc:
         return jsonify({"error": f"{type(exc).__name__}: {exc}"[:200]}), 500
-    st["indexing"] = _KB_JOB
+    st["indexing"] = dict(_kb_job(workspace.account_id))
     return jsonify(st)
 
 
@@ -1090,27 +1116,28 @@ def api_kb_status():
 @_readonly_guard
 def api_kb_reindex():
     """重建索引（派生数据，force 会重算切片）。后台跑，前端轮询 status。"""
-    with _KB_LOCK:
-        if _KB_JOB.get("state") == "running":
-            return jsonify({"error": "已经在索引了", "indexing": _KB_JOB}), 409
-        _KB_JOB.update({"state": "running", "done": 0, "total": 0, "note": "准备中",
-                        "error": "", "result": None})
-
     workspace = _workspace()
+    owner_id = workspace.account_id
+    job = _kb_job(owner_id)
+    with _kb_owner_lock(owner_id):
+        if job.get("state") == "running":
+            return jsonify({"error": "已经在索引了", "indexing": dict(job)}), 409
+        job.update({"state": "running", "done": 0, "total": 0, "note": "准备中",
+                    "error": "", "result": None})
 
     def work(force: bool, workspace) -> None:
         def progress(done: int, total: int, note: str) -> None:
-            _KB_JOB.update({"done": done, "total": total, "note": note})
+            job.update({"done": done, "total": total, "note": note})
         try:
             r = kb_mod.index_all(workspace.output_root, force=force, progress=progress,
                                  db_path=workspace.kb_path)
-            _KB_JOB.update({"state": "done", "result": r, "note": ""})
+            job.update({"state": "done", "result": r, "note": ""})
         except Exception as exc:
-            _KB_JOB.update({"state": "error", "error": f"{type(exc).__name__}: {exc}"[:200]})
+            job.update({"state": "error", "error": f"{type(exc).__name__}: {exc}"[:200]})
 
     force = bool((request.get_json(force=True, silent=True) or {}).get("force"))
     threading.Thread(target=work, args=(force, workspace), daemon=True).start()
-    return jsonify({"state": "running", "indexing": _KB_JOB})
+    return jsonify({"state": "running", "indexing": dict(job)})
 
 
 @app.get("/api/kb/search")
@@ -1164,15 +1191,22 @@ def api_kb_ask():
                         "sources": [], "mode": res["mode"]})
 
     memories = kb_mod.memory_for_prompt(q, db_path=workspace.kb_path)
+    from podcast_article import config
+
+    recorder = usage_mod.Recorder(config.deepseek_model())
     try:
         # 作答规则统一在 podcast_article/library_ask.py（Web / CLI / MCP 共用一份）
-        answer = library_ask.answer(q, hits, [m["text"] for m in memories])
+        answer = library_ask.answer(q, hits, [m["text"] for m in memories], usage_recorder=recorder)
     except Exception as exc:
+        usage_snapshot = recorder.flush()
         # 模型不可用时把检索结果给出去 —— 有出处的原文比一句报错有用
         return jsonify({"answer": "", "sources": hits, "mode": res["mode"],
-                        "error": f"模型调用失败：{type(exc).__name__}: {str(exc)[:160]}"})
+                        "error": f"模型调用失败：{type(exc).__name__}: {str(exc)[:160]}",
+                        "usage": usage_mod.describe(usage_snapshot)})
+    usage_snapshot = recorder.flush()
     return jsonify({"answer": (answer or "").strip(), "sources": hits, "mode": res["mode"],
-                    "memory_used": [m["text"] for m in memories]})
+                    "memory_used": [m["text"] for m in memories],
+                    "usage": usage_mod.describe(usage_snapshot)})
 
 
 @app.get("/api/kb/entities")
@@ -1246,7 +1280,7 @@ def api_memory_delete(mid: int):
 #     分块的价值在于单块可重试：第 8 块失败时，前 7 块（已经花钱了）不用重来。
 #   · 内容与音色一起哈希，没变就复用，不重复付费。
 _TTS_LOCK = threading.Lock()
-_TTS_JOBS: dict[str, dict] = {}          # dir 名 -> {state, done, total, note, error}
+_TTS_JOBS: dict[tuple[str, str], dict] = {}  # (owner_id, dir) -> 状态
 
 
 def _tts_cfg(workspace=None) -> dict:
@@ -1270,7 +1304,9 @@ def _tts_payload(job_dir: str, base: Path) -> dict:
     """给前端的朗读状态：能不能用、跑到哪了、有哪些块。"""
     cfg = _tts_cfg()
     idx = tts_mod.load_index(base)
-    job = _TTS_JOBS.get(job_dir) or {}
+    owner_id = _workspace().account_id
+    job_key = (owner_id, job_dir)
+    job = _TTS_JOBS.get(job_key) or {}
     state = job.get("state") or ("ready" if idx and idx.get("chunks") else "idle")
     fresh = False
     article = base / "article.md"
@@ -1306,12 +1342,12 @@ def _tts_payload(job_dir: str, base: Path) -> dict:
     }
 
 
-def _run_tts(job_dir: str, base: Path, article: str, cfg: dict, force: bool) -> None:
+def _run_tts(owner_id: str, job_dir: str, base: Path, article: str, cfg: dict, force: bool) -> None:
     """后台线程：跑完就更新 _TTS_JOBS，前端轮询看到状态变化。"""
 
     def progress(done: int, total: int, note: str) -> None:
         with _TTS_LOCK:
-            _TTS_JOBS[job_dir] = {"state": "running", "done": done, "total": total, "note": note}
+            _TTS_JOBS[(owner_id, job_dir)] = {"state": "running", "done": done, "total": total, "note": note}
 
     try:
         idx = tts_mod.synthesize(base, article, cfg, api_key=_tts_key(),
@@ -1319,10 +1355,10 @@ def _run_tts(job_dir: str, base: Path, article: str, cfg: dict, force: bool) -> 
         n = len(idx.get("chunks") or [])
         # 完成时 total 要保留真实块数（写成 0 会让前端进度归零）
         with _TTS_LOCK:
-            _TTS_JOBS[job_dir] = {"state": "ready", "done": n, "total": n, "note": ""}
+            _TTS_JOBS[(owner_id, job_dir)] = {"state": "ready", "done": n, "total": n, "note": ""}
     except Exception as exc:
         with _TTS_LOCK:
-            _TTS_JOBS[job_dir] = {"state": "error", "error": f"{type(exc).__name__}: {exc}"[:300]}
+            _TTS_JOBS[(owner_id, job_dir)] = {"state": "error", "error": f"{type(exc).__name__}: {exc}"[:300]}
 
 
 def _log_tts(job_dir: str, message: str) -> None:
@@ -1348,17 +1384,20 @@ def api_tts_start(job_dir: str):
     article_path = base / "article.md"
     if not article_path.exists():
         return jsonify({"error": "这一集还没有文章"}), 400
-    cfg = _tts_cfg()
+    workspace = _workspace()
+    owner_id = workspace.account_id
+    job_key = (owner_id, job_dir)
+    cfg = _tts_cfg(workspace)
     if cfg.get("provider") in ("", "off"):
         return jsonify({"error": "还没有启用朗读：设置 → 朗读，选一个语音后端"
                                  "（macOS 本地免费，或任何兼容 OpenAI 的语音接口）"}), 400
     with _TTS_LOCK:
-        if (_TTS_JOBS.get(job_dir) or {}).get("state") == "running":
+        if (_TTS_JOBS.get(job_key) or {}).get("state") == "running":
             return jsonify({"error": "这一篇正在生成朗读，稍等", "tts": _tts_payload(job_dir, base)}), 409
-        _TTS_JOBS[job_dir] = {"state": "running", "done": 0, "total": 0, "note": "准备中"}
+        _TTS_JOBS[job_key] = {"state": "running", "done": 0, "total": 0, "note": "准备中"}
     force = bool((request.get_json(force=True, silent=True) or {}).get("force"))
     article = article_path.read_text(encoding="utf-8")
-    threading.Thread(target=_run_tts, args=(job_dir, base, article, cfg, force), daemon=True).start()
+    threading.Thread(target=_run_tts, args=(owner_id, job_dir, base, article, cfg, force), daemon=True).start()
     return jsonify({"state": "running", "tts": _tts_payload(job_dir, base)})
 
 
@@ -1370,7 +1409,7 @@ def api_tts_delete(job_dir: str):
         return jsonify({"error": "目录不存在"}), 404
     tts_mod.remove(base)
     with _TTS_LOCK:
-        _TTS_JOBS.pop(job_dir, None)
+        _TTS_JOBS.pop((_workspace().account_id, job_dir), None)
     return jsonify({"ok": True, "freed": tts_mod.TTS_DIR})
 
 
@@ -1476,6 +1515,12 @@ MAX_HISTORY_TURNS = 12             # 连续追问时最多带上多少轮（再�
 MAX_HISTORY_CHARS = 4000           # 单轮上限；解读本身也就几百字，这个够宽松了
 
 
+def get_ask(owner_id: str, ask_id: str) -> dict | None:
+    with _ASKS_LOCK:
+        job = _ASKS.get(ask_id)
+        return job if job and job.get("owner_id") == owner_id else None
+
+
 def _slim_ask(job: dict) -> dict:
     return {
         "id": job["id"],
@@ -1484,6 +1529,7 @@ def _slim_ask(job: dict) -> dict:
         "answer": job.get("answer") or "",
         "sources": job.get("sources"),
         "thread": job.get("thread") or "",
+        "usage": job.get("usage"),
         "error": job.get("error") or "",
     }
 
@@ -1552,16 +1598,19 @@ def api_ask():
 
     ask_id = uuid.uuid4().hex[:12]
     job = {
-        "id": ask_id, "dir": dir_name, "status": "running", "stage": "retrieve",
+        "id": ask_id, "owner_id": workspace.account_id,
+        "dir": dir_name, "status": "running", "stage": "retrieve",
         "selection": selection, "question": question, "web": use_web, "mode": mode,
         "thread": thread, "history": history,
         "answer": "", "deltas": [], "sources": None, "error": "", "at": time.time(),
+        "usage": None,
     }
     with _ASKS_LOCK:
         _ASKS[ask_id] = job
-        if len(_ASKS) > _MAX_ASKS:                      # 丢掉最老的已结束项
-            for old in sorted((j for j in _ASKS.values() if j["status"] != "running"),
-                              key=lambda j: j["at"])[: max(0, len(_ASKS) - _MAX_ASKS)]:
+        owned = [j for j in _ASKS.values() if j.get("owner_id") == workspace.account_id]
+        if len(owned) > _MAX_ASKS:                      # 每个账号只保留自己的最近提问
+            for old in sorted((j for j in owned if j["status"] != "running"),
+                              key=lambda j: j["at"])[: max(0, len(owned) - _MAX_ASKS)]:
                 _ASKS.pop(old["id"], None)
 
     def log(msg: str) -> None:
@@ -1609,6 +1658,7 @@ def api_ask():
                 memory=mem_text,
                 history=history,
                 settings_path=workspace.settings_path,
+                on_usage=lambda snapshot: job.update({"usage": snapshot}),
                 log=log,
                 on_delta=lambda t: job["deltas"].append(t),
             )
@@ -1621,6 +1671,7 @@ def api_ask():
                 "passages": result.get("passages") or passages,
                 "web": result.get("web") if result.get("web") is not None else web,
                 "memory": job["sources"].get("memory") or [],     # 保留下发时那份，别被覆盖掉
+                "usage": result.get("usage"),
             }
             if job["answer"]:
                 saved = qa_store.append(base, selection=selection, question=question,
@@ -1642,11 +1693,15 @@ def api_ask():
 @app.get("/api/ask/<ask_id>/stream")
 def api_ask_stream(ask_id: str):
     """SSE：sources（依据就绪）→ delta（逐段正文）→ done/error。"""
+    owner_id = _workspace().account_id
+    if get_ask(owner_id, ask_id) is None:
+        return jsonify({"error": "提问不存在或已过期"}), 404
     def gen():
         sent = 0
         sent_sources = False
+        last_usage = None
         while True:
-            job = _ASKS.get(ask_id)
+            job = get_ask(owner_id, ask_id)
             if not job:
                 yield _sse("error", {"error": "提问不存在或已过期"})
                 return
@@ -1657,6 +1712,9 @@ def api_ask_stream(ask_id: str):
             while sent < len(deltas):
                 yield _sse("delta", {"text": deltas[sent]})
                 sent += 1
+            if job.get("usage") and job["usage"] != last_usage:
+                last_usage = job["usage"]
+                yield _sse("usage", job["usage"])
             if job["status"] != "running":
                 yield _sse("done", {"status": job["status"], "answer": job.get("answer") or "",
                                     "error": job.get("error") or "",
@@ -1671,7 +1729,7 @@ def api_ask_stream(ask_id: str):
 @app.get("/api/ask/<ask_id>")
 def api_ask_get(ask_id: str):
     """轮询兜底（SSE 不可用时）。"""
-    job = _ASKS.get(ask_id)
+    job = get_ask(_workspace().account_id, ask_id)
     if not job:
         return jsonify({"error": "提问不存在或已过期"}), 404
     return jsonify(_slim_ask(job))
@@ -1890,14 +1948,19 @@ def api_status():
 
 @app.get("/api/usage")
 def api_usage():
-    """累计 token 与费用（扫一遍所有 usage.json）+ 当前任务的实时用量。"""
+    """当前账号累计用量与正在运行的任务用量。"""
     workspace = _workspace()
-    live = usage_mod.current()
+    live = None
+    with _JOBS_LOCK:
+        for job in _JOBS.values():
+            if job.get("owner_id") == workspace.account_id and job.get("status") == "running":
+                live = job.get("usage")
+                break
     return jsonify({
         "total": usage_mod.summary_over(workspace.output_root),
-        "live": usage_mod.describe(live.usage) if live else None,
+        "live": live,
         "prices": usage_mod.MODEL_PRICES,
-        "busy": _running_job_id() is not None,
+        "busy": _running_job_id(workspace.account_id) is not None,
     })
 
 
@@ -2033,9 +2096,10 @@ def api_queue_retry():
 @_readonly_guard
 def api_queue_run():
     """立刻跑一条排队中的任务（后台会自动接着跑剩下的）。"""
-    job_id = run_queue_once()
+    workspace = _workspace()
+    job_id = run_queue_once(workspace=workspace)
     if not job_id:
-        busy = _running_job_id()
+        busy = _running_job_id(workspace.account_id)
         return jsonify({"error": "当前有任务在跑" if busy else "队列里没有待跑的链接",
                         "busy": bool(busy)}), 409
     return jsonify({"job_id": job_id, "queue": queue_mod.snapshot()})
@@ -2189,9 +2253,9 @@ def check_feeds_now(*, enqueue: bool = True, workspace=None) -> dict:
     return result
 
 
-def run_queue_once() -> str | None:
+def run_queue_once(*, workspace=None) -> str | None:
     """取一条排队中的任务开跑，返回 job_id；没有可跑的返回 None。"""
-    if _running_job_id():
+    if _running_job_id(workspace.account_id if workspace is not None else None):
         return None
     item = queue_mod.next_pending()
     if not item:
@@ -2200,7 +2264,8 @@ def run_queue_once() -> str | None:
     if not claimed:
         return None
     return _new_job(claimed["url"], claimed.get("opts") or {},
-                    source=claimed.get("source") or "queue", queue_id=claimed["id"])
+                    source=claimed.get("source") or "queue", queue_id=claimed["id"],
+                    workspace=workspace)
 
 
 def _wait_job(job_id: str, timeout: float = 6 * 3600, poll: float = 0.5) -> dict | None:

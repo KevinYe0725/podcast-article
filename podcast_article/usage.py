@@ -16,8 +16,8 @@
 而是把命中/未命中/输出三类 token 分别落进「高峰」与「空闲」两个桶，
 费用在展示时再按价格表算 —— 这样以后调价或用户改单价，历史数据不用重算。
 
-运行时状态：`summarize._chat` 每次拿到 usage 就调 `note()`。活动记录器是模块级的，
-因为本程序同一时刻只跑一个任务（webapp 用 /api/jobs/current 保证，CLI 本来就是单次）。
+运行时状态：`summarize._chat` 每次拿到 usage 就调 `note()`。Web 请求显式传入自己的
+`Recorder`；模块级活动记录器只保留给没有显式 recorder 的本地 CLI / 兼容调用。
 """
 from __future__ import annotations
 
@@ -158,7 +158,9 @@ def load(workdir: Path) -> dict | None:
 
 
 def save(workdir: Path, usage: dict) -> None:
-    path_for(workdir).write_text(
+    path = path_for(workdir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
         json.dumps(usage, ensure_ascii=False, indent=2), encoding="utf-8"
     )
 
@@ -244,9 +246,10 @@ def current() -> Recorder | None:
     return _active
 
 
-def note(model: str | None, raw_usage, when: datetime | None = None) -> None:
-    """由 summarize._chat 调用：没有活动记录器时静默忽略（例如单测直接调 _chat）。"""
-    rec = _active
+def note(model: str | None, raw_usage, when: datetime | None = None, *,
+         recorder: Recorder | None = None) -> None:
+    """记录到显式任务记录器；保留旧全局记录器供本地 CLI 兼容。"""
+    rec = recorder if recorder is not None else _active
     if rec is not None:
         rec.note(model, raw_usage, when)
 

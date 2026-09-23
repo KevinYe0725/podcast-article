@@ -394,16 +394,20 @@ def test_usage_totals_from_saved_records(client, episode):
 
 def test_usage_reports_live_recorder(client):
     from podcast_article import usage
+    import webapp
 
-    usage.start("deepseek-flash")
-    try:
-        live = client.get("/api/usage").get_json()["live"]
-        assert live is not None, "有活动记录器时 live 不该是 None"
-        assert live["calls"] == 0, f"还没调用过模型，calls 应为 0，实际 {live['calls']}"
-        assert live["model"] == "deepseek-flash", f"模型名应回传，实际 {live['model']!r}"
-        assert live["cost_cny"] == 0.0, f"没有 token 时费用应为 0，实际 {live['cost_cny']}"
-    finally:
-        usage.stop()          # 全局状态必须还原，否则会污染别的用例
+    owner_id = client.get("/api/auth/me").get_json()["id"]
+    job_id = "usage-live-test"
+    webapp._JOBS[job_id] = {
+        "id": job_id, "owner_id": owner_id, "status": "running",
+        "usage": usage.describe(usage.empty("deepseek-flash")),
+    }
+    live = client.get("/api/usage").get_json()["live"]
+    assert live is not None, "当前账号有活动任务时 live 不该是 None"
+    assert live["calls"] == 0, f"还没调用过模型，calls 应为 0，实际 {live['calls']}"
+    assert live["model"] == "deepseek-flash", f"模型名应回传，实际 {live['model']!r}"
+    assert live["cost_cny"] == 0.0, f"没有 token 时费用应为 0，实际 {live['cost_cny']}"
+    webapp._JOBS.pop(job_id, None)
 
 
 # ------------------------------------------------------------------ 单篇导出
@@ -765,8 +769,9 @@ def test_settings_saves_subscriptions_and_ignores_unknown_keys(client, stores):
 def test_run_returns_409_when_job_running(client, monkeypatch):
     import webapp
 
+    owner_id = client.get("/api/auth/me").get_json()["id"]
     webapp._JOBS["job-busy001"] = {"id": "job-busy001", "url": "https://example.com/busy",
-                                   "status": "running"}
+                                   "owner_id": owner_id, "status": "running"}
     try:
         resp = client.post("/api/run", json={"url": "https://example.com/new"})
         assert resp.status_code == 409, f"已有任务在跑应 409，实际 {resp.status_code}"

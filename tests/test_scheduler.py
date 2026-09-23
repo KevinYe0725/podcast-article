@@ -82,7 +82,7 @@ def test_run_queue_once_claims_pending_item_and_forwards_fields(pa, monkeypatch)
 
     calls = []
 
-    def fake_new_job(url, opts, *, source="manual", queue_id=None):
+    def fake_new_job(url, opts, *, source="manual", queue_id=None, workspace=None):
         calls.append({"url": url, "opts": opts, "source": source, "queue_id": queue_id})
         return "job-fake001"
 
@@ -248,7 +248,7 @@ def discovered(monkeypatch):
 
     items = [_feed_item("第一集", pick=1), _feed_item("第二集", pick=2)]
 
-    def fake_check(fid=None, *, timeout=25.0):
+    def fake_check(fid=None, *, timeout=25.0, feeds_path=None):
         return [dict(i) for i in items]
 
     monkeypatch.setattr(feeds, "check", fake_check)

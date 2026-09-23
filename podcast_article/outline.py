@@ -298,6 +298,7 @@ THINKING_ALLOWANCE = 8000
 def _chat_stream(
     client, model: str, system: str, user: str, log, on_chars, max_tokens: int,
     thinking: bool = False, effort: str = "low",
+    usage_recorder=None,
 ) -> str:
     """与 summarize._chat 同构，但独立出来避免循环依赖。"""
     from .summarize import _chat
@@ -305,6 +306,7 @@ def _chat_stream(
     return _chat(
         client, model, system, user, log=log, max_tokens=max_tokens,
         on_chars=on_chars, temperature=0.9, thinking=thinking, reasoning_effort=effort,
+        usage_recorder=usage_recorder,
     )
 
 
@@ -315,6 +317,7 @@ def write_outlined(
     mode: str,
     log=print,
     progress=None,
+    usage_recorder=None,
 ) -> str:
     """分节写作主流程：大纲 → 开篇 → 逐节 → 结尾。返回完整 Markdown。"""
     plan = plan_for(mode)
@@ -334,6 +337,7 @@ def write_outlined(
         text = _chat_stream(
             client, model, system, f"{material}\n\n----\n\n{task}",
             log, lambda n: tick(base + n), cap, thinking=thinking, effort=effort,
+            usage_recorder=usage_recorder,
         )
         seen = base + len(text)
         # 撞上限会在半句话处断掉：再要一小段把它收尾（比截断后交稿好）

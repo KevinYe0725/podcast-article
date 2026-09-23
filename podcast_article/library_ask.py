@@ -56,8 +56,8 @@ def build(question: str, hits: list[dict], memories: list[str]) -> tuple[str, st
 
 
 def answer(question: str, hits: list[dict], memories: list[str],
-           *, max_tokens: int = 1200) -> str:
+           *, max_tokens: int = 1200, usage_recorder=None) -> str:
     """让模型就检索到的片段作答（**会调用模型，产生费用**）。"""
     from . import summarize
     system, user = build(question, hits, memories)
-    return summarize.ask_once(system, user, max_tokens=max_tokens)
+    return summarize.ask_once(system, user, max_tokens=max_tokens, usage_recorder=usage_recorder)

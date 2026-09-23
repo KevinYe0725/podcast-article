@@ -153,6 +153,33 @@ def auth_system(tmp_path, monkeypatch, test_admin_password_hash):
 
 
 @pytest.fixture()
+def two_user_clients(tmp_output, auth_system, test_admin_password_hash):
+    import hashlib
+    import time
+    from decimal import Decimal
+
+    from podcast_article.platform_store import AccountQuota
+
+    webapp, store, admin, password = auth_system
+    users = {}
+    for username in ("alice", "bob"):
+        token_hash = hashlib.sha256(f"test-invite-{username}".encode()).hexdigest()
+        store.create_invite(admin.id, token_hash,
+                            AccountQuota(3_600, Decimal("5.00"), 1_000_000, 5, 2_000_000),
+                            time.time() + 3_600)
+        account = store.register_invite(token_hash, username, test_admin_password_hash, now=time.time())
+        client = webapp.app.test_client()
+        response = client.post("/api/auth/login", json={"username": username, "password": password})
+        assert response.status_code == 200
+        users[username] = {
+            "client": client,
+            "account": account,
+            "workspace": workspace_for(account.id, data_root()),
+        }
+    return users
+
+
+@pytest.fixture()
 def guest_client(auth_system):
     webapp, _, _, _ = auth_system
     with webapp.app.test_client() as c:

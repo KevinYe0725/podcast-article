@@ -713,7 +713,8 @@ def _tee_client(client, on_delta, log=print):
 
 
 def _call_model(*, system: str, user: str, model: str, log=print, on_delta=None,
-                max_tokens: int | None = None, history: list[dict] | None = None) -> str:
+                max_tokens: int | None = None, history: list[dict] | None = None,
+                usage_recorder: usage.Recorder | None = None) -> str:
     """流式调用，返回正文全文（复用 summarize._chat 的全部既有约定）。"""
     client = _client()
     return _chat(
@@ -722,6 +723,7 @@ def _call_model(*, system: str, user: str, model: str, log=print, on_delta=None,
         log=log, max_tokens=max_tokens or answer_limits()[1], temperature=ANSWER_TEMPERATURE,
         thinking=False,   # 关思考：抽屉场景要的是快而稳，且关掉后 temperature 才生效
         history=history,  # 连续追问：把之前的轮次按真实角色带上（见 _chat 的说明）
+        usage_recorder=usage_recorder,
     )
 
 
@@ -893,38 +895,31 @@ def _profile(settings_path: Path | None = None) -> str:
         return ""
 
 
-def _start_usage(workdir: Path | None, model: str, log=print) -> bool:
-    """需要时开一个用量记录器；返回「是不是我们开的」（决定要不要 stop）。
-
-    两条纪律：
-    - 已经有活动记录器（批量任务正在跑）就**不碰它**：usage 的活动记录器是模块级全局的，
-      抢过来再 stop() 会把别人正在记的账一起收掉，也会把它的落盘目录搞错
-    - 自己开的时候先把这一集已有的 usage.json 作为起点读进来：这次的 token 是**累加**到
-      那一集的账上，而不是把生成文章时记的用量覆盖掉
-    """
+def _start_usage(workdir: Path | None, model: str, log=print, on_update=None):
+    """为当前提问创建独立记录器，不读取或抢占别的请求的活动记录。"""
     if workdir is None:
-        return False
+        return usage.Recorder(model, on_update=on_update), False
     try:
-        if usage.current() is not None:
-            log("[deepdive] 已有用量记录器在跑：本次调用累加进它，不另开（避免打乱全局记账）")
-            return False
-        usage.start(model, workdir=Path(workdir), started=usage.load(workdir) or {})
-        return True
+        recorder = usage.Recorder(model, workdir=Path(workdir), on_update=on_update,
+                                  started=usage.load(workdir) or {})
+        return recorder, True
     except Exception as exc:
         log(f"[deepdive] 用量记录器启动失败，本次不记账（{type(exc).__name__}: {exc}）")
-        return False
+        return usage.Recorder(model, on_update=on_update), False
 
 
-def _stop_usage(started: bool, log=print) -> None:
-    """把记录器收掉（flush 会写进 workdir/usage.json）；失败只记日志，不抛。"""
-    if not started:
-        return
+def _stop_usage(recorder: usage.Recorder | None, owned: bool, log=print) -> dict:
+    """结束本次提问的独立记录器；失败只记日志，不抛。"""
+    if not recorder or not owned:
+        return recorder.usage if recorder else usage.empty()
     try:
-        snapshot = usage.stop()
+        snapshot = recorder.flush()
         log(f"[deepdive] 用量已记账（累计 {snapshot.get('out_tokens', 0)} 输出 tokens、"
             f"{snapshot.get('calls', 0)} 次调用）")
+        return snapshot
     except Exception as exc:
         log(f"[deepdive] 用量落盘失败（{type(exc).__name__}: {exc}）")
+        return recorder.usage
 
 
 # ---------------------------------------------------------------- 主入口
@@ -934,7 +929,8 @@ def stream_answer(*, workdir: Path | None, selection: str, question: str, title:
                   mode: str | None = None, log=print, on_delta=None, search=None,
                   memory: str = "",
                   history: list[dict] | None = None,
-                  settings_path: Path | None = None) -> dict:
+                  settings_path: Path | None = None, usage_recorder: usage.Recorder | None = None,
+                  on_usage=None) -> dict:
     """主入口（流式）。返回 `{"answer", "passages", "web", "error"}`。
 
     - 先 `retrieve()` 拿原文片段（query = 选中文字 + 疑问，两者都可能在讲他关心的词）；
@@ -967,7 +963,10 @@ def stream_answer(*, workdir: Path | None, selection: str, question: str, title:
         history=history,
     )
 
-    started = _start_usage(workdir, model, log)
+    if usage_recorder is None:
+        recorder, owns_recorder = _start_usage(workdir, model, log, on_update=on_usage)
+    else:
+        recorder, owns_recorder = usage_recorder, False
     pushed: list[str] = []          # 真正推给界面的文本（= 最终 answer）
     body = ""                       # 生成结果；generate() 抛异常时也要有值
     error = ""
@@ -1021,7 +1020,8 @@ def stream_answer(*, workdir: Path | None, selection: str, question: str, title:
 
         body = _call_model(system=system_override or system, user=user, model=model,
                            log=log, on_delta=emit,
-                           max_tokens=answer_limits(mode)[1], history=history)
+                           max_tokens=answer_limits(mode)[1], history=history,
+                           usage_recorder=recorder)
         if not buf and body:
             # 兜底：万一流里没有 content（例如上游换了实现），整段补发一次，
             # 保证「on_delta 收到的拼接」永远等于 answer
@@ -1064,7 +1064,7 @@ def stream_answer(*, workdir: Path | None, selection: str, question: str, title:
             push(partial)
             log(f"[deepdive] 已把中途生成的 {len(partial)} 字先交给界面")
     finally:
-        _stop_usage(started, log)
+        usage_snapshot = _stop_usage(recorder, owns_recorder, log)
 
     answer = "".join(pushed) or body
     if not answer and not error:
@@ -1075,4 +1075,5 @@ def stream_answer(*, workdir: Path | None, selection: str, question: str, title:
         meta = answer_problems(answer)
         if meta:
             log(f"[deepdive] ⚠ 回答里有 {len(meta)} 处交代出处的话：" + "；".join(m[:30] for m in meta))
-    return {"answer": answer, "passages": passages, "web": web, "error": error}
+    return {"answer": answer, "passages": passages, "web": web, "error": error,
+            "usage": usage.describe(usage_snapshot) if usage_snapshot else None}
