@@ -50,6 +50,23 @@ def tmp_output(tmp_path, monkeypatch):
 
 
 @pytest.fixture()
+def platform_store(tmp_path):
+    from podcast_article.platform_store import PlatformStore
+
+    return PlatformStore(tmp_path / "platform.sqlite")
+
+
+@pytest.fixture()
+def platform_admin(platform_store):
+    return platform_store.bootstrap_admin("admin", "$argon2id$test-admin", now=1_000)
+
+
+@pytest.fixture()
+def platform_password_hash():
+    return "$argon2id$test-member"
+
+
+@pytest.fixture()
 def episode(tmp_output):
     """造一集假记录（文章 + 音频 + 文字稿 + meta）。"""
     d = tmp_output / "20240101-测试台-测试单集"
