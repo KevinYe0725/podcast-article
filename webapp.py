@@ -18,11 +18,12 @@ from pathlib import Path
 from urllib.parse import quote
 
 import markdown
-from flask import Flask, Response, jsonify, request, send_file, send_from_directory
+from flask import Flask, Response, jsonify, redirect, request, send_file, send_from_directory
 
 from podcast_article import library as library_mod
 from podcast_article import library_ask
 from podcast_article import mcp_client, mcp_config, notion
+from podcast_article import object_storage
 from podcast_article import publish as publish_mod
 from podcast_article import qa_store
 from podcast_article import settings as settings_mod
@@ -114,7 +115,10 @@ def _new_job(url: str, opts: dict, *, source: str = "manual",
                 url=url,
                 output_dir=OUTPUT_ROOT,
                 language=lang,
-                backend=opts.get("backend") or defaults.get("backend") or "auto",
+                backend=(opts.get("backend")
+                         or os.environ.get("PA_ASR_BACKEND")
+                         or defaults.get("backend")
+                         or "auto"),
                 asr_model=(opts.get("model") or defaults.get("asr_model") or None),
                 llm_model=(opts.get("llm_model") or defaults.get("llm_model") or None),
                 no_subs=bool(opts.get("no_subs", defaults.get("no_subs"))),
@@ -1124,9 +1128,18 @@ def api_audio(job_dir: str):
     if not job_dir or not base.is_dir() or OUTPUT_ROOT.resolve() not in base.parents:
         return jsonify({"error": "目录不存在"}), 404
     path = _audio_path(base)
-    if not path:
-        return jsonify({"error": "这一集没有本地音频"}), 404
-    return send_file(path, conditional=True, mimetype="audio/mp4")
+    if path:
+        return send_file(path, conditional=True, mimetype="audio/mp4")
+    try:
+        meta = json.loads((base / "meta.json").read_text(encoding="utf-8"))
+        object_key = meta.get("audio_object_key")
+        if object_key:
+            storage = object_storage.ObjectStorage()
+            if storage.exists(object_key):
+                return redirect(storage.signed_url(object_key), code=302)
+    except (OSError, json.JSONDecodeError, RuntimeError):
+        pass
+    return jsonify({"error": "这一集没有可用音频"}), 404
 
 
 # ---------------------------------------------------------------- AI 阅读助手
@@ -1487,7 +1500,7 @@ def _library_items() -> list[dict]:
             "url": meta.get("url") or "",
             "has_article": (d / "article.md").exists(),
             "has_transcript": (d / "transcript.txt").exists(),
-            "has_audio": _audio_path(d) is not None,
+            "has_audio": _audio_path(d) is not None or bool(meta.get("audio_object_key")),
             "has_cover": cover_mod.find(d) is not None,
         }
         try:

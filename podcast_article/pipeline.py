@@ -10,7 +10,7 @@ from pathlib import Path
 
 import requests
 
-from . import config, cover as cover_mod, summarize, transcribe, usage
+from . import config, cover as cover_mod, object_storage, summarize, transcribe, usage
 from . import subtitles as subs
 from .sources import resolve
 from .sources.ytdlp_src import download_audio
@@ -97,6 +97,7 @@ class Pipeline:
         progress=None,
         on_usage=None,
         episode: dict | None = None,
+        object_storage_client=None,
     ):
         self.url = url
         self.output_dir = output_dir
@@ -116,6 +117,19 @@ class Pipeline:
         self.progress = progress  # progress(stage: str, data: dict)
         self.on_usage = on_usage  # on_usage(usage: dict)，每次 LLM 调用后回调（用于实时显示花费）
         self.episode = episode    # 预先解析好的单集快照（订阅发现时固定下来，见 webapp）
+        self.object_storage = object_storage_client
+
+    def _cloud_storage(self):
+        if self.object_storage is None:
+            self.object_storage = object_storage.ObjectStorage()
+        return self.object_storage
+
+    @staticmethod
+    def _update_meta(workdir: Path, values: dict) -> None:
+        path = workdir / "meta.json"
+        current = _read_json(path) if path.exists() else {}
+        current.update(values)
+        _write_json(path, current)
 
     # ------------------------------------------------------------ 阶段 1：元信息
 
@@ -164,7 +178,10 @@ class Pipeline:
         existing = [p for p in existing if p.suffix != ".part"]
         if existing:
             self.log(f"[audio] 复用已下载音频：{existing[0].name}")
-            return existing[0]
+            path = existing[0]
+            if self.backend == "cloud":
+                self._archive_audio(path, workdir)
+            return path
 
         # 上次断在中途时残留的 audio.mp3.part / audio.m4a.part 不会删：先告诉用户会续传
         partial = [p for p in sorted(workdir.glob("audio.*")) if p.suffix == ".part"]
@@ -196,7 +213,28 @@ class Pipeline:
         if path.suffix == ".part":
             raise RuntimeError(f"音频下载不完整：{path}")
         self.log(f"[audio] 完成：{path.name}")
+        if self.backend == "cloud":
+            self._archive_audio(path, workdir)
         return path
+
+    def _archive_audio(self, path: Path, workdir: Path) -> None:
+        storage = self._cloud_storage()
+        existing_meta = _read_json(workdir / "meta.json") if (workdir / "meta.json").exists() else {}
+        key = existing_meta.get("audio_object_key") or storage.object_key(path, workdir.name)
+        if not storage.exists(key):
+            ref = storage.put_file(path, key)
+            self.log(f"[audio] OSS 归档：{ref.key}")
+            values = {
+                "audio_storage": "oss",
+                "audio_object_key": ref.key,
+                "audio_content_type": ref.content_type,
+                "audio_size": ref.size,
+                "audio_sha256": ref.sha256,
+            }
+        else:
+            self.log(f"[audio] 复用 OSS 归档：{key}")
+            values = {"audio_storage": "oss", "audio_object_key": key}
+        self._update_meta(workdir, values)
 
     # ------------------------------------------------------------ 阶段 3：文字稿
 
@@ -215,11 +253,19 @@ class Pipeline:
 
         if not segments:
             self.log("[text] 平台无可用字幕（或已禁用），进入本地语音转写…")
+            audio_url = None
+            if self.backend == "cloud":
+                meta = _read_json(workdir / "meta.json")
+                key = meta.get("audio_object_key")
+                if not key:
+                    raise RuntimeError("云端转写缺少 OSS 音频对象")
+                audio_url = self._cloud_storage().signed_url(key)
             segments = transcribe.transcribe(
                 audio_file,
                 language=self.language,
                 backend=self.backend,
                 model=self.asr_model,
+                audio_url=audio_url,
                 log=self.log,
                 progress=self.progress,
             )

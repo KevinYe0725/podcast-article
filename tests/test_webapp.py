@@ -80,6 +80,30 @@ def test_audio_missing_returns_404(client):
     assert client.get("/api/audio/不存在的目录").status_code == 404
 
 
+def test_audio_redirects_to_oss_when_local_copy_is_missing(client, episode, monkeypatch):
+    import webapp
+
+    (episode / "audio.m4a").unlink()
+    meta_path = episode / "meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["audio_object_key"] = "podcast-article/audio/test.mp3"
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+
+    class FakeStorage:
+        def exists(self, key):
+            assert key == "podcast-article/audio/test.mp3"
+            return True
+
+        def signed_url(self, key, *, expires=900):
+            return f"https://oss.example/{key}?expires={expires}"
+
+    monkeypatch.setattr(webapp.object_storage, "ObjectStorage", lambda: FakeStorage())
+    response = client.get("/api/audio/20240101-测试台-测试单集")
+
+    assert response.status_code == 302
+    assert response.headers["Location"].startswith("https://oss.example/")
+
+
 def test_delete_article_only_keeps_audio(client, episode):
     resp = client.delete("/api/episode/20240101-测试台-测试单集", json={"scope": "article"})
     assert resp.status_code == 200 and resp.get_json()["freed"] > 0
