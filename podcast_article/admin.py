@@ -125,7 +125,10 @@ def _run(args: argparse.Namespace) -> int:
         print(f"PA_USER_SECRETS_KEY added to {args.env_file}")
         return 0
 
-    store = _store()
+    if args.command == "migrate-legacy" and args.dry_run:
+        store = PlatformStore(data_root() / "platform.sqlite", read_only=True)
+    else:
+        store = _store()
     if args.command == "migrate-legacy":
         account = _find_account(store, args.owner)
         migrator = LegacyMigrator(data_root=data_root(), platform_store=store)

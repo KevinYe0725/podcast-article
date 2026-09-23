@@ -175,8 +175,13 @@ def _account_from_row(row: sqlite3.Row) -> Account:
 
 
 class PlatformStore:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, *, read_only: bool = False):
         self.path = Path(path)
+        self.read_only = read_only
+        if read_only:
+            if not self.path.is_file():
+                raise FileNotFoundError(self.path)
+            return
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._connection() as db:
             db.executescript(
@@ -297,7 +302,11 @@ class PlatformStore:
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
-        db = sqlite3.connect(self.path, timeout=10, isolation_level=None)
+        if self.read_only:
+            uri = self.path.resolve().as_uri() + "?mode=ro"
+            db = sqlite3.connect(uri, uri=True, timeout=10, isolation_level=None)
+        else:
+            db = sqlite3.connect(self.path, timeout=10, isolation_level=None)
         db.row_factory = sqlite3.Row
         db.execute("PRAGMA foreign_keys=ON")
         db.execute("PRAGMA busy_timeout=10000")
@@ -308,6 +317,8 @@ class PlatformStore:
 
     @contextmanager
     def _transaction(self) -> Iterator[sqlite3.Connection]:
+        if self.read_only:
+            raise RuntimeError("read-only platform store does not support transactions")
         with self._connection() as db:
             db.execute("BEGIN IMMEDIATE")
             try:

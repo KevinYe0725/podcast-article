@@ -309,18 +309,19 @@ Design choices worth knowing:
 
 ### 1. Web UI (recommended)
 
-Before the first run, initialize a local encryption key and the administrator account. The CLI generates the key into `.env` without printing it; it asks for the admin password through a secure prompt:
+Before the first run, initialize a local encryption key and the administrator account. Keep the user-credential encryption key in its own `.local-secrets.env` file. The CLI writes it with `0600` permissions without printing it. Since the project `.env` loader deliberately skips this host-only key, load it explicitly in the same terminal session before bootstrapping the account and starting the Web app:
 
 ```bash
-uv run podcast-admin secrets-key --env-file .env
+uv run podcast-admin secrets-key --env-file .local-secrets.env
+chmod 600 .local-secrets.env
+set -a
+. ./.local-secrets.env
+set +a
 uv run podcast-admin bootstrap --username kevin
-```
-
-Then start the Web app. Run these initialization commands once. `PA_USER_SECRETS_KEY` encrypts per-account integration credentials; losing it makes saved credentials unreadable. Never commit `.env`.
-
-```bash
 uv run python webapp.py    # open http://127.0.0.1:8787
 ```
+
+After registering once, load `.local-secrets.env` in the terminal before each later Web start (the `set -a` and `.` commands above). This file is Git-ignored; never commit it. `PA_USER_SECRETS_KEY` encrypts per-account integration credentials; losing it makes saved credentials unreadable.
 
 Paste a link → a four-stage timeline advances in real time (download / ASR / LLM percentages and ETAs) and then **collapses into a one-line summary** (elapsed time / download size / segments / characters) that you can re-expand → the finished article **opens on its own full-page reading view** (header is just "back + show · title + this article's cost", with a reading-progress line on top; transcript can be shown **side by side**). Then pick a publish target and send it to Notion or any MCP tool.
 

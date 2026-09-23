@@ -119,6 +119,33 @@ def test_legacy_migration_imports_queue_state_for_owner(legacy_tree, migration):
     assert by_url["https://example.com/old"].dir_name == "old-episode"
 
 
+def test_legacy_migration_imports_committed_kb_wal_row_and_dry_run_preserves_source(legacy_tree, migration):
+    source, project, data_root, owner_id = legacy_tree
+    database = source / "kb.sqlite"
+    connection = sqlite3.connect(database)
+    connection.execute("PRAGMA journal_mode=WAL")
+    connection.execute("PRAGMA wal_autocheckpoint=0")
+    connection.execute("CREATE TABLE memory (id INTEGER PRIMARY KEY, content TEXT NOT NULL)")
+    connection.execute("INSERT INTO memory(content) VALUES ('committed in WAL')")
+    connection.commit()
+    wal = Path(str(database) + "-wal")
+    assert wal.exists() and wal.stat().st_size > 0
+    before = {p: p.read_bytes() for p in source.rglob("*") if p.is_file()}
+    before_paths = set(before)
+    try:
+        migration.dry_run(source, project, owner_id)
+        assert {p: p.read_bytes() for p in before} == before
+        assert {p for p in source.rglob("*") if p.is_file()} == before_paths
+        migration.apply(source, project, owner_id)
+        assert {p: p.read_bytes() for p in before if not p.name.endswith("-shm")} == {
+            p: content for p, content in before.items() if not p.name.endswith("-shm")
+        }
+        with sqlite3.connect(data_root / "users" / owner_id / "kb.sqlite") as imported:
+            assert imported.execute("SELECT content FROM memory").fetchone() == ("committed in WAL",)
+    finally:
+        connection.close()
+
+
 def test_admin_migrate_legacy_dry_run_resolves_owner_and_prints_inventory(legacy_tree, monkeypatch, capsys):
     source, project, data_root, owner_id = legacy_tree
     store = PlatformStore(data_root / "platform.sqlite")
@@ -129,3 +156,28 @@ def test_admin_migrate_legacy_dry_run_resolves_owner_and_prints_inventory(legacy
     output = capsys.readouterr().out
     assert owner_id in output
     assert "2 episodes" in output
+
+
+def test_admin_migration_dry_run_uses_existing_store_read_only(legacy_tree, monkeypatch, capsys):
+    source, project, data_root, owner_id = legacy_tree
+    database = data_root / "platform.sqlite"
+    before = database.read_bytes()
+    monkeypatch.setattr(admin, "data_root", lambda: data_root)
+    monkeypatch.setattr(admin, "_store", lambda: pytest.fail("dry-run must not initialize PlatformStore"))
+    assert admin.main(["migrate-legacy", "--source-root", str(source),
+                       "--legacy-project-root", str(project), "--owner", "kevin", "--dry-run"]) == 0
+    assert database.read_bytes() == before
+    capsys.readouterr()
+
+
+def test_admin_migration_dry_run_does_not_create_missing_platform_store(tmp_path, monkeypatch, capsys):
+    data_root = tmp_path / "missing-data"
+    source = tmp_path / "empty-source"
+    project = tmp_path / "empty-project"
+    source.mkdir()
+    project.mkdir()
+    monkeypatch.setattr(admin, "data_root", lambda: data_root)
+    assert admin.main(["migrate-legacy", "--source-root", str(source),
+                       "--legacy-project-root", str(project), "--owner", "kevin", "--dry-run"]) == 1
+    assert not data_root.exists()
+    assert "platform.sqlite" in capsys.readouterr().err

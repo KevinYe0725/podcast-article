@@ -8,7 +8,9 @@ import os
 import re
 import shutil
 import sqlite3
+import tempfile
 import time
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -100,7 +102,8 @@ class LegacyMigrator:
     def _stored_digest(self, owner_id: str) -> str | None:
         if not self.marker_path.exists():
             return None
-        with sqlite3.connect(self.marker_path) as db:
+        uri = self.marker_path.resolve().as_uri() + "?mode=ro"
+        with sqlite3.connect(uri, uri=True) as db:
             exists = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='legacy_migrations'").fetchone()
             if not exists:
                 return None
@@ -115,7 +118,31 @@ class LegacyMigrator:
             with source.open("rb") as stream:
                 for chunk in iter(lambda: stream.read(1024 * 1024), b""):
                     digest.update(chunk)
+            if relative == Path("kb.sqlite"):
+                wal_path = Path(str(source) + "-wal")
+                digest.update(b"wal\0")
+                if wal_path.is_file():
+                    with wal_path.open("rb") as stream:
+                        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                            digest.update(chunk)
             digest.update(b"\0")
+        return digest.hexdigest()
+
+    @staticmethod
+    def _sqlite_backup(source: Path, destination: Path) -> None:
+        source_uri = source.resolve().as_uri() + "?mode=ro"
+        with closing(sqlite3.connect(source_uri, uri=True, timeout=10)) as source_db:
+            with closing(sqlite3.connect(destination)) as destination_db:
+                source_db.backup(destination_db)
+
+    @staticmethod
+    def _sqlite_content_digest(path: Path) -> str:
+        uri = path.resolve().as_uri() + "?mode=ro"
+        digest = hashlib.sha256()
+        with sqlite3.connect(uri, uri=True, timeout=10) as db:
+            for statement in db.iterdump():
+                digest.update(statement.encode("utf-8"))
+                digest.update(b"\n")
         return digest.hexdigest()
 
     @staticmethod
@@ -147,55 +174,71 @@ class LegacyMigrator:
         files = self._files(self._sources(source_root, legacy_project_root))
         if self.data_root.is_symlink():
             raise ValueError(f"conflict at destination {self.data_root}")
-        planned: list[tuple[Path, Path, bytes | None]] = []
-        for source, relative in files:
-            if relative.name.startswith(".") or relative.name in {".env", "integrations.enc"}:
-                continue
-            if relative == Path("queue.json"):
-                continue  # queue entries are normalized into the owner's platform job queue
-            content = self._sanitize_settings(source) if relative == Path("settings.json") else None
-            target = workspace.root / relative
-            for parent in target.parents:
-                if parent == self.data_root.parent:
-                    break
-                if parent.is_symlink():
-                    raise ValueError(f"conflict at destination {parent}")
-                if parent.exists() and not parent.is_dir():
-                    raise ValueError(f"conflict at destination {parent}")
-            if target.exists():
-                incoming = content if content is not None else source.read_bytes()
-                if target.is_symlink() or not target.is_file() or target.read_bytes() != incoming:
-                    raise ValueError(f"conflict at destination {target}")
-            planned.append((source, target, content))
-
-        self.data_root.mkdir(parents=True, exist_ok=True)
-        workspace.root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        try:
-            for source, target, content in planned:
-                if target.exists():
+        with tempfile.TemporaryDirectory(prefix="podcast-legacy-migration-") as staging:
+            planned: list[tuple[Path, Path, bytes | None]] = []
+            for source, relative in files:
+                if relative.name.startswith(".") or relative.name in {".env", "integrations.enc"}:
                     continue
-                target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-                temp = target.with_name(target.name + ".migrate-tmp")
-                if content is None:
-                    shutil.copyfile(source, temp)
-                else:
-                    temp.write_bytes(content)
-                os.chmod(temp, 0o600)
-                os.replace(temp, target)
-            self._import_queue(Path(source_root), Path(legacy_project_root), owner_id)
-            with sqlite3.connect(self.marker_path, timeout=10) as db:
-                db.execute("PRAGMA foreign_keys=ON")
-                db.execute("""CREATE TABLE IF NOT EXISTS legacy_migrations(
-                    owner_id TEXT PRIMARY KEY REFERENCES accounts(id),
-                    completed_at REAL NOT NULL,
-                    source_digest TEXT NOT NULL
-                )""")
-                digest = self._source_digest(self._sources(source_root, legacy_project_root))
-                db.execute("INSERT OR IGNORE INTO legacy_migrations(owner_id, completed_at, source_digest) VALUES(?,?,?)",
-                           (owner_id, time.time(), digest))
-        except Exception:
-            # Keep copied files so an interrupted import can safely resume; source remains untouched.
-            raise
+                if relative == Path("queue.json"):
+                    continue  # queue entries are normalized into the owner's platform job queue
+                content = self._sanitize_settings(source) if relative == Path("settings.json") else None
+                copy_source = source
+                if relative == Path("kb.sqlite"):
+                    copy_source = Path(staging) / "kb.sqlite"
+                    self._sqlite_backup(source, copy_source)
+                target = workspace.root / relative
+                for parent in target.parents:
+                    if parent == self.data_root.parent:
+                        break
+                    if parent.is_symlink():
+                        raise ValueError(f"conflict at destination {parent}")
+                    if parent.exists() and not parent.is_dir():
+                        raise ValueError(f"conflict at destination {parent}")
+                if target.exists():
+                    if target.is_symlink() or not target.is_file():
+                        raise ValueError(f"conflict at destination {target}")
+                    if relative == Path("kb.sqlite"):
+                        try:
+                            matches = self._sqlite_content_digest(target) == self._sqlite_content_digest(copy_source)
+                        except sqlite3.Error:
+                            matches = False
+                    else:
+                        incoming = content if content is not None else source.read_bytes()
+                        matches = target.read_bytes() == incoming
+                    if not matches:
+                        raise ValueError(f"conflict at destination {target}")
+                planned.append((copy_source, target, content))
+
+            self.data_root.mkdir(parents=True, exist_ok=True)
+            workspace.root.mkdir(parents=True, exist_ok=True, mode=0o700)
+            try:
+                for source, target, content in planned:
+                    if target.exists():
+                        continue
+                    target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                    temp = target.with_name(target.name + ".migrate-tmp")
+                    if content is None:
+                        shutil.copyfile(source, temp)
+                    else:
+                        temp.write_bytes(content)
+                    os.chmod(temp, 0o600)
+                    os.replace(temp, target)
+                self._import_queue(Path(source_root), Path(legacy_project_root), owner_id)
+                with sqlite3.connect(self.marker_path, timeout=10) as db:
+                    db.execute("PRAGMA foreign_keys=ON")
+                    db.execute("""CREATE TABLE IF NOT EXISTS legacy_migrations(
+                        owner_id TEXT PRIMARY KEY REFERENCES accounts(id),
+                        completed_at REAL NOT NULL,
+                        source_digest TEXT NOT NULL
+                    )""")
+                    digest = self._source_digest(self._sources(source_root, legacy_project_root))
+                    db.execute(
+                        "INSERT OR IGNORE INTO legacy_migrations(owner_id, completed_at, source_digest) VALUES(?,?,?)",
+                        (owner_id, time.time(), digest),
+                    )
+            except Exception:
+                # Keep copied files so an interrupted import can safely resume; source remains untouched.
+                raise
         return report
 
     def _import_queue(self, source_root: Path, legacy_project_root: Path, owner_id: str) -> None:

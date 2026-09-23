@@ -288,18 +288,19 @@ MCP 客户端（Claude Desktop、DSH 等）里对应 `search_library` / `ask_lib
 
 ### 1. Web 界面（推荐）
 
-首次运行需要初始化本地密钥和管理员账号。密钥由 CLI 生成并写入 `.env`（不会打印在终端）；管理员密码通过安全提示输入：
+首次运行需要初始化本地密钥和管理员账号。把用户凭据加密密钥单独保存在 `.local-secrets.env`；CLI 会以 `0600` 权限写入且不会打印密钥。由于项目 `.env` 加载器会跳过此主机专用密钥，需要在同一个终端会话中显式加载它，再创建账号并启动 Web：
 
 ```bash
-uv run podcast-admin secrets-key --env-file .env
+uv run podcast-admin secrets-key --env-file .local-secrets.env
+chmod 600 .local-secrets.env
+set -a
+. ./.local-secrets.env
+set +a
 uv run podcast-admin bootstrap --username kevin
-```
-
-完成后再启动 Web。此初始化只需执行一次；`PA_USER_SECRETS_KEY` 用于加密各账号的第三方集成凭据，丢失后已保存的凭据将无法解密。不要将 `.env` 提交到 Git。
-
-```bash
 uv run python webapp.py    # 打开 http://127.0.0.1:8787
 ```
+
+首次注册完成后，后续每次启动 Web 前都要在终端加载 `.local-secrets.env`（上面的 `set -a` 和 `.` 命令）。此文件已加入 Git 忽略规则；不要提交它。`PA_USER_SECRETS_KEY` 用于加密各账号的第三方集成凭据，丢失后已保存的凭据将无法解密。
 
 粘贴链接 → 四阶段时间线实时推进（下载 / 转写 / 精读的百分比与剩余时间）→ **自动进入该文章的独立阅读页**（整屏一页，顶栏只有「返回 + 节目 · 标题 + 本篇花费」，右上角一条阅读进度线；支持文章与文字稿**分栏对照**）。写完选发布目标，一键投递到 Notion 或任意 MCP 工具。
 
