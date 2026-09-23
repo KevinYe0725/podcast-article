@@ -57,7 +57,7 @@
 
 ## Task 1: Repair test isolation and make existing model tests credential-free
 
-**Files:** `tests/ui/run.sh`, `tests/test_cli_kb.py`, `tests/test_mcp_tools.py`
+**Files:** `tests/ui/run.sh`, `tests/test_install_scripts.py`, `tests/test_cli_kb.py`, `tests/test_mcp_tools.py`
 
 **Interfaces:** No product interfaces change. UI test processes receive `PA_KB_FILE` pointing inside their own temporary directory.
 
@@ -86,20 +86,36 @@ monkeypatch.setattr(summarize, "_chat", fake_chat)
 
 Run the command from Step 1. Expected: `2 passed`; no real OpenAI-compatible client or network request is created.
 
-- [ ] **Step 4: Isolate the UI runner's knowledge database.**
+- [ ] **Step 4: Add a failing test for UI-runner KB isolation.**
+
+In `tests/test_install_scripts.py`, assert the runner exports `PA_KB_FILE="$TMP/kb.sqlite"` and passes `PA_KB_FILE="$PA_KB_FILE"` into the child server environment.
+
+```python
+def test_ui_runner_isolates_knowledge_database():
+    script = (ROOT / "tests/ui/run.sh").read_text(encoding="utf-8")
+    assert 'export PA_KB_FILE="$TMP/kb.sqlite"' in script
+    assert 'PA_KB_FILE="$PA_KB_FILE"' in script
+```
+
+- [ ] **Step 5: Run the new isolation test and verify it fails.**
+
+Run: `uv run pytest tests/test_install_scripts.py::test_ui_runner_isolates_knowledge_database -q`  
+Expected: FAIL because the runner neither exports nor forwards `PA_KB_FILE`.
+
+- [ ] **Step 6: Isolate the UI runner's knowledge database.**
 
 Add `export PA_KB_FILE="$TMP/kb.sqlite"` to `tests/ui/run.sh` and pass `PA_KB_FILE="$PA_KB_FILE"` to the child `uv run python webapp.py` process.
 
-- [ ] **Step 5: Run the UI suite and check for repository pollution.**
+- [ ] **Step 7: Run the UI suite and check for repository pollution.**
 
 Run: `bash tests/ui/run.sh`
 
-Expected: all UI tests pass; no root-level `kb.sqlite` is created.
+Expected: all UI tests pass; no new root-level `kb.sqlite` is created.
 
-- [ ] **Step 6: Commit.**
+- [ ] **Step 8: Commit.**
 
 ```bash
-git add tests/ui/run.sh tests/test_cli_kb.py tests/test_mcp_tools.py
+git add tests/ui/run.sh tests/test_install_scripts.py tests/test_cli_kb.py tests/test_mcp_tools.py
 git commit -m "test: isolate UI knowledge database and LLM clients"
 ```
 
