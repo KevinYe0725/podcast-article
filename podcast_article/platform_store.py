@@ -181,6 +181,10 @@ class PlatformStore:
                     absolute_expires_at REAL NOT NULL,
                     revoked_at REAL
                 );
+                CREATE TABLE IF NOT EXISTS session_csrf (
+                    session_hash TEXT PRIMARY KEY REFERENCES sessions(token_hash) ON DELETE CASCADE,
+                    csrf_hash TEXT NOT NULL
+                );
                 CREATE INDEX IF NOT EXISTS sessions_by_user ON sessions(user_id, revoked_at);
                 CREATE TABLE IF NOT EXISTS login_attempts (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -281,6 +285,20 @@ class PlatformStore:
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (token_hash, created_by, now, float(expires_at), *values),
             )
+
+    def validate_invite(self, token_hash: str, now: float) -> None:
+        """Cheap read-only preflight; registration still rechecks and consumes atomically."""
+        _validate_token_hash(token_hash)
+        with self._connection() as db:
+            invite = db.execute("SELECT * FROM invites WHERE token_hash=?", (token_hash,)).fetchone()
+        if not invite:
+            raise InviteError("invalid")
+        if invite["revoked_at"] is not None:
+            raise InviteError("revoked")
+        if invite["used_at"] is not None:
+            raise InviteError("consumed")
+        if float(now) >= invite["expires_at"]:
+            raise InviteError("expired")
 
     def revoke_invite(self, token_hash: str, now: float | None = None) -> bool:
         _validate_token_hash(token_hash)
@@ -399,8 +417,11 @@ class PlatformStore:
         created_at: float,
         idle_expires_at: float,
         absolute_expires_at: float,
+        csrf_token_hash: str | None = None,
     ) -> None:
         _validate_token_hash(token_hash)
+        if csrf_token_hash is not None:
+            _validate_token_hash(csrf_token_hash)
         if idle_expires_at <= created_at or absolute_expires_at <= created_at:
             raise ValueError("session expiry must be after creation")
         with self._transaction() as db:
@@ -412,6 +433,40 @@ class PlatformStore:
                    VALUES (?, ?, ?, ?, ?)""",
                 (token_hash, user_id, float(created_at), float(idle_expires_at), float(absolute_expires_at)),
             )
+            if csrf_token_hash is not None:
+                db.execute(
+                    "INSERT INTO session_csrf(session_hash, csrf_hash) VALUES (?, ?)",
+                    (token_hash, csrf_token_hash),
+                )
+
+    def session_csrf_matches(self, token_hash: str, csrf_token_hash: str) -> bool:
+        _validate_token_hash(token_hash)
+        _validate_token_hash(csrf_token_hash)
+        with self._connection() as db:
+            row = db.execute(
+                """SELECT 1 FROM sessions AS s
+                   JOIN session_csrf AS c ON c.session_hash=s.token_hash
+                   JOIN accounts AS a ON a.id=s.user_id
+                   WHERE s.token_hash=? AND c.csrf_hash=? AND s.revoked_at IS NULL AND a.enabled=1""",
+                (token_hash, csrf_token_hash),
+            ).fetchone()
+            return row is not None
+
+    def set_session_csrf(self, token_hash: str, csrf_token_hash: str) -> bool:
+        _validate_token_hash(token_hash)
+        _validate_token_hash(csrf_token_hash)
+        with self._transaction() as db:
+            active = db.execute(
+                "SELECT 1 FROM sessions WHERE token_hash=? AND revoked_at IS NULL", (token_hash,)
+            ).fetchone()
+            if not active:
+                return False
+            db.execute(
+                """INSERT INTO session_csrf(session_hash, csrf_hash) VALUES (?, ?)
+                   ON CONFLICT(session_hash) DO UPDATE SET csrf_hash=excluded.csrf_hash""",
+                (token_hash, csrf_token_hash),
+            )
+            return True
 
     def resolve_session(self, token_hash: str, now: float) -> Account | None:
         _validate_token_hash(token_hash)

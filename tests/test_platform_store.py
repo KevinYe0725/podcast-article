@@ -74,6 +74,28 @@ def test_invite_rejects_invalid_expired_and_revoked_tokens(platform_store, platf
     assert revoked.value.code == "revoked"
 
 
+def test_invite_precheck_distinguishes_lifecycle_without_consuming_it(platform_store, platform_admin, platform_password_hash):
+    _, active_hash = _new_invite(platform_store, platform_admin)
+    assert platform_store.validate_invite(active_hash, now=1_000) is None
+    assert platform_store.validate_invite(active_hash, now=1_001) is None
+
+    _, expired_hash = _new_invite(platform_store, platform_admin, expires_at=1_000)
+    with pytest.raises(InviteError) as expired:
+        platform_store.validate_invite(expired_hash, now=1_000)
+    assert expired.value.code == "expired"
+
+    _, revoked_hash = _new_invite(platform_store, platform_admin)
+    platform_store.revoke_invite(revoked_hash, now=1_010)
+    with pytest.raises(InviteError) as revoked:
+        platform_store.validate_invite(revoked_hash, now=1_011)
+    assert revoked.value.code == "revoked"
+
+    platform_store.register_invite(active_hash, "alice", platform_password_hash, now=1_000)
+    with pytest.raises(InviteError) as consumed:
+        platform_store.validate_invite(active_hash, now=1_001)
+    assert consumed.value.code == "consumed"
+
+
 def test_invite_can_only_be_consumed_once_under_concurrent_registration(platform_store, platform_admin, platform_password_hash):
     _, token_hash = _new_invite(platform_store, platform_admin)
     barrier = Barrier(2)
@@ -107,6 +129,26 @@ def test_sessions_expire_and_can_be_revoked(platform_store, platform_admin):
     platform_store.create_session(platform_admin.id, another_hash, 1_000, 2_000, 3_000)
     assert platform_store.revoke_session(another_hash) is True
     assert platform_store.resolve_session(another_hash, now=1_001) is None
+
+
+def test_session_csrf_hash_is_bound_to_the_hashed_session(platform_store, platform_admin):
+    token_hash = hashlib.sha256(b"session-token").hexdigest()
+    csrf_hash = hashlib.sha256(b"csrf-token").hexdigest()
+    replacement_hash = hashlib.sha256(b"replacement-csrf").hexdigest()
+    platform_store.create_session(
+        platform_admin.id,
+        token_hash,
+        1_000,
+        2_000,
+        3_000,
+        csrf_token_hash=csrf_hash,
+    )
+
+    assert platform_store.session_csrf_matches(token_hash, csrf_hash)
+    assert not platform_store.session_csrf_matches(token_hash, replacement_hash)
+    assert platform_store.set_session_csrf(token_hash, replacement_hash)
+    assert platform_store.session_csrf_matches(token_hash, replacement_hash)
+    assert not platform_store.session_csrf_matches(token_hash, csrf_hash)
 
 
 def test_login_attempts_are_throttled_by_account_and_ip(platform_store):

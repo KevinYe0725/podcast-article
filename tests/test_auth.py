@@ -28,6 +28,13 @@ def test_password_policy_uses_utf8_bytes_and_allows_spaces():
         validate_new_password("short")
     with pytest.raises(ValueError):
         validate_new_password("密码" * 43)  # 258 UTF-8 bytes
+    with pytest.raises(ValueError):
+        validate_new_password("\ud800" * 12)
+
+
+def test_password_verification_rejects_non_utf8_surrogate_input():
+    encoded = hash_password("a long test passphrase")
+    assert not verify_password(encoded, "\ud800")
 
 
 @pytest.mark.parametrize("raw, expected", [(None, "/"), ("", "/"), ("/", "/"), ("/reader?q=one", "/reader?q=one")])

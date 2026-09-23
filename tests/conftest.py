@@ -22,10 +22,30 @@ import sys
 from pathlib import Path
 
 import pytest
+from flask.testing import FlaskClient
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+
+class AuthTestClient(FlaskClient):
+    """Flask test client that preserves Secure cookies and supplies double-submit CSRF."""
+    auto_csrf = True
+
+    def open(self, *args, **kwargs):
+        method = str(kwargs.get("method", "GET")).upper()
+        kwargs.setdefault("base_url", "https://localhost")
+        if method in {"POST", "PUT", "PATCH", "DELETE"} and self.auto_csrf:
+            cookie = self.get_cookie("pa_csrf")
+            token = cookie.value if cookie else None
+            if not token:
+                response = self.get("/api/auth/csrf")
+                token = (response.get_json() or {}).get("csrf_token")
+            headers = dict(kwargs.get("headers") or {})
+            headers.setdefault("X-CSRF-Token", token or "")
+            kwargs["headers"] = headers
+        return super().open(*args, **kwargs)
 
 
 @pytest.fixture()
@@ -93,13 +113,47 @@ def episode(tmp_output):
 
 
 @pytest.fixture()
-def client(tmp_output, episode, monkeypatch):
-    """指向临时输出目录的 Flask 测试客户端。"""
+def auth_system(tmp_path, monkeypatch):
     import importlib
 
+    from podcast_article.auth import hash_password
+    from podcast_article.platform_store import PlatformStore
+
+    data = tmp_path / "auth-data"
+    monkeypatch.setenv("PA_DATA_ROOT", str(data))
+    monkeypatch.setenv("PA_COOKIE_SECURE", "1")
+    monkeypatch.delenv("PA_COOKIE_DOMAIN", raising=False)
     import webapp
 
-    importlib.reload(webapp)          # 让 OUTPUT_ROOT 读取新的 PA_OUTPUT_DIR
-    webapp.app.config.update(TESTING=True)
+    importlib.reload(webapp)
+    store = PlatformStore(data / "platform.sqlite")
+    password = "test administrator passphrase"
+    admin = store.bootstrap_admin("test-admin", hash_password(password), now=1_700_000_000)
+    webapp.app.config.update(
+        TESTING=True,
+        PLATFORM_STORE=store,
+        PA_COOKIE_SECURE=True,
+        PA_COOKIE_DOMAIN=None,
+        PA_SESSION_IDLE_SECONDS=12 * 60 * 60,
+        PA_SESSION_ABSOLUTE_SECONDS=7 * 24 * 60 * 60,
+    )
+    webapp.app.test_client_class = AuthTestClient
+    return webapp, store, admin, password
+
+
+@pytest.fixture()
+def guest_client(auth_system):
+    webapp, _, _, _ = auth_system
     with webapp.app.test_client() as c:
+        yield c
+
+
+@pytest.fixture()
+def client(tmp_output, episode, auth_system):
+    """Existing route tests run as a real test administrator, not as a guest."""
+    webapp, _, _, password = auth_system
+    with webapp.app.test_client() as c:
+        login = c.post("/api/auth/login", json={"username": "test-admin", "password": password})
+        assert login.status_code == 200, login.get_data(as_text=True)
+        webapp.app.config.update(TESTING=True)
         yield c

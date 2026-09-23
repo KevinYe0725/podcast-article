@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import ipaddress
 import os
 import shlex
 import re
@@ -12,14 +13,17 @@ import shutil
 import tempfile
 import threading
 import time
+import unicodedata
 import uuid
 from functools import wraps
 from pathlib import Path
 from urllib.parse import quote
 
 import markdown
-from flask import Flask, Response, jsonify, redirect, request, send_file, send_from_directory
+from flask import Flask, Response, g, jsonify, make_response, redirect, request, send_file, send_from_directory, url_for
 
+from podcast_article import auth as auth_mod
+from podcast_article.platform_store import InviteError, normalize_username
 from podcast_article import library as library_mod
 from podcast_article import library_ask
 from podcast_article import mcp_client, mcp_config, notion
@@ -40,12 +44,58 @@ from podcast_article import tts as tts_mod
 from podcast_article.config import PROJECT_ROOT
 from podcast_article.util import ts_clock
 from podcast_article.pipeline import Pipeline
+from podcast_article.workspace import data_root, workspace_for
 
 # 输出根目录，可用 PA_OUTPUT_DIR 覆盖（测试用独立目录，避免碰真实数据）
 OUTPUT_ROOT = Path(os.environ.get("PA_OUTPUT_DIR") or (PROJECT_ROOT / "output"))
 WEB_DIR = PROJECT_ROOT / "web"
 
 app = Flask(__name__, static_folder=str(WEB_DIR), static_url_path="/static")
+app.config.update(
+    PA_SESSION_IDLE_SECONDS=int(os.environ.get("PA_SESSION_IDLE_SECONDS", 12 * 60 * 60)),
+    PA_SESSION_ABSOLUTE_SECONDS=int(os.environ.get("PA_SESSION_ABSOLUTE_SECONDS", 7 * 24 * 60 * 60)),
+    PA_COOKIE_DOMAIN=os.environ.get("PA_COOKIE_DOMAIN") or None,
+    PA_TRUSTED_PROXY=(os.environ.get("PA_TRUSTED_PROXY", "").strip().lower() in {"1", "true", "yes", "on"}),
+    PA_COOKIE_SECURE=(
+        os.environ.get("PA_COOKIE_SECURE", "").strip().lower() in {"1", "true", "yes", "on"}
+        if "PA_COOKIE_SECURE" in os.environ
+        else bool(os.environ.get("PA_COOKIE_DOMAIN"))
+    ),
+)
+
+_PUBLIC_ENDPOINTS = {
+    "login_page", "invite_page", "api_auth_login", "api_auth_register",
+    "api_auth_logout", "api_auth_me", "api_auth_csrf", "static", "favicon",
+}
+_AUTH_ONLY_ENDPOINTS = {"api_auth_me", "api_auth_password", "api_auth_logout", "api_auth_csrf"}
+
+
+@app.before_request
+def authenticate_request():
+    endpoint = request.endpoint
+    account = auth_mod.resolve_request(request)
+
+    if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+        if not auth_mod.csrf_request_valid(request, account):
+            return jsonify({"error": "csrf_failed"}), 403
+
+    if endpoint in _PUBLIC_ENDPOINTS:
+        if account is not None:
+            g.current_user = account
+        return None
+
+    if account is None:
+        if request.path.startswith("/api/"):
+            return jsonify({"error": "authentication_required"}), 401
+        return redirect(url_for("login_page", next=auth_mod.safe_next_path(request.full_path)))
+
+    g.current_user = account
+    g.workspace = workspace_for(account.id, data_root())
+    if account.must_change_password and endpoint not in _AUTH_ONLY_ENDPOINTS:
+        if request.path.startswith("/api/"):
+            return jsonify({"error": "password_change_required"}), 403
+        return redirect(url_for("login_page", must_change="1"))
+    return None
 
 # ---------------------------------------------------------------- 只读镜像
 #
@@ -69,6 +119,248 @@ def _readonly_guard(fn):
         return fn(*args, **kwargs)
 
     return wrapper
+
+
+_LOGIN_PAGE_HTML = """<!doctype html><html lang="zh-CN"><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Podcast Article · 登录</title>
+<style>
+@font-face{font-family:Inter;src:url('/static/fonts/inter-400.woff2') format('woff2');font-weight:400;font-display:swap}@font-face{font-family:Inter;src:url('/static/fonts/inter-600.woff2') format('woff2');font-weight:600;font-display:swap}
+*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f7f7f8;color:#0d0d0d;font:15px/1.6 Inter,system-ui,sans-serif}
+main{width:min(94vw,920px);min-height:540px;display:grid;grid-template-columns:1fr 1fr;border:1px solid #ececf1;background:#fff;border-radius:14px;overflow:hidden}
+.identity{padding:42px;background:#0d0d0d;color:#fff;display:flex;flex-direction:column;justify-content:space-between}.wordmark{display:flex;align-items:center;gap:12px;font:600 11px/1.2 ui-monospace,monospace;letter-spacing:.15em}.wave{height:35px;display:flex;align-items:center;gap:3px}.wave i{display:block;width:3px;border-radius:2px;background:#10a37f}.manifest{margin:54px 0}.eyebrow,.foot,.formbrand{font:11px/1.4 ui-monospace,monospace;letter-spacing:.12em;text-transform:uppercase}.eyebrow{color:#10a37f}h2{font-size:30px;line-height:1.25;letter-spacing:-.045em;margin:14px 0 12px}.manifest p:last-child{max-width:310px;color:#b4b4bc;font-size:14px}.foot{color:#8f8f8f}
+.form-panel{padding:52px 48px;display:flex;flex-direction:column;justify-content:center}.formbrand{color:#8f8f8f}h1{font-size:26px;letter-spacing:-.04em;margin:13px 0 5px}p{color:#6e6e80;margin:0 0 25px}label{display:block;font-size:13px;margin:16px 0 6px}input{width:100%;height:46px;padding:0 12px;border:1px solid #d9d9e0;border-radius:7px;font:inherit;color:#0d0d0d}input:focus{outline:2px solid #10a37f;outline-offset:1px}button{margin-top:22px;width:100%;height:46px;border:0;border-radius:7px;background:#0d0d0d;color:#fff;font:600 14px Inter,system-ui,sans-serif;cursor:pointer;transition:background .15s}button:hover{background:#10a37f}button:focus-visible{outline:3px solid #10a37f;outline-offset:3px}.status{min-height:24px;margin-top:14px;color:#c43f32;font-size:14px}section[hidden]{display:none}.hint{font:11px/1.5 ui-monospace,monospace;color:#8f8f8f;margin-top:24px}.status:empty{min-height:0}
+@media(max-width:680px){body{display:block;padding:14px}main{width:100%;min-height:0;grid-template-columns:1fr;margin:0 auto}.identity{padding:24px 25px 22px}.manifest{margin:28px 0 18px}h2{font-size:24px}.foot{display:none}.form-panel{padding:28px 25px 30px}}
+</style><main><aside class="identity"><div class="wordmark"><span class="wave" aria-hidden="true"><i style="height:9px"></i><i style="height:18px"></i><i style="height:27px"></i><i style="height:14px"></i><i style="height:33px"></i><i style="height:21px"></i><i style="height:11px"></i><i style="height:25px"></i><i style="height:8px"></i></span>PODCAST ARTICLE</div><div class="manifest"><div class="eyebrow">PRIVATE LISTENING LIBRARY</div><h2>把时间留给<br>值得听的内容。</h2><p>播客文章、回听线索与听后想法，按账号独立保存。</p></div><div class="foot">ACCOUNT-LEVEL STORAGE · INVITE ONLY</div></aside><section class="form-panel"><div class="formbrand">ACCOUNT ACCESS</div>
+<section id="login"><h1>欢迎回来</h1><p>登录后继续使用你的播客文章库。</p><form id="login-form">
+<label for="username">用户名</label><input id="username" name="username" autocomplete="username" required>
+<label for="password">密码</label><input id="password" name="password" type="password" autocomplete="current-password" required>
+<button>登录</button></form></section>
+<section id="change" hidden><h1>请更新密码</h1><p>管理员重置了你的密码。继续使用前，请设置新密码。</p><form id="change-form">
+<label for="current">当前密码</label><input id="current" type="password" autocomplete="current-password" required>
+<label for="next-password">新密码（12–256 字节）</label><input id="next-password" type="password" autocomplete="new-password" required>
+<button>更新密码</button></form></section>
+<div class="status" id="status" role="status"></div><div class="hint">仅限受邀账号使用 · 你的内容按账号隔离</div></section></main>
+<script>
+const statusEl=document.querySelector('#status');
+async function csrf(){const r=await fetch('/api/auth/csrf',{credentials:'same-origin'});const d=await r.json();return d.csrf_token}
+async function send(path,payload){const token=await csrf();return fetch(path,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json','X-CSRF-Token':token},body:JSON.stringify(payload)})}
+document.querySelector('#login-form').addEventListener('submit',async e=>{e.preventDefault();statusEl.textContent='';try{const r=await send('/api/auth/login',{username:document.querySelector('#username').value,password:document.querySelector('#password').value,next:new URLSearchParams(location.search).get('next')});const d=await r.json();if(!r.ok)throw new Error(d.message||'登录失败');location.assign(d.next||'/')}catch(err){statusEl.textContent=err.message}});
+document.querySelector('#change-form').addEventListener('submit',async e=>{e.preventDefault();statusEl.textContent='';try{const r=await send('/api/auth/password',{current_password:document.querySelector('#current').value,new_password:document.querySelector('#next-password').value});const d=await r.json();if(!r.ok)throw new Error(d.message||'更新失败');location.assign('/')}catch(err){statusEl.textContent=err.message}});
+fetch('/api/auth/me',{credentials:'same-origin'}).then(r=>r.json()).then(d=>{if(d.authenticated&&d.must_change_password){document.querySelector('#login').hidden=true;document.querySelector('#change').hidden=false}}).catch(()=>{});
+</script></html>"""
+
+_INVITE_PAGE_HTML = """<!doctype html><html lang="zh-CN"><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Podcast Article · 接受邀请</title>
+<style>
+@font-face{font-family:Inter;src:url('/static/fonts/inter-400.woff2') format('woff2');font-weight:400;font-display:swap}@font-face{font-family:Inter;src:url('/static/fonts/inter-600.woff2') format('woff2');font-weight:600;font-display:swap}
+*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f7f7f8;color:#0d0d0d;font:15px/1.6 Inter,system-ui,sans-serif}main{width:min(94vw,920px);min-height:540px;display:grid;grid-template-columns:1fr 1fr;border:1px solid #ececf1;background:#fff;border-radius:14px;overflow:hidden}.identity{padding:42px;background:#0d0d0d;color:#fff;display:flex;flex-direction:column;justify-content:space-between}.wordmark{display:flex;align-items:center;gap:12px;font:600 11px/1.2 ui-monospace,monospace;letter-spacing:.15em}.wave{height:35px;display:flex;align-items:center;gap:3px}.wave i{display:block;width:3px;border-radius:2px;background:#10a37f}.manifest{margin:54px 0}.eyebrow,.foot,.formbrand{font:11px/1.4 ui-monospace,monospace;letter-spacing:.12em;text-transform:uppercase}.eyebrow{color:#10a37f}h2{font-size:30px;line-height:1.25;letter-spacing:-.045em;margin:14px 0 12px}.manifest p:last-child{max-width:310px;color:#b4b4bc;font-size:14px}.foot{color:#8f8f8f}.form-panel{padding:52px 48px;display:flex;flex-direction:column;justify-content:center}.formbrand{color:#8f8f8f}h1{font-size:26px;letter-spacing:-.04em;margin:13px 0 5px}p{color:#6e6e80;margin:0 0 25px}label{display:block;font-size:13px;margin:16px 0 6px}input{width:100%;height:46px;padding:0 12px;border:1px solid #d9d9e0;border-radius:7px;font:inherit}input:focus{outline:2px solid #10a37f;outline-offset:1px}button{margin-top:22px;width:100%;height:46px;border:0;border-radius:7px;background:#0d0d0d;color:#fff;font:600 14px Inter,system-ui,sans-serif;cursor:pointer}button:hover{background:#10a37f}button:focus-visible{outline:3px solid #10a37f;outline-offset:3px}.status{min-height:24px;margin-top:14px;color:#c43f32;font-size:14px}@media(max-width:680px){body{display:block;padding:14px}main{width:100%;min-height:0;grid-template-columns:1fr}.identity{padding:24px 25px 22px}.manifest{margin:28px 0 18px}h2{font-size:24px}.foot{display:none}.form-panel{padding:28px 25px 30px}}
+</style><main><aside class="identity"><div class="wordmark"><span class="wave" aria-hidden="true"><i style="height:9px"></i><i style="height:18px"></i><i style="height:27px"></i><i style="height:14px"></i><i style="height:33px"></i><i style="height:21px"></i><i style="height:11px"></i><i style="height:25px"></i><i style="height:8px"></i></span>PODCAST ARTICLE</div><div class="manifest"><div class="eyebrow">INVITATION ONLY</div><h2>一个账号，<br>一份独立空间。</h2><p>你的文章、书库与偏好不会和其他账号混在一起。</p></div><div class="foot">PRIVATE BY DESIGN · NO PUBLIC SIGN-UP</div></aside><section class="form-panel"><div class="formbrand">CREATE YOUR ACCOUNT</div><h1>接受邀请</h1><p>创建账号后即可开始使用。用户名仅用于登录。</p>
+<form id="invite-form"><label for="username">用户名</label><input id="username" autocomplete="username" required>
+<label for="password">密码（12–256 字节）</label><input id="password" type="password" autocomplete="new-password" required>
+<button>创建账号</button></form><div class="status" id="status" role="status"></div></section></main>
+<script>
+const statusEl=document.querySelector('#status');const rawInviteToken=location.hash.slice(1);history.replaceState(null,'',location.pathname+location.search);let inviteToken='';try{inviteToken=decodeURIComponent(rawInviteToken)}catch{}
+async function csrf(){const r=await fetch('/api/auth/csrf',{credentials:'same-origin'});const d=await r.json();return d.csrf_token}
+document.querySelector('#invite-form').addEventListener('submit',async e=>{e.preventDefault();statusEl.textContent='';if(!inviteToken){statusEl.textContent='邀请链接无效或已使用';return}try{const token=await csrf();const r=await fetch('/api/auth/register',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json','X-CSRF-Token':token},body:JSON.stringify({invite_token:inviteToken,username:document.querySelector('#username').value,password:document.querySelector('#password').value})});const d=await r.json();if(!r.ok)throw new Error(d.message||'邀请无效或已过期');inviteToken='';location.assign('/')}catch(err){statusEl.textContent=err.message}});
+</script></html>"""
+
+
+def _auth_store():
+    return auth_mod._request_store()
+
+
+def _auth_client_ip_key() -> str:
+    remote_key = request.remote_addr or "unknown"
+    if app.config.get("PA_TRUSTED_PROXY"):
+        forwarded_ip = request.headers.get("X-Real-IP", "").strip()
+        try:
+            return str(ipaddress.ip_address(forwarded_ip))
+        except ValueError:
+            pass
+    return remote_key
+
+
+def _set_auth_cookies(response, session_token: str | None, csrf_token: str, *, absolute_seconds: int | None = None):
+    options = {
+        "path": "/",
+        "secure": bool(app.config["PA_COOKIE_SECURE"]),
+        "samesite": "Lax",
+    }
+    domain = app.config.get("PA_COOKIE_DOMAIN")
+    if domain:
+        options["domain"] = domain
+    if session_token:
+        response.set_cookie(
+            "pa_session",
+            session_token,
+            max_age=absolute_seconds,
+            httponly=True,
+            **options,
+        )
+    else:
+        response.delete_cookie("pa_session", httponly=True, **options)
+    response.set_cookie("pa_csrf", csrf_token, max_age=absolute_seconds, httponly=False, **options)
+    return response
+
+
+def _authenticated_response(account, next_path: str = "/"):
+    now = time.time()
+    idle_seconds = int(app.config["PA_SESSION_IDLE_SECONDS"])
+    absolute_seconds = int(app.config["PA_SESSION_ABSOLUTE_SECONDS"])
+    if idle_seconds <= 0 or absolute_seconds <= 0 or idle_seconds > absolute_seconds:
+        raise RuntimeError("invalid session timeout configuration")
+    session_token = auth_mod.new_token()
+    csrf_token = auth_mod.new_token()
+    store = _auth_store()
+    store.create_session(
+        account.id,
+        auth_mod.token_hash(session_token),
+        now,
+        now + idle_seconds,
+        now + absolute_seconds,
+        csrf_token_hash=auth_mod.token_hash(csrf_token),
+    )
+    response = jsonify({
+        "authenticated": True,
+        "username": account.username,
+        "must_change_password": account.must_change_password,
+        "next": auth_mod.safe_next_path(next_path),
+    })
+    return _set_auth_cookies(response, session_token, csrf_token, absolute_seconds=absolute_seconds)
+
+
+@app.get("/login")
+def login_page():
+    return Response(_LOGIN_PAGE_HTML, mimetype="text/html")
+
+
+@app.get("/favicon.ico")
+def favicon():
+    return Response(status=204)
+
+
+@app.get("/invite")
+def invite_page():
+    return Response(_INVITE_PAGE_HTML, mimetype="text/html")
+
+
+@app.get("/api/auth/csrf")
+def api_auth_csrf():
+    account = getattr(g, "current_user", None)
+    csrf_token = auth_mod.issue_csrf(request, account)
+    response = jsonify({"csrf_token": csrf_token})
+    absolute_seconds = int(app.config["PA_SESSION_ABSOLUTE_SECONDS"])
+    return _set_auth_cookies(response, None if account is None else request.cookies.get("pa_session"), csrf_token,
+                             absolute_seconds=absolute_seconds)
+
+
+@app.get("/api/auth/me")
+def api_auth_me():
+    account = auth_mod.resolve_request(request)
+    if account is None:
+        return jsonify({"authenticated": False})
+    return jsonify({
+        "authenticated": True,
+        "id": account.id,
+        "username": account.username,
+        "role": account.role,
+        "must_change_password": account.must_change_password,
+    })
+
+
+@app.post("/api/auth/login")
+def api_auth_login():
+    payload = request.get_json(silent=True) or {}
+    username = payload.get("username", "")
+    password = payload.get("password", "")
+    try:
+        username_key = normalize_username(username)[1]
+    except ValueError:
+        username_key = unicodedata.normalize("NFKC", str(username)).strip().casefold()
+    remote_key = _auth_client_ip_key()
+    now = time.time()
+    store = _auth_store()
+    if not store.login_allowed(username_key, remote_key, now):
+        return jsonify({"error": "login_rate_limited", "message": "登录尝试过多，请稍后再试"}), 429
+
+    credential = store.credential_for_username(username) if isinstance(username, str) else None
+    encoded_hash = credential.password_hash if credential is not None else auth_mod._DUMMY_PASSWORD_HASH
+    valid_password = auth_mod.verify_password(encoded_hash, password if isinstance(password, str) else "")
+    if credential is None or not credential.account.enabled or not valid_password:
+        store.record_login_attempt(username_key, remote_key, now)
+        return jsonify({"error": "invalid_credentials", "message": "用户名或密码错误"}), 401
+
+    requested_next = payload.get("next") or request.args.get("next")
+    return _authenticated_response(credential.account, requested_next or "/")
+
+
+@app.post("/api/auth/register")
+def api_auth_register():
+    payload = request.get_json(silent=True) or {}
+    invite_token = payload.get("invite_token")
+    username = payload.get("username")
+    password = payload.get("password")
+    if not isinstance(invite_token, str) or not invite_token or len(invite_token) > 256:
+        return jsonify({"error": "invalid_invite", "message": "邀请链接无效或已过期"}), 400
+    try:
+        auth_mod.validate_new_password(password)
+        normalize_username(username)
+    except ValueError:
+        return jsonify({"error": "invalid_registration", "message": "用户名或密码格式无效"}), 400
+    store = _auth_store()
+    token_digest = auth_mod.token_hash(invite_token)
+    remote_key = _auth_client_ip_key()
+    now = time.time()
+    if not store.login_allowed(token_digest, remote_key, now):
+        return jsonify({"error": "registration_rate_limited", "message": "尝试过多，请稍后再试"}), 429
+    try:
+        store.validate_invite(token_digest, now=now)
+    except InviteError as error:
+        store.record_login_attempt(token_digest, remote_key, now)
+        return jsonify({"error": "invalid_invite", "message": "邀请链接无效或已过期"}), 400
+    if store.credential_for_username(username) is not None:
+        return jsonify({"error": "invalid_registration", "message": "用户名或邀请链接不可用"}), 400
+    try:
+        password_hash = auth_mod.hash_password(password)
+    except ValueError:
+        return jsonify({"error": "invalid_password", "message": "密码长度需为 12–256 个 UTF-8 字节"}), 400
+    try:
+        account = store.register_invite(token_digest, username, password_hash, now=now)
+    except InviteError as error:
+        store.record_login_attempt(token_digest, remote_key, now)
+        return jsonify({"error": "invalid_invite", "reason": error.code, "message": "邀请链接无效或已过期"}), 400
+    except ValueError as error:
+        return jsonify({"error": "invalid_registration", "message": str(error)}), 400
+    return _authenticated_response(account)
+
+
+@app.post("/api/auth/logout")
+def api_auth_logout():
+    raw_session = request.cookies.get("pa_session", "")
+    if raw_session:
+        _auth_store().revoke_session(auth_mod.token_hash(raw_session))
+    csrf_token = auth_mod.new_token()
+    response = jsonify({"authenticated": False})
+    response = _set_auth_cookies(response, None, csrf_token)
+    return response
+
+
+@app.post("/api/auth/password")
+def api_auth_password():
+    account = g.current_user
+    payload = request.get_json(silent=True) or {}
+    current_password = payload.get("current_password", "")
+    new_password = payload.get("new_password", "")
+    credential = _auth_store().credential_for_username(account.username)
+    if credential is None or not auth_mod.verify_password(credential.password_hash, current_password):
+        return jsonify({"error": "invalid_current_password", "message": "当前密码错误"}), 401
+    try:
+        new_hash = auth_mod.hash_password(new_password)
+    except ValueError:
+        return jsonify({"error": "invalid_password", "message": "密码长度需为 12–256 个 UTF-8 字节"}), 400
+    store = _auth_store()
+    updated = store.replace_password_hash(account.id, new_hash, must_change=False)
+    return _authenticated_response(updated)
 
 
 _JOBS: dict[str, dict] = {}          # job_id -> 状态字典
