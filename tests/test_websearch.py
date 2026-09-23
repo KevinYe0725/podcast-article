@@ -265,8 +265,10 @@ def test_available_illegal_env_value_treated_as_enabled(monkeypatch):
     monkeypatch.setenv("PA_SEARCH", "maybe")
     a = ws.available()
     assert a["enabled"] is True, "非法值按开启处理（用户显然是想要联网，猜错方向更糟）"
-    r = ws.search("任意", limit=1, provider="bing")
-    assert "PA_SEARCH" not in r["error"], f"非法值不该被当成关闭，实际 {r['error']}"
+    calls = _bing_rss_only(monkeypatch)
+    r = ws.search("SGLang", limit=1, provider="bing")
+    assert r["ok"] is True and r["results"], f"非法值按开启时应走 Bing 搜索，实际 {r}"
+    assert len(calls) == 1 and _is_bing_rss(calls[0]), f"搜索应使用打桩的 Bing RSS，请求为 {calls}"
 
 
 # ------------------------------------------------------------------ Bing 解析
