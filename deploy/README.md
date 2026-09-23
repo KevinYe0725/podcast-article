@@ -153,7 +153,7 @@ ls -1dt */ | tail -n +21 | while read d; do rm -f "$d"/audio.*; done   # 可选�
 
 这部分是批准发布后的操作清单；本地开发和验收阶段不执行。发布前先确认有足够备份空间，并把备份复制到独立的安全位置。`server.env` 含服务商密钥和用户密钥加密密钥，只能在服务器上以 `0600` 保存，不要放进 GitHub Actions 或发到聊天中。
 
-在服务器 root shell 中设置 `PORTFOLIO_DEPLOY_PATH` 为 Portfolio Hub Actions 当前使用的 `DEPLOY_PATH`，然后备份数据、代码、密钥文件、两层 Caddy 配置、Compose 配置和当前镜像 tag。停止 Podcast Article 服务后再打包，确保 SQLite 数据完整：
+在服务器 root shell 中设置 `PORTFOLIO_DEPLOY_PATH` 为 Portfolio Hub Actions 当前使用的 `DEPLOY_PATH`，然后备份数据、代码、密钥文件、正在运行的 Portfolio Hub 边缘 Caddy 配置、Compose 配置和当前镜像 tag。当前 Flask 直接绑定 Docker 网桥，边缘 Caddy 直连 Flask；宿主 `caddy` systemd 服务不在这条链路中。停止 Podcast Article 服务后再打包，确保 SQLite 数据完整：
 
 ```bash
 set -euo pipefail
@@ -171,7 +171,6 @@ tar --acls --xattrs \
   --exclude=queue.json --exclude=feeds.json --exclude=settings.json \
   -cpf "$BACKUP_ROOT/code.tar" -C /srv/podcast-article .
 install -m 0600 /etc/podcast-article/server.env "$BACKUP_ROOT/server.env"
-cp -p /etc/caddy/Caddyfile "$BACKUP_ROOT/podcast-Caddyfile"
 cp -p "$PORTFOLIO_DEPLOY_PATH/Caddyfile" "$BACKUP_ROOT/portfolio-Caddyfile"
 cp -p "$PORTFOLIO_DEPLOY_PATH/compose.yaml" "$BACKUP_ROOT/portfolio-compose.yaml"
 cp -p "$PORTFOLIO_DEPLOY_PATH/.env" "$BACKUP_ROOT/portfolio.env"
@@ -202,17 +201,15 @@ rsync -a --delete \
   --exclude=feeds.json --exclude=settings.json \
   "$RESTORE_CODE/" /srv/podcast-article/
 install -m 0600 "$BACKUP_ROOT/server.env" /etc/podcast-article/server.env
-cp -p "$BACKUP_ROOT/podcast-Caddyfile" /etc/caddy/Caddyfile
 cp -p "$BACKUP_ROOT/portfolio-Caddyfile" "$PORTFOLIO_DEPLOY_PATH/Caddyfile"
 cp -p "$BACKUP_ROOT/portfolio-compose.yaml" "$PORTFOLIO_DEPLOY_PATH/compose.yaml"
 cp -p "$BACKUP_ROOT/portfolio.env" "$PORTFOLIO_DEPLOY_PATH/.env"
 docker load --input "$BACKUP_ROOT/portfolio-image.tar.gz"
 (cd "$PORTFOLIO_DEPLOY_PATH" && docker compose up -d --pull never --wait app && docker compose restart caddy)
 systemctl start podcast-article
-systemctl restart caddy
 ```
 
-检查两个服务状态和全部公开路由。保留旧镜像 tag 直到新版本验收完成。回滚流程不需要、也不得删除 OSS 对象。
+检查 `podcast-article` 的 systemd 状态、Portfolio Hub 的 `docker compose ps` 和全部公开路由。保留旧镜像 tag 直到新版本验收完成。回滚流程不需要、也不得删除 OSS 对象。
 
 当前实现用 SSH 传送 Portfolio Hub 的压缩镜像归档并在服务器执行 `docker load`，不从服务器拉取 GHCR 应用镜像；这条传输路径尚未在生产服务器上测速或执行。
 
