@@ -129,6 +129,20 @@ def _readonly_guard(fn):
     return wrapper
 
 
+def _admin_required(fn):
+    """Block member access to global MCP configuration and subprocess tools."""
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        account = getattr(g, "current_user", None)
+        if account is None:
+            return jsonify({"error": "authentication_required"}), 401
+        if account.role != "admin":
+            return jsonify({"error": "admin_required"}), 403
+        return fn(*args, **kwargs)
+
+    return wrapper
+
+
 _LOGIN_PAGE_HTML = """<!doctype html><html lang="zh-CN"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Podcast Article · 登录</title>
 <style>
@@ -185,6 +199,38 @@ def _quota_guard(owner_id: str):
     # the configured request store; the scheduler resolves the same DB by path.
     store = _auth_store() if has_app_context() else _system_store()
     return LLMQuotaGuard(store, owner_id)
+
+
+def _integration_secret_store():
+    from podcast_article.integration_secrets import IntegrationSecrets
+
+    return IntegrationSecrets(data_root())
+
+
+def _integration_status(owner_id: str) -> dict:
+    try:
+        return {"available": True, "secrets": _integration_secret_store().status_for_user(owner_id)}
+    except RuntimeError:
+        return {
+            "available": False,
+            "secrets": {
+                "NOTION_TOKEN": {"configured": False, "masked": ""},
+                "TTS_API_KEY": {"configured": False, "masked": ""},
+            },
+        }
+
+
+def _integration_secret_values(owner_id: str) -> dict[str, str]:
+    try:
+        store = _integration_secret_store()
+        values = {}
+        for name in ("NOTION_TOKEN", "TTS_API_KEY"):
+            secret = store.get_for_user(owner_id, name)
+            if secret:
+                values[name] = secret
+        return values
+    except RuntimeError:
+        return {}
 
 
 _SYSTEM_STORE_LOCK = threading.Lock()
@@ -625,6 +671,16 @@ def _new_job(url: str, opts: dict, *, source: str = "manual",
         cache_baseline_bytes = _workspace_file_bytes(workspace)
     cache_effective_limit = (max(cache_limit, cache_baseline_bytes)
                              if cache_limit is not None else None)
+    object_storage_prefix = None
+    if workspace is not None and quota_guard is not None:
+        account = quota_guard.store.user_by_id(workspace.account_id)
+        if account is not None:
+            from podcast_article.object_storage import account_prefix
+
+            object_storage_prefix = account_prefix(
+                workspace.account_id,
+                is_legacy_owner=(workspace.account_id == quota_guard.store.legacy_owner_id()),
+            )
     job_id = uuid.uuid4().hex[:12]
     job = {
         "id": job_id,
@@ -719,14 +775,20 @@ def _new_job(url: str, opts: dict, *, source: str = "manual",
             # 请求没有显式指定时，落到设置页里的「生成默认值」
             defaults = settings_mod.load(settings_path=settings_path)["generation"]
             lang = opts.get("lang") or defaults.get("language") or "auto"
+            pipeline_backend = (opts.get("backend")
+                                or os.environ.get("PA_ASR_BACKEND")
+                                or defaults.get("backend")
+                                or "auto")
+            scoped_object_storage = (
+                object_storage.ObjectStorage(prefix=object_storage_prefix)
+                if pipeline_backend == "cloud" and object_storage_prefix
+                else None
+            )
             pipe = Pipeline(
                 url=url,
                 output_dir=output_root,
                 language=lang,
-                backend=(opts.get("backend")
-                         or os.environ.get("PA_ASR_BACKEND")
-                         or defaults.get("backend")
-                         or "auto"),
+                backend=pipeline_backend,
                 asr_model=(opts.get("model") or defaults.get("asr_model") or None),
                 llm_model=(opts.get("llm_model") or defaults.get("llm_model") or None),
                 no_subs=bool(opts.get("no_subs", defaults.get("no_subs"))),
@@ -748,6 +810,8 @@ def _new_job(url: str, opts: dict, *, source: str = "manual",
                 settle_billable_asr=settle_billable_asr if quota_guard is not None else None,
                 release_billable_asr=release_billable_asr if quota_guard is not None else None,
                 check_workspace_cache=check_workspace_cache if cache_limit is not None else None,
+                object_storage_client=scoped_object_storage,
+                object_storage_prefix=object_storage_prefix,
             )
             article_path = pipe.run()
             workdir = article_path.parent
@@ -1123,11 +1187,33 @@ def _publish_with(extra: dict | None = None):
     if err:
         return err
     target = (data.get("target") or "builtin").strip()
+    account = g.current_user
+    if target.startswith("mcp:") and account.role != "admin":
+        return jsonify({"error": "admin_required"}), 403
     template = data.get("template")
     if isinstance(template, str):
         template = json.loads(template) if template.strip() else None
+    integration = None
+    if target in ("", "builtin", "notion"):
+        user_token = None
+        try:
+            user_token = _integration_secret_store().get_for_user(account.id, "NOTION_TOKEN")
+        except RuntimeError:
+            pass
+        notion_settings = settings_mod.load(settings_path=_workspace().settings_path)["notion"]
+        integration = {
+            "token": user_token if user_token else (None if account.role == "admin" else ""),
+            "database_id": notion_settings.get("database_id") or None,
+            "parent_page_id": notion_settings.get("parent_page_id") or None,
+            "use_config_defaults": account.role == "admin" and not user_token,
+        }
+    elif target.startswith("mcp:"):
+        parts = target.split(":", 2)
+        entry = mcp_config.get_server(parts[1]) if len(parts) == 3 else None
+        if entry:
+            integration = {"mcp_env": _resolved_mcp_env(entry)}
     try:
-        result = publish_mod.publish(ctx, target=target, template=template)
+        result = publish_mod.publish(ctx, target=target, template=template, integration=integration)
     except json.JSONDecodeError as exc:
         return jsonify({"error": f"参数模板不是合法 JSON：{exc}"}), 400
     except Exception as exc:
@@ -1153,9 +1239,12 @@ def api_settings_get():
         "subscriptions": current["subscriptions"],
         "assistant": current["assistant"],
         "tts": current["tts"],
+        "notion": current["notion"],
+        "integrations": _integration_status(workspace.account_id),
         "tts_voices": tts_mod.macos_voices(),      # macOS 上可用的中文音色（给设置页做提示）
         "tts_available": bool(shutil.which("say")) or tts_mod.DEFAULTS["provider"] != "off",
         "server_credentials": "managed_by_server",
+        "integrations": _integration_status(workspace.account_id),
         "storage": settings_mod.storage_info(output_root=workspace.output_root,
                                               settings_path=workspace.settings_path),
     })
@@ -1174,6 +1263,7 @@ def api_settings_post():
                               subscriptions=data.get("subscriptions"),
                               assistant=data.get("assistant"),
                               tts=data.get("tts"),
+                              notion=data.get("notion"),
                               settings_path=workspace.settings_path)
     return jsonify({
         "profile": saved["profile"],
@@ -1181,8 +1271,51 @@ def api_settings_post():
         "subscriptions": saved["subscriptions"],
         "assistant": saved["assistant"],
         "tts": saved["tts"],
+        "notion": saved["notion"],
+        "integrations": _integration_status(_workspace().account_id),
         "server_credentials": "managed_by_server",
     })
+
+
+@app.get("/api/integrations")
+def api_integrations_get():
+    workspace = _workspace()
+    current = settings_mod.load(settings_path=workspace.settings_path)
+    status = _integration_status(workspace.account_id)
+    return jsonify({
+        "available": status["available"],
+        "secrets": status["secrets"],
+        "notion": current["notion"],
+    })
+
+
+@app.put("/api/integrations/secrets/<name>")
+@_readonly_guard
+def api_integration_secret_put(name: str):
+    data = request.get_json(force=True, silent=True) or {}
+    try:
+        store = _integration_secret_store()
+        store.set_for_user(_workspace().account_id, name, data.get("value") or "")
+        status = store.status_for_user(_workspace().account_id)
+    except RuntimeError:
+        return jsonify({"error": "secret_storage_unavailable"}), 503
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"name": name, "status": status.get(name.upper())})
+
+
+@app.delete("/api/integrations/secrets/<name>")
+@_readonly_guard
+def api_integration_secret_delete(name: str):
+    try:
+        store = _integration_secret_store()
+        deleted = store.delete_for_user(_workspace().account_id, name)
+        status = store.status_for_user(_workspace().account_id)
+    except RuntimeError:
+        return jsonify({"error": "secret_storage_unavailable"}), 503
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"deleted": deleted, "name": name, "status": status.get(name.upper())})
 
 
 @app.post("/api/settings/verify")
@@ -1205,9 +1338,17 @@ def api_settings_verify():
         return jsonify({"ok": True, "detail": "可用模型：" + "、".join(models[:8])})
 
     if what == "notion":
+        account = g.current_user
+        token = None
+        try:
+            token = _integration_secret_store().get_for_user(account.id, "NOTION_TOKEN")
+        except RuntimeError:
+            pass
+        if not token and account.role != "admin":
+            return jsonify({"ok": False, "detail": "当前账号未配置 Notion Token"})
         try:
             resp = notion._session().get(
-                f"{notion.API}/users/me", headers=notion._headers(), timeout=20
+                f"{notion.API}/users/me", headers=notion._headers(token), timeout=20
             )
         except Exception as exc:
             return jsonify({"ok": False, "detail": f"{type(exc).__name__}: {exc}"[:300]})
@@ -1221,13 +1362,16 @@ def api_settings_verify():
 
 
 @app.get("/api/mcp/servers")
+@_admin_required
 def api_mcp_servers():
     """已配置的 MCP 服务器（密钥打码）+ 一键添加的预设 + 前端默认值。"""
     from podcast_article import config
 
     return jsonify({
         "servers": [mcp_config.mask_entry(s) for s in mcp_config.load_servers()],
-        "presets": mcp_config.preset_catalog(),
+        "presets": mcp_config.preset_catalog(
+            extra_env=_integration_secret_values(g.current_user.id)
+        ),
         "defaults": {
             "notion_database_id": config.notion_database_id(),
             "notion_parent_page_id": config.notion_parent_page_id(),
@@ -1237,11 +1381,20 @@ def api_mcp_servers():
 
 @app.post("/api/mcp/servers/preset")
 @_readonly_guard
+@_admin_required
 def api_mcp_preset():
-    """按预设一键添加。body: {"preset": "notion", "secret": "ntn_…"（可选）}"""
+    """按预设一键添加；个人密钥写入 Fernet 加密存储。"""
     data = request.get_json(force=True, silent=True) or {}
+    secret = (data.get("secret") or "").strip()
+    if secret:
+        try:
+            _integration_secret_store().set_for_user(g.current_user.id, "NOTION_TOKEN", secret)
+        except RuntimeError:
+            return jsonify({"error": "secret_storage_unavailable"}), 503
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
     try:
-        entry = mcp_config.build_from_preset(data.get("preset", ""), data.get("secret"))
+        entry = mcp_config.build_from_preset(data.get("preset", ""))
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     return jsonify({"server": mcp_config.mask_entry(entry)})
@@ -1249,6 +1402,7 @@ def api_mcp_preset():
 
 @app.post("/api/mcp/servers")
 @_readonly_guard
+@_admin_required
 def api_mcp_save():
     """新增或更新一台 MCP 服务器。命令可整行传 command_line，env 支持 dict 或 "K=V\\nK2=V2"。"""
     data = request.get_json(force=True, silent=True) or {}
@@ -1278,6 +1432,7 @@ def api_mcp_save():
 
 @app.delete("/api/mcp/servers/<name>")
 @_readonly_guard
+@_admin_required
 def api_mcp_delete(name: str):
     if not mcp_config.delete_server(name):
         return jsonify({"error": f"未找到服务器：{name}"}), 404
@@ -1306,8 +1461,15 @@ def _resolve_entry(data: dict) -> dict | None:
     raise ValueError("请提供服务器名称或启动命令")
 
 
+def _resolved_mcp_env(entry: dict) -> dict[str, str]:
+    return mcp_config.resolved_env(
+        entry, extra_env=_integration_secret_values(g.current_user.id)
+    )
+
+
 @app.post("/api/mcp/test")
 @_readonly_guard
+@_admin_required
 def api_mcp_test():
     """启动服务器并列出工具。body: {"name": "..."} 或 {"command","args","env"}"""
     data = request.get_json(force=True, silent=True) or {}
@@ -1315,7 +1477,7 @@ def api_mcp_test():
         entry = _resolve_entry(data)
         result = mcp_client.list_tools(
             command=entry["command"], args=entry.get("args"),
-            env=mcp_config.resolved_env(entry),
+            env=_resolved_mcp_env(entry),
         )
     except (ValueError, mcp_client.MCPClientError) as exc:
         return jsonify({"error": str(exc)}), 400
@@ -1324,6 +1486,7 @@ def api_mcp_test():
 
 @app.post("/api/mcp/call")
 @_readonly_guard
+@_admin_required
 def api_mcp_call():
     """试调用某个工具。body: {"name", "tool", "arguments"}"""
     data = request.get_json(force=True, silent=True) or {}
@@ -1334,7 +1497,7 @@ def api_mcp_call():
             raise ValueError("缺少工具名")
         result = mcp_client.call_tool(
             command=entry["command"], args=entry.get("args"),
-            env=mcp_config.resolved_env(entry), tool=tool,
+            env=_resolved_mcp_env(entry), tool=tool,
             arguments=data.get("arguments") or {},
         )
     except (ValueError, mcp_client.MCPClientError) as exc:
@@ -1667,8 +1830,23 @@ def _tts_preview_stem(workspace=None) -> Path:
     return workspace.root / "tmp" / "tts-preview"
 
 
-def _tts_key() -> str:
-    return (settings_mod.read_env().get("TTS_API_KEY") or "").strip()
+def _tts_key(workspace=None) -> str:
+    workspace = workspace or _workspace()
+    try:
+        store = _auth_store()
+    except RuntimeError:
+        store = _system_store()
+    account = store.user_by_id(workspace.account_id)
+    try:
+        personal = _integration_secret_store().get_for_user(workspace.account_id, "TTS_API_KEY")
+    except RuntimeError:
+        personal = None
+    if personal:
+        return personal
+    # Existing owner installations keep their legacy server-side key.
+    if account is not None and account.role == "admin":
+        return (settings_mod.read_env().get("TTS_API_KEY") or "").strip()
+    return ""
 
 
 def _tts_payload(job_dir: str, base: Path) -> dict:
@@ -1714,7 +1892,7 @@ def _tts_payload(job_dir: str, base: Path) -> dict:
 
 
 def _run_tts(owner_id: str, job_dir: str, base: Path, article: str, cfg: dict, force: bool,
-             workspace=None, cache_limit: int | None = None) -> None:
+             api_key: str, workspace=None, cache_limit: int | None = None) -> None:
     """后台线程：跑完就更新 _TTS_JOBS，前端轮询看到状态变化。"""
 
     def progress(done: int, total: int, note: str) -> None:
@@ -1724,7 +1902,7 @@ def _run_tts(owner_id: str, job_dir: str, base: Path, article: str, cfg: dict, f
             _TTS_JOBS[(owner_id, job_dir)] = {"state": "running", "done": done, "total": total, "note": note}
 
     try:
-        idx = tts_mod.synthesize(base, article, cfg, api_key=_tts_key(),
+        idx = tts_mod.synthesize(base, article, cfg, api_key=api_key,
                                  progress=progress, log=lambda m: _log_tts(job_dir, m), force=force)
         if workspace is not None and cache_limit is not None:
             _check_cache_usage(workspace, cache_limit)
@@ -1771,6 +1949,10 @@ def api_tts_start(job_dir: str):
                                  "（macOS 本地免费，或任何兼容 OpenAI 的语音接口）"}), 400
     force = bool((request.get_json(force=True, silent=True) or {}).get("force"))
     article = article_path.read_text(encoding="utf-8")
+    api_key = _tts_key(workspace)
+    if cfg.get("provider") == "openai" and not api_key:
+        return jsonify({"error": "integration_not_configured", "name": "TTS_API_KEY",
+                        "message": "请在「集成」设置中配置当前账号的语音服务密钥"}), 400
     fresh = bool(_tts_payload(job_dir, base).get("fresh"))
     account = _auth_store().user_by_id(owner_id)
     cache_limit = account.quota.cache_bytes if account is not None else None
@@ -1786,7 +1968,8 @@ def api_tts_start(job_dir: str):
             return jsonify({"error": "这一篇正在生成朗读，稍等", "tts": _tts_payload(job_dir, base)}), 409
         _TTS_JOBS[job_key] = {"state": "running", "done": 0, "total": 0, "note": "准备中"}
     threading.Thread(target=_run_tts,
-                     args=(owner_id, job_dir, base, article, cfg, force, workspace, active_cache_limit),
+                     args=(owner_id, job_dir, base, article, cfg, force, api_key,
+                           workspace, active_cache_limit),
                      daemon=True).start()
     return jsonify({"state": "running", "tts": _tts_payload(job_dir, base)})
 
@@ -1853,7 +2036,7 @@ def api_tts_preview():
     try:
         stem = _tts_preview_stem(workspace)
         stem.parent.mkdir(parents=True, exist_ok=True)
-        info = tts_mod.preview(cfg, _tts_key(), stem)
+        info = tts_mod.preview(cfg, _tts_key(workspace), stem)
     except Exception as exc:
         return jsonify({"ok": False, "error": f"{type(exc).__name__}: {exc}"[:300]})
     return jsonify({"ok": True, "url": f"/api/tts/preview?ts={int(time.time())}",
@@ -1881,14 +2064,20 @@ def api_audio(job_dir: str):
     path = _audio_path(base)
     if path:
         return send_file(path, conditional=True, mimetype="audio/mp4")
+    workspace = _workspace()
+    account = _auth_store().user_by_id(workspace.account_id)
+    if account is None:
+        return jsonify({"error": "audio not found"}), 404
     try:
         meta = json.loads((base / "meta.json").read_text(encoding="utf-8"))
         object_key = meta.get("audio_object_key")
         if object_key:
-            storage = object_storage.ObjectStorage()
+            storage = object_storage.ObjectStorage.for_account(
+                workspace.account_id, legacy_owner_id=_auth_store().legacy_owner_id(),
+            )
             if storage.exists(object_key):
                 return redirect(storage.signed_url(object_key), code=302)
-    except (OSError, json.JSONDecodeError, RuntimeError):
+    except (OSError, json.JSONDecodeError, RuntimeError, ValueError):
         pass
     return jsonify({"error": "这一集没有可用音频"}), 404
 

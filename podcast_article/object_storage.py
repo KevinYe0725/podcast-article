@@ -8,6 +8,7 @@ import re
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
+from uuid import UUID
 
 
 @dataclass(frozen=True)
@@ -34,12 +35,44 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def account_prefix(user_id: str, *, base_prefix: str | None = None,
+                   is_legacy_owner: bool = False) -> str:
+    """Keep the existing prefix for the legacy owner; isolate every member below it."""
+    base = (base_prefix or os.environ.get("OSS_PREFIX") or "podcast-article/audio").strip("/")
+    if not base or any(part in {".", ".."} for part in base.split("/")):
+        raise ValueError("invalid OSS_PREFIX")
+    try:
+        canonical_id = str(UUID(str(user_id)))
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise ValueError("user_id must be a UUID") from exc
+    if canonical_id != str(user_id):
+        raise ValueError("user_id must be a canonical UUID")
+    return base if is_legacy_owner else f"{base}/users/{canonical_id}"
+
+
 class ObjectStorage:
     """Small OSS wrapper with no deletion capability exposed to the pipeline."""
 
     def __init__(self, *, bucket=None, prefix: str | None = None):
         self.prefix = (prefix or os.environ.get("OSS_PREFIX") or "podcast-article/audio").strip("/")
         self.bucket = bucket or self._create_bucket()
+
+    @classmethod
+    def for_account(cls, user_id: str, *, legacy_owner_id: str | None, bucket=None,
+                    base_prefix: str | None = None) -> "ObjectStorage":
+        return cls(
+            bucket=bucket,
+            prefix=account_prefix(user_id, base_prefix=base_prefix,
+                                  is_legacy_owner=(user_id == legacy_owner_id)),
+        )
+
+    def _validate_key(self, object_key: str) -> str:
+        key = str(object_key or "").strip("/")
+        if not key or any(part in {"", ".", ".."} for part in key.split("/")):
+            raise ValueError("invalid OSS object key")
+        if not key.startswith(f"{self.prefix}/"):
+            raise ValueError("OSS object key is outside this account prefix")
+        return key
 
     @staticmethod
     def _create_bucket():
@@ -64,6 +97,7 @@ class ObjectStorage:
         path = Path(path)
         if not path.is_file():
             raise FileNotFoundError(path)
+        object_key = self._validate_key(object_key)
         content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
         digest = _sha256(path)
         self.bucket.put_object_from_file(
@@ -74,9 +108,10 @@ class ObjectStorage:
         return ObjectRef(object_key, content_type, path.stat().st_size, digest)
 
     def exists(self, object_key: str) -> bool:
+        object_key = self._validate_key(object_key)
         return bool(self.bucket.object_exists(object_key))
 
     def signed_url(self, object_key: str, *, expires: int = 900) -> str:
         if expires < 1:
             raise ValueError("expires must be positive")
-        return self.bucket.sign_url("GET", object_key, expires)
+        return self.bucket.sign_url("GET", self._validate_key(object_key), expires)

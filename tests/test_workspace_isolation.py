@@ -233,12 +233,15 @@ def test_deepdive_question_is_rejected_before_llm_when_cache_headroom_is_too_sma
 def test_tts_is_rejected_before_generation_when_cache_headroom_is_too_small(two_user_clients, monkeypatch):
     import webapp
     from podcast_article import settings as settings_mod
+    from cryptography.fernet import Fernet
 
     alice = two_user_clients["alice"]
     episode = alice["workspace"].output_root / "episode"
     episode.mkdir(parents=True, exist_ok=True)
     (episode / "article.md").write_text("# episode\n\ncontent", encoding="utf-8")
     (alice["workspace"].output_root / "large-cache.bin").write_bytes(b"x" * 900_000)
+    monkeypatch.setenv("PA_USER_SECRETS_KEY", Fernet.generate_key().decode("ascii"))
+    webapp._integration_secret_store().set_for_user(alice["account"].id, "TTS_API_KEY", "account-tts")
     settings_mod.save(tts={"provider": "openai"}, settings_path=alice["workspace"].settings_path)
     monkeypatch.setattr(webapp.threading.Thread, "start", lambda self: pytest.fail("cache must preflight before TTS"))
 

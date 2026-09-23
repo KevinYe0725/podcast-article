@@ -1,4 +1,4 @@
-"""设置存储：个人信息与生成默认值存 settings.json，密钥与目标位置写回 .env。
+"""设置存储：个人信息与生成默认值存 settings.json，集成密钥另行加密。
 
 设计约定（参考 DeepSeek Harness 的设置层）：
 - 密钥只写不读：接口只回报「是否已配置」与打码值，明文永不返回前端
@@ -17,14 +17,10 @@ from .config import PROJECT_ROOT
 SETTINGS_PATH = PROJECT_ROOT / "settings.json"
 ENV_PATH = PROJECT_ROOT / ".env"
 
-# 设置页有权写入的 .env 键
+# 这些仅供本机 CLI 写入服务级 .env；个人集成密钥不会写入 .env。
 MANAGED_KEYS = (
     "DEEPSEEK_API_KEY",
     "DEEPSEEK_MODEL",
-    "NOTION_TOKEN",
-    "NOTION_DATABASE_ID",
-    "NOTION_PARENT_PAGE_ID",
-    "TTS_API_KEY",
 )
 
 PROFILE_DEFAULTS: dict = {
@@ -72,6 +68,11 @@ TTS_DEFAULTS: dict = {
     "chunk_chars": 700,
 }
 
+NOTION_DEFAULTS: dict = {
+    "database_id": "",
+    "parent_page_id": "",
+}
+
 
 DEFAULTS: dict = {
     "profile": PROFILE_DEFAULTS,
@@ -79,6 +80,7 @@ DEFAULTS: dict = {
     "subscriptions": SUBSCRIPTION_DEFAULTS,
     "assistant": ASSISTANT_DEFAULTS,
     "tts": TTS_DEFAULTS,
+    "notion": NOTION_DEFAULTS,
 }
 
 
@@ -96,13 +98,15 @@ def load(*, settings_path: Path | None = None) -> dict:
         "subscriptions": {**SUBSCRIPTION_DEFAULTS, **(data.get("subscriptions") or {})},
         "assistant": {**ASSISTANT_DEFAULTS, **(data.get("assistant") or {})},
         "tts": {**TTS_DEFAULTS, **(data.get("tts") or {})},
+        "notion": {**NOTION_DEFAULTS, **(data.get("notion") or {})},
     }
     return merged
 
 
 def save(profile: dict | None = None, generation: dict | None = None,
          subscriptions: dict | None = None, assistant: dict | None = None,
-         tts: dict | None = None, *, settings_path: Path | None = None) -> dict:
+         tts: dict | None = None, notion: dict | None = None,
+         *, settings_path: Path | None = None) -> dict:
     path = Path(settings_path) if settings_path is not None else SETTINGS_PATH
     current = load(settings_path=path)
     if profile:
@@ -134,6 +138,8 @@ def save(profile: dict | None = None, generation: dict | None = None,
                 current["tts"]["speed"] = max(0.5, min(2.0, float(current["tts"]["speed"] or 1.0)))
             except ValueError:
                 current["tts"]["speed"] = TTS_DEFAULTS["speed"]
+    if notion:
+        current["notion"].update({k: v for k, v in notion.items() if k in NOTION_DEFAULTS})
     if isinstance(current["generation"].get("max_chars"), str):
         try:
             current["generation"]["max_chars"] = int(current["generation"]["max_chars"])
@@ -181,6 +187,11 @@ def read_env() -> dict[str, str]:
             continue
         k, v = s.split("=", 1)
         out[k.strip()] = v.strip()
+    for key in (*MANAGED_KEYS, "NOTION_TOKEN", "NOTION_DATABASE_ID",
+                "NOTION_PARENT_PAGE_ID", "TTS_API_KEY"):
+        value = os.environ.get(key, "").strip()
+        if value:
+            out[key] = value
     return out
 
 

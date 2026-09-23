@@ -79,9 +79,138 @@ def test_preset_catalog_reports_state(monkeypatch):
     assert notion2["ready"] is False
 
 
-def test_build_from_preset_with_secret():
-    e = mc.build_from_preset("notion", "ntn_from_user")
-    assert e["env"]["NOTION_TOKEN"] == "ntn_from_user"
+def test_build_from_preset_keeps_secret_as_environment_reference():
+    e = mc.build_from_preset("notion")
+    assert e["env"]["NOTION_TOKEN"] == "${NOTION_TOKEN}"
     assert e["command"] == "notion-mcp-server"
+    with pytest.raises(ValueError, match="encrypted per-account"):
+        mc.build_from_preset("notion", "ntn_from_user")
     with pytest.raises(ValueError, match="未知的预设"):
         mc.build_from_preset("nope")
+
+
+def test_resolved_env_accepts_encrypted_account_values():
+    e = mc.build_from_preset("notion")
+    assert mc.resolved_env(e, extra_env={"NOTION_TOKEN": "account-token"}) == {
+        "NOTION_TOKEN": "account-token",
+    }
+
+
+def test_preset_is_not_ready_when_its_encrypted_reference_is_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr(mc, "CONFIG_PATH", tmp_path / "mcp_servers.json")
+    monkeypatch.setattr(mc, "read_env_keys", lambda: {})
+    mc.save_servers([mc.build_from_preset("notion")])
+
+    missing = next(p for p in mc.preset_catalog() if p["id"] == "notion")
+    configured = next(p for p in mc.preset_catalog(extra_env={"NOTION_TOKEN": "admin-token"})
+                      if p["id"] == "notion")
+
+    assert missing["ready"] is False
+    assert configured["ready"] is True
+
+
+def test_default_admin_config_is_private_and_under_data_root(tmp_path, monkeypatch):
+    monkeypatch.setenv("PA_DATA_ROOT", str(tmp_path / "data"))
+    monkeypatch.delenv("PA_MCP_CONFIG", raising=False)
+    monkeypatch.setattr(mc, "CONFIG_PATH", mc._DEFAULT_CONFIG_PATH)
+    monkeypatch.setattr(mc, "SERVERS_PATH", mc._DEFAULT_CONFIG_PATH)
+
+    mc.save_servers([{"name": "safe", "command": "echo", "args": [], "env": {}, "note": ""}])
+
+    path = tmp_path / "data" / "mcp_servers.json"
+    assert path.exists()
+    assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_legacy_project_mcp_config_moves_to_private_data_root(tmp_path, monkeypatch):
+    legacy = tmp_path / "project" / "mcp_servers.json"
+    legacy.parent.mkdir()
+    legacy.write_text(
+        '{"servers":[{"name":"old","command":"echo","args":[],"env":{"TOKEN":"hidden"},"note":""}]}',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PA_DATA_ROOT", str(tmp_path / "data"))
+    monkeypatch.delenv("PA_MCP_CONFIG", raising=False)
+    monkeypatch.setattr(mc, "_DEFAULT_CONFIG_PATH", legacy)
+    monkeypatch.setattr(mc, "CONFIG_PATH", legacy)
+    monkeypatch.setattr(mc, "SERVERS_PATH", legacy)
+
+    loaded = mc.load_servers()
+
+    destination = tmp_path / "data" / "mcp_servers.json"
+    assert loaded[0]["name"] == "old"
+    assert destination.exists() and destination.stat().st_mode & 0o777 == 0o600
+    assert not legacy.exists()
+
+
+@pytest.mark.parametrize("contents", ["not-json", '{"unexpected":"shape"}'])
+def test_unmigratable_legacy_mcp_config_is_made_private(tmp_path, monkeypatch, contents):
+    legacy = tmp_path / "project" / "mcp_servers.json"
+    legacy.parent.mkdir()
+    legacy.write_text(contents, encoding="utf-8")
+    legacy.chmod(0o644)
+    monkeypatch.setenv("PA_DATA_ROOT", str(tmp_path / "data"))
+    monkeypatch.delenv("PA_MCP_CONFIG", raising=False)
+    monkeypatch.setattr(mc, "_DEFAULT_CONFIG_PATH", legacy)
+    monkeypatch.setattr(mc, "CONFIG_PATH", legacy)
+    monkeypatch.setattr(mc, "SERVERS_PATH", legacy)
+
+    assert mc.load_servers() == []
+
+    assert legacy.exists()
+    assert legacy.stat().st_mode & 0o777 == 0o600
+
+
+def test_legacy_mcp_config_permission_failure_stops_migration(tmp_path, monkeypatch):
+    legacy = tmp_path / "project" / "mcp_servers.json"
+    legacy.parent.mkdir()
+    legacy.write_text("not-json", encoding="utf-8")
+    legacy.chmod(0o644)
+    monkeypatch.setenv("PA_DATA_ROOT", str(tmp_path / "data"))
+    monkeypatch.delenv("PA_MCP_CONFIG", raising=False)
+    monkeypatch.setattr(mc, "_DEFAULT_CONFIG_PATH", legacy)
+    monkeypatch.setattr(mc, "CONFIG_PATH", legacy)
+    monkeypatch.setattr(mc, "SERVERS_PATH", legacy)
+
+    def denied_fchmod(_fd, _mode):
+        raise PermissionError("chmod denied")
+
+    monkeypatch.setattr(mc.os, "fchmod", denied_fchmod)
+    with pytest.raises(RuntimeError, match="secure"):
+        mc.load_servers()
+
+
+def test_legacy_mcp_config_symlink_is_not_migrated(tmp_path, monkeypatch):
+    legacy = tmp_path / "project" / "mcp_servers.json"
+    target = tmp_path / "external.json"
+    legacy.parent.mkdir()
+    target.write_text('{"servers":[{"name":"external","command":"echo"}]}', encoding="utf-8")
+    target.chmod(0o644)
+    legacy.symlink_to(target)
+    monkeypatch.setenv("PA_DATA_ROOT", str(tmp_path / "data"))
+    monkeypatch.delenv("PA_MCP_CONFIG", raising=False)
+    monkeypatch.setattr(mc, "_DEFAULT_CONFIG_PATH", legacy)
+    monkeypatch.setattr(mc, "CONFIG_PATH", legacy)
+    monkeypatch.setattr(mc, "SERVERS_PATH", legacy)
+
+    with pytest.raises(RuntimeError, match="regular file"):
+        mc.load_servers()
+
+    assert legacy.is_symlink()
+    assert target.exists()
+    assert not (tmp_path / "data" / "mcp_servers.json").exists()
+
+
+def test_default_mcp_config_lives_under_data_root(tmp_path, monkeypatch):
+    import podcast_article.mcp_config as mc
+
+    monkeypatch.setenv("PA_DATA_ROOT", str(tmp_path / "data"))
+    monkeypatch.delenv("PA_MCP_CONFIG", raising=False)
+    monkeypatch.setattr(mc, "CONFIG_PATH", mc._DEFAULT_CONFIG_PATH)
+    monkeypatch.setattr(mc, "SERVERS_PATH", mc._DEFAULT_CONFIG_PATH)
+
+    mc.save_servers([])
+
+    target = tmp_path / "data" / "mcp_servers.json"
+    assert target.exists()
+    assert target.stat().st_mode & 0o777 == 0o600

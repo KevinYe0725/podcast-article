@@ -2019,6 +2019,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "argon2-cffi" },
+    { name = "cryptography" },
     { name = "feedparser" },
     { name = "flask" },
     { name = "jieba" },
@@ -2052,6 +2053,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "argon2-cffi", specifier = ">=23.1.0" },
+    { name = "cryptography", specifier = ">=42.0.0" },
     { name = "fastembed", marker = "extra == 'kb'", specifier = ">=0.4.0" },
     { name = "faster-whisper", marker = "extra == 'faster'", specifier = ">=1.0.0" },
     { name = "feedparser", specifier = ">=6.0.11" },

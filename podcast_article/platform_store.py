@@ -454,6 +454,14 @@ class PlatformStore:
             rows = db.execute("SELECT id FROM accounts WHERE enabled=1 ORDER BY id").fetchall()
         return [row["id"] for row in rows]
 
+    def legacy_owner_id(self) -> str | None:
+        """Return the bootstrap owner whose existing OSS prefix must remain unchanged."""
+        with self._connection() as db:
+            row = db.execute(
+                "SELECT id FROM accounts WHERE role='admin' ORDER BY created_at, id LIMIT 1"
+            ).fetchone()
+        return row["id"] if row else None
+
     def set_enabled(self, user_id: str, enabled: bool) -> Account:
         with self._transaction() as db:
             updated = db.execute("UPDATE accounts SET enabled=? WHERE id=?", (int(bool(enabled)), user_id))

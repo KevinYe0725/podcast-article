@@ -128,6 +128,7 @@ class Pipeline:
         release_billable_asr=None,
         check_workspace_cache=None,
         object_storage_client=None,
+        object_storage_prefix: str | None = None,
     ):
         self.url = url
         self.output_dir = output_dir
@@ -157,10 +158,11 @@ class Pipeline:
         self._actual_audio_seconds: int | None = None
         self._billable_asr_used = False
         self.object_storage = object_storage_client
+        self.object_storage_prefix = object_storage_prefix
 
     def _cloud_storage(self):
         if self.object_storage is None:
-            self.object_storage = object_storage.ObjectStorage()
+            self.object_storage = object_storage.ObjectStorage(prefix=self.object_storage_prefix)
         return self.object_storage
 
     def _update_meta(self, workdir: Path, values: dict) -> None:

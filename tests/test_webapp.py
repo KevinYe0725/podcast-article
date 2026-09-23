@@ -97,7 +97,8 @@ def test_audio_redirects_to_oss_when_local_copy_is_missing(client, episode, monk
         def signed_url(self, key, *, expires=900):
             return f"https://oss.example/{key}?expires={expires}"
 
-    monkeypatch.setattr(webapp.object_storage, "ObjectStorage", lambda: FakeStorage())
+    monkeypatch.setattr(webapp.object_storage.ObjectStorage, "for_account",
+                        lambda *args, **kwargs: FakeStorage())
     response = client.get("/api/audio/20240101-测试台-测试单集")
 
     assert response.status_code == 302

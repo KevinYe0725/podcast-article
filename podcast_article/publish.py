@@ -55,9 +55,11 @@ def _extract_url(text: str) -> str | None:
     return m.group(0).rstrip(".,;)") if m else None
 
 
-def publish(ctx: dict[str, Any], target: str = "builtin", template: Any = None) -> dict:
+def publish(ctx: dict[str, Any], target: str = "builtin", template: Any = None,
+            integration: dict[str, Any] | None = None) -> dict:
     """ctx: title / podcast / date / duration / url / content / blocks。"""
     if target in ("", "builtin", "notion", None):
+        integration = integration or {}
         url = notion.push_article(
             title=ctx["title"],
             markdown_text=ctx["content"],
@@ -65,6 +67,10 @@ def publish(ctx: dict[str, Any], target: str = "builtin", template: Any = None) 
             podcast=ctx.get("podcast"),
             pub_date=ctx.get("date"),
             duration=ctx.get("duration"),
+            token=integration.get("token"),
+            database_id=integration.get("database_id"),
+            parent_page_id=integration.get("parent_page_id"),
+            use_config_defaults=bool(integration.get("use_config_defaults", True)),
         )
         return {"via": "内置 Notion 集成（REST API）", "url": url, "text": f"已创建页面：{url}"}
 
@@ -83,10 +89,11 @@ def publish(ctx: dict[str, Any], target: str = "builtin", template: Any = None) 
     if template is None:
         template = NOTION_MCP_TEMPLATE
     args = render_args(template, ctx)
+    mcp_env = (integration or {}).get("mcp_env")
     result = mcp_client.call_tool(
         command=entry["command"],
         args=entry.get("args"),
-        env=mcp_config.resolved_env(entry),
+        env=mcp_env if mcp_env is not None else mcp_config.resolved_env(entry),
         tool=tool_name,
         arguments=args,
     )

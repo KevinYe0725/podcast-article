@@ -21,6 +21,8 @@ def _load_dotenv() -> None:
             continue
         key, _, value = line.partition("=")
         key, value = key.strip(), value.strip().strip("'\"")
+        if key in {"PA_USER_SECRETS_KEY", "PA_USER_SECRETS_PREVIOUS_KEYS"}:
+            continue  # supplied only by the host service environment, never project .env
         if key and key not in os.environ:
             os.environ[key] = value
 

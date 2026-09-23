@@ -171,9 +171,13 @@ def markdown_to_blocks(md: str) -> list[dict]:
 
 # ---------------------------------------------------------------- API 调用
 
-def _headers() -> dict:
+def _headers(token: str | None = None) -> dict:
+    if token is None:
+        token = config.notion_token()
+    if not str(token).strip():
+        raise NotionError("未配置当前账号的 Notion Token")
     return {
-        "Authorization": f"Bearer {config.notion_token()}",
+        "Authorization": f"Bearer {str(token).strip()}",
         "Notion-Version": VERSION,
         "Content-Type": "application/json",
     }
@@ -189,12 +193,12 @@ def _check(resp: requests.Response, what: str) -> dict:
     return resp.json()
 
 
-def _append_children(page_id: str, blocks: list[dict]) -> None:
+def _append_children(page_id: str, blocks: list[dict], token: str | None = None) -> None:
     for start in range(0, len(blocks), _BATCH):
         _check(
             _session().patch(
                 f"{API}/blocks/{page_id}/children",
-                headers=_headers(),
+                headers=_headers(token),
                 json={"children": blocks[start : start + _BATCH]},
                 timeout=60,
             ),
@@ -202,10 +206,10 @@ def _append_children(page_id: str, blocks: list[dict]) -> None:
         )
 
 
-def _database_properties(database_id: str) -> dict[str, str]:
+def _database_properties(database_id: str, token: str | None = None) -> dict[str, str]:
     """返回数据库属性名 -> 类型 的映射。"""
     data = _check(
-        _session().get(f"{API}/databases/{database_id}", headers=_headers(), timeout=30),
+        _session().get(f"{API}/databases/{database_id}", headers=_headers(token), timeout=30),
         "读取数据库",
     )
     return {name: prop.get("type", "") for name, prop in (data.get("properties") or {}).items()}
@@ -228,10 +232,15 @@ def push_article(
     podcast: str | None = None,
     pub_date: str | None = None,
     duration: float | None = None,
+    token: str | None = None,
+    database_id: str | None = None,
+    parent_page_id: str | None = None,
+    use_config_defaults: bool = True,
 ) -> str:
     """创建页面并写入文章，返回页面 URL。可选元信息会填入数据库同名属性。"""
-    database_id = config.notion_database_id()
-    parent_page_id = config.notion_parent_page_id()
+    if use_config_defaults:
+        database_id = database_id or config.notion_database_id()
+        parent_page_id = parent_page_id or config.notion_parent_page_id()
     if not database_id and not parent_page_id:
         raise NotionError(
             "未配置目标位置：请在 .env 里设置 NOTION_DATABASE_ID（写入数据库）"
@@ -239,7 +248,7 @@ def push_article(
         )
 
     if database_id:
-        props_meta = _database_properties(database_id)
+        props_meta = _database_properties(database_id, token)
         prop_name = next(
             (name for name, ptype in props_meta.items() if ptype == "title"), "Name"
         )
@@ -263,7 +272,7 @@ def push_article(
     page = _check(
         _session().post(
             f"{API}/pages",
-            headers=_headers(),
+            headers=_headers(token),
             json={"parent": parent, "properties": properties, "icon": {"type": "emoji", "emoji": "🎙"}},
             timeout=60,
         ),
@@ -274,5 +283,5 @@ def push_article(
     blocks = markdown_to_blocks(markdown_text)
     if source_url:
         blocks.append(_block("paragraph", f"[原文链接]({source_url})"))
-    _append_children(page_id, blocks)
+    _append_children(page_id, blocks, token)
     return page["url"]

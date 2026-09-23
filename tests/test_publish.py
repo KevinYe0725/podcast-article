@@ -2,6 +2,7 @@
 import pytest
 
 from podcast_article import publish
+from podcast_article import notion
 
 
 CTX = {
@@ -64,3 +65,15 @@ def test_publish_mcp_target_format_error():
 def test_publish_mcp_unknown_server():
     with pytest.raises(ValueError, match="未找到 MCP 服务器"):
         publish.publish(CTX, target="mcp:不存在:tool")
+
+
+def test_notion_headers_accept_explicit_account_token_without_environment_lookup():
+    headers = notion._headers("account-specific-token")
+    assert headers["Authorization"] == "Bearer account-specific-token"
+
+
+def test_notion_rejects_empty_explicit_account_token():
+    from podcast_article.notion import NotionError
+
+    with pytest.raises(NotionError, match="当前账号"):
+        notion._headers("")

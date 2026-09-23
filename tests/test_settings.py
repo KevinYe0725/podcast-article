@@ -13,7 +13,8 @@ def isolated(tmp_path, monkeypatch):
         encoding="utf-8",
     )
     monkeypatch.setattr(st, "ENV_PATH", env)
-    for k in st.MANAGED_KEYS:
+    for k in (*st.MANAGED_KEYS, "NOTION_TOKEN", "NOTION_DATABASE_ID",
+              "NOTION_PARENT_PAGE_ID", "TTS_API_KEY"):
         monkeypatch.delenv(k, raising=False)
     return env
 
@@ -60,9 +61,10 @@ def test_update_env_empty_value_keeps_existing(isolated):
     assert "ntn-old" in isolated.read_text(encoding="utf-8")
 
 
-def test_update_env_appends_missing_key(isolated):
-    st.update_env({"NOTION_DATABASE_ID": "db-123"})
-    assert "NOTION_DATABASE_ID=db-123" in isolated.read_text(encoding="utf-8")
+def test_update_env_does_not_store_personal_integration_settings(isolated):
+    assert st.update_env({"NOTION_DATABASE_ID": "db-123", "TTS_API_KEY": "personal-tts"}) == []
+    assert "NOTION_DATABASE_ID=db-123" not in isolated.read_text(encoding="utf-8")
+    assert "personal-tts" not in isolated.read_text(encoding="utf-8")
 
 
 def test_update_env_ignores_unmanaged_keys(isolated):
@@ -81,3 +83,14 @@ def test_mask_short_and_long():
     assert st.mask("") == ""
     assert st.mask("short") == "•••"
     assert "…" in st.mask("x" * 40)
+
+
+def test_notion_destinations_are_stored_per_settings_file(tmp_path):
+    first = tmp_path / "alice.json"
+    second = tmp_path / "bob.json"
+
+    st.save(notion={"database_id": "alice-db"}, settings_path=first)
+    st.save(notion={"parent_page_id": "bob-page"}, settings_path=second)
+
+    assert st.load(settings_path=first)["notion"] == {"database_id": "alice-db", "parent_page_id": ""}
+    assert st.load(settings_path=second)["notion"] == {"database_id": "", "parent_page_id": "bob-page"}
