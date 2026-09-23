@@ -1,7 +1,7 @@
 # 公网云端转写工作台的反代配置
 #
-# 域名用的是 sslip.io：把 IP 里的点换成横杠就是域名，能正常签 Let's Encrypt 证书，
-# 不需要买域名、也不用配 DNS。换服务器时记得把域名一起改掉。
+# 当前部署域名为 podcast.squareconf.cn。先把该域名的 A 记录指向服务器，
+# 再将 basic_auth 中的占位哈希替换为真实哈希。
 #
 # 密码哈希这样生成（明文不进命令行参数以外的地方，也不落盘）：
 #   caddy hash-password --plaintext '你的密码'        # 宿主安装
