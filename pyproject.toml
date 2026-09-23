@@ -19,6 +19,7 @@ dependencies = [
     # numpy 做向量检索（个人级书库直接暴力算余弦就够，不需要向量数据库）
     "jieba>=0.42.1",
     "numpy>=1.26",
+    "argon2-cffi>=23.1.0",
 ]
 
 [project.optional-dependencies]
@@ -30,6 +31,7 @@ kb = ["fastembed>=0.4.0"]
 [project.scripts]
 podcast-article = "podcast_article.cli:main"
 podcast-article-mcp = "podcast_article.mcp_server:main"
+podcast-admin = "podcast_article.admin:main"
 
 [build-system]
 requires = ["hatchling"]
