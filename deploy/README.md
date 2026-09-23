@@ -8,8 +8,7 @@
 手机 / 电脑浏览器 ──HTTPS + 密码──▶ Caddy ──▶ Flask（云端 ASR）──▶ /srv/podcast-article/data/ + OSS
 ```
 
-实际部署的一台：阿里云 ECS，Alibaba Cloud Linux 4，2 vCPU / 1.8G / 40G，域名
-`120-27-128-11.sslip.io`（sslip.io 把 IP 的点写成横杠即可，不用买域名也不用配 DNS）。
+实际部署目标：阿里云 ECS Ubuntu 24.04，2 vCPU / 约 1.7G / 40G，工作台域名 `podcast.squareconf.cn`。
 
 ## 为什么使用云端 ASR
 
@@ -51,7 +50,7 @@ rsync -az --delete \
   --exclude mcp_servers.json --exclude data \
   -e "ssh -i ~/.ssh/podcast_server" ./ root@SERVER:/srv/podcast-article/
 
-# 2) 传文章数据（先不传音频，快）
+# 2) 传已有文章数据（OSS 音频由服务器流水线归档）
 ssh root@SERVER 'mkdir -p /srv/podcast-article/data/output'
 rsync -az --exclude 'audio.*' -e "ssh -i ~/.ssh/podcast_server" \
   output/ root@SERVER:/srv/podcast-article/data/output/
@@ -104,11 +103,11 @@ ssh root@SERVER 'systemctl restart podcast-article'
 
 ## 音频保留策略
 
-音频每集约 40MB（8 集已 295MB），磁盘 40G。只保留最近 N 集的音频，文章与文字稿永久保留：
+OSS 音频长期保留。服务器本地音频只是上传和失败重试缓存；第一版不自动清理本地缓存，也不自动删除 OSS 对象。
 
 ```bash
 cd /srv/podcast-article/data/output
-ls -1dt */ | tail -n +21 | while read d; do rm -f "$d"/audio.*; done   # 保留最近 20 集
+ls -1dt */ | tail -n +21 | while read d; do rm -f "$d"/audio.*; done   # 可选：只清本地缓存，OSS 不受影响
 ```
 
 建议进 crontab 每周跑一次。删掉音频后文章照常阅读，只是时间戳点不开播放。
@@ -123,5 +122,5 @@ ls -1dt */ | tail -n +21 | while read d; do rm -f "$d"/audio.*; done   # 保留�
 | 应用起不来、日志 `Permission denied` | rsync 过来的文件是 600；`chmod -R u+rwX,go+rX /srv/podcast-article` |
 | `docker pull` 卡住 / timeout | 这台服务器的 Docker Hub 不通（`registry-1.docker.io` 超时），所以用宿主安装 |
 | 页面能开但进度条不动 | 反代没关 SSE 缓冲：确认 `flush_interval -1` |
-| 生成按钮点了报 503 | 正常 —— 只读镜像，请在 Mac 上生成 |
+| 生成按钮点了报 401 | 正常 —— 工作台由 Caddy Basic Auth 保护 |
 | 音频 404 | 音频还没同步，或被保留策略清理 |
