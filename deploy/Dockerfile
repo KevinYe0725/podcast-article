@@ -2,8 +2,7 @@
 #
 # 为什么：服务器（2 核 / 1.8G / 无 GPU）只负责「看」——文章、检索、时间戳回听、导出。
 # 生成与转写在你自己的 Mac 上跑（mlx-whisper，Apple Silicon，约 38x 实时）。
-# pyproject 里 mlx-whisper 带 darwin/arm64 条件，在 Linux 上本来就不会装；
-# faster-whisper 是可选 extra，这里也刻意不装（省内存，免得误以为服务器能转写）。
+# 服务器使用云端 ASR，不在 2 核主机上安装本地 Whisper。
 FROM python:3.11-slim
 
 ENV PYTHONUNBUFFERED=1 \
@@ -25,7 +24,8 @@ ENV PA_OUTPUT_DIR=/data/output \
     PA_LIBRARY_FILE=/data/library.json \
     PA_QUEUE_FILE=/data/queue.json \
     PA_FEEDS_FILE=/data/feeds.json \
-    PA_READONLY=1 \
+    PA_READONLY=0 \
+    PA_ASR_BACKEND=cloud \
     PA_SCHEDULER=0
 RUN mkdir -p /data/output
 

@@ -1,21 +1,22 @@
-# 部署到服务器（公网只读镜像）
+# 部署到服务器（云端转写 + OSS 长期归档）
 
-这台机器**只负责看**：文章、检索、时间戳回听、导出。生成与语音转写在你自己的 Mac 上跑
-（mlx-whisper 走 Apple Silicon GPU，约 38x 实时；服务器的 2 核 CPU 转写要十几小时）。
+服务器负责下载、OSS 归档、云端转写和 DeepSeek 成文；不在 2 vCPU 主机上安装本地 Whisper。
+
+工作台域名为 `podcast.squareconf.cn`。将该域名的 A 记录指向服务器 IP，并在 Caddy 中配置 Basic Auth。
 
 ```
-手机 / 电脑浏览器 ──HTTPS + 密码──▶ Caddy ──▶ Flask（只读镜像）──▶ /srv/podcast-article/data/
+手机 / 电脑浏览器 ──HTTPS + 密码──▶ Caddy ──▶ Flask（云端 ASR）──▶ /srv/podcast-article/data/ + OSS
 ```
 
 实际部署的一台：阿里云 ECS，Alibaba Cloud Linux 4，2 vCPU / 1.8G / 40G，域名
 `120-27-128-11.sslip.io`（sslip.io 把 IP 的点写成横杠即可，不用买域名也不用配 DNS）。
 
-## 为什么是"只读"
+## 为什么使用云端 ASR
 
-- **转写要算力**：2 核跑 `faster-whisper large-v3` 大约 0.1x 实时量级，100 分钟节目要十几小时。
-- **密钥要留在家里**：公网机器上不放 `DEEPSEEK_API_KEY` / `NOTION_TOKEN`。
-- `PA_READONLY=1` 会拦住所有「跑活 / 要密钥 / 写文件」的接口（31 个端点），前端也会收起
-  输入框、助手悬浮球与发布入口，并写明「请在 Mac 上操作」。
+- 2 vCPU 主机不适合运行本地 Whisper，服务器改用阿里云百炼 `paraformer-v2`。
+- 音频上传到私有 OSS 并长期保留，转写完成后不删除对象。
+- ASR、OSS、DeepSeek 凭据只放 `/etc/podcast-article/server.env`，权限为 `0600`。
+- 工作台由 Caddy Basic Auth 保护，防止公开接口被滥用产生费用。
 
 ## 服务器上的最终形态（宿主安装，不用 Docker）
 
@@ -24,7 +25,7 @@
   .venv/                              Python 3.11 虚拟环境
   deploy/                             Dockerfile / compose / Caddyfile（容器方案备用）
   data/                               持久数据（podcast 用户可写）
-    output/<每集>/                     article.md、meta.json、transcript.*、cover.*、音频
+    output/<每集>/                     article.md、meta.json、transcript.*、cover.*
     library.json
 /usr/local/bin/caddy                  Caddy 静态二进制（v2.11.4）
 /etc/caddy/Caddyfile                  站点配置（HTTPS + basic auth）
@@ -81,8 +82,12 @@ cp /srv/podcast-article/deploy/Caddyfile /etc/caddy/Caddyfile   # 把哈希填�
 systemctl enable --now podcast-article caddy
 ```
 
-`podcast-article.service` 的要点：`User=podcast`、`PA_READONLY=1`、`PA_SCHEDULER=0`、
+`podcast-article.service` 的要点：`User=podcast`、`PA_READONLY=0`、`PA_ASR_BACKEND=cloud`、`PA_SCHEDULER=0`、
 `PA_*` 全部指向 `/srv/podcast-article/data/`、`ProtectSystem=full` + `ReadWritePaths=/srv/podcast-article/data`。
+
+在 `/etc/podcast-article/server.env` 配置 `DASHSCOPE_API_KEY`、`OSS_ACCESS_KEY_ID`、
+`OSS_ACCESS_KEY_SECRET`、`OSS_BUCKET`、`OSS_ENDPOINT`、`OSS_PREFIX` 和 `DEEPSEEK_API_KEY`。
+不要把此文件上传到仓库。
 
 ## 日常更新
 

@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# 把代码与文章数据推到公网那台只读镜像，然后重启应用。
+# 把代码与文章数据推到云端转写服务，然后重启应用。
 #
 #   bash scripts/deploy-server.sh                    # 用默认主机
 #   SERVER=root@1.2.3.4 bash scripts/deploy-server.sh
 #   WITH_AUDIO=1 bash scripts/deploy-server.sh       # 连音频一起推（每集约 40MB）
 #
 # 设计取舍：
-#   · 只读镜像上不放任何密钥，所以这里**不传** .env / settings.json / queue.json / mcp_servers.json
+#   · 服务器密钥只放 /etc/podcast-article/server.env，这里**不传** .env / settings.json / queue.json / mcp_servers.json
 #   · 阅读状态与分类由 Mac 这边说了算（服务器上相关接口是 503），所以 library.json 单向覆盖
 #   · macOS 自带的 rsync 没有 --chown，属主在服务器上用一条 chown 修正
 set -euo pipefail

@@ -1,4 +1,4 @@
-# 公网只读镜像的反代配置
+# 公网云端转写工作台的反代配置
 #
 # 域名用的是 sslip.io：把 IP 里的点换成横杠就是域名，能正常签 Let's Encrypt 证书，
 # 不需要买域名、也不用配 DNS。换服务器时记得把域名一起改掉。
@@ -9,10 +9,10 @@
 #
 # 注意：**不要**配 email。填 example.com 之类的占位邮箱会被 Let's Encrypt 拒绝
 # （invalidContact: contact email has forbidden domain），不填不影响签发。
-120-27-128-11.sslip.io {
+podcast.squareconf.cn {
 	encode zstd gzip
 
-	# 公网入口要密码：应用本身没有登录，靠这一层挡住
+	# 公网入口要密码：ASR 和 DeepSeek 都会产生费用
 	basic_auth {
 		kevin $2a$14$REPLACE_WITH_GENERATED_HASH
 	}

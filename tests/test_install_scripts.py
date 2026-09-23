@@ -82,3 +82,25 @@ def test_dev_script_restarts_cleanly():
     assert "webapp.py" in s, "只该杀本项目的进程"
     assert "不是本项目的 webapp.py" in s, "占端口的是别人的进程时要拒绝，不能乱杀"
     assert "/api/config" in s, "用新端点的返回值判断就绪（能顺带确认进程是新版）"
+
+
+def test_server_deployment_enables_cloud_asr_without_tracking_secrets():
+    service = (ROOT / "deploy/podcast-article.service").read_text(encoding="utf-8")
+    compose = (ROOT / "deploy/docker-compose.yml").read_text(encoding="utf-8")
+    caddy = (ROOT / "deploy/Caddyfile").read_text(encoding="utf-8")
+    readme = (ROOT / "deploy/README.md").read_text(encoding="utf-8")
+
+    assert "EnvironmentFile=/etc/podcast-article/server.env" in service
+    assert "User=podcast" in service
+    assert "--host 127.0.0.1 --port 8788" in service
+    assert "PA_READONLY=0" in service
+    assert "PA_ASR_BACKEND=cloud" in service
+    assert "DASHSCOPE_API_KEY=" not in service
+    assert "OSS_ACCESS_KEY_SECRET=" not in service
+    assert "podcast.squareconf.cn" in caddy
+    assert "basic_auth" in caddy
+    assert "reverse_proxy {$PA_APP_UPSTREAM:127.0.0.1:8788}" in caddy
+    assert "podcast.squareconf.cn" in readme
+    assert "PA_ASR_BACKEND=cloud" in readme
+    assert "server.env" in readme
+    assert "PA_READONLY" in compose

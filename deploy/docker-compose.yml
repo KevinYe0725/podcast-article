@@ -1,4 +1,4 @@
-# 公网只读镜像：Caddy（HTTPS + 密码）+ 应用
+# 公网云端转写服务：Caddy（HTTPS + 密码）+ 应用
 #
 # 目录约定（服务器上）：
 #   /srv/podcast-article/            仓库（git clone 或 rsync 上来的）
@@ -15,9 +15,11 @@ services:
       dockerfile: deploy/Dockerfile
     image: podcast-article:local
     restart: unless-stopped
+    env_file:
+      - ../server.env
     environment:
-      # 只读镜像：生成 / 转写 / 助手 / 发布 全部拦住（算力与密钥都在 Mac 上）
-      PA_READONLY: "1"
+      PA_READONLY: "0"
+      PA_ASR_BACKEND: cloud
       PA_SCHEDULER: "0"
     # 上游在容器网络里是 app:8787（宿主安装则是 127.0.0.1:8788，见 Caddyfile 默认值）
     volumes:

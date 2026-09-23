@@ -1,0 +1,28 @@
+[Unit]
+Description=Podcast Article cloud transcription workspace
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=podcast
+Group=podcast
+WorkingDirectory=/srv/podcast-article
+EnvironmentFile=/etc/podcast-article/server.env
+Environment=PA_READONLY=0
+Environment=PA_ASR_BACKEND=cloud
+Environment=PA_OUTPUT_DIR=/srv/podcast-article/data/output
+Environment=PA_LIBRARY_FILE=/srv/podcast-article/data/library.json
+Environment=PA_QUEUE_FILE=/srv/podcast-article/data/queue.json
+Environment=PA_FEEDS_FILE=/srv/podcast-article/data/feeds.json
+Environment=PA_SCHEDULER=0
+ExecStart=/srv/podcast-article/.venv/bin/python webapp.py --host 127.0.0.1 --port 8788
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/srv/podcast-article/data
+
+[Install]
+WantedBy=multi-user.target
