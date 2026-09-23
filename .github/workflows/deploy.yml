@@ -58,4 +58,4 @@ jobs:
             chown -R podcast:podcast '$SERVER_PATH/data'; \
             systemctl daemon-reload; systemctl enable podcast-article; systemctl restart podcast-article; \
             sleep 3; systemctl is-active podcast-article; \
-            curl -fsS --max-time 5 http://127.0.0.1:8788/api/config >/dev/null"
+            curl -fsS --max-time 5 http://172.17.0.1:8788/api/config >/dev/null"
