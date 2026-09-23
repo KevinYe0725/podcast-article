@@ -309,6 +309,15 @@ Design choices worth knowing:
 
 ### 1. Web UI (recommended)
 
+Before the first run, initialize a local encryption key and the administrator account. The CLI generates the key into `.env` without printing it; it asks for the admin password through a secure prompt:
+
+```bash
+uv run podcast-admin secrets-key --env-file .env
+uv run podcast-admin bootstrap --username kevin
+```
+
+Then start the Web app. Run these initialization commands once. `PA_USER_SECRETS_KEY` encrypts per-account integration credentials; losing it makes saved credentials unreadable. Never commit `.env`.
+
 ```bash
 uv run python webapp.py    # open http://127.0.0.1:8787
 ```

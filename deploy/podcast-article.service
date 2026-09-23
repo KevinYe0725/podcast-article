@@ -12,10 +12,7 @@ EnvironmentFile=/etc/podcast-article/server.env
 Environment=PA_READONLY=0
 Environment=PA_ASR_BACKEND=cloud
 Environment=PA_ASR_URL_EXPIRES=86400
-Environment=PA_OUTPUT_DIR=/srv/podcast-article/data/output
-Environment=PA_LIBRARY_FILE=/srv/podcast-article/data/library.json
-Environment=PA_QUEUE_FILE=/srv/podcast-article/data/queue.json
-Environment=PA_FEEDS_FILE=/srv/podcast-article/data/feeds.json
+Environment=PA_DATA_ROOT=/srv/podcast-article/data
 Environment=PA_SCHEDULER=0
 # The Portfolio Hub Caddy container reaches the host through Docker's bridge gateway.
 # This address is not the public interface; Caddy remains the only public entrypoint.

@@ -17,6 +17,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from . import auth
+from .migration import LegacyMigrator
 from .platform_store import AccountQuota, InviteError, PlatformStore
 from .workspace import data_root
 
@@ -108,7 +109,13 @@ def _parser() -> argparse.ArgumentParser:
         subcommand = user_commands.add_parser(name, help=help_text)
         subcommand.add_argument("--username", required=True)
 
-    # The dry-run/apply migration command is added alongside the migration implementation in Task 10.
+    migrate = commands.add_parser("migrate-legacy", help="将单用户数据导入指定账号工作区")
+    migrate.add_argument("--source-root", required=True, type=Path)
+    migrate.add_argument("--legacy-project-root", required=True, type=Path)
+    migrate.add_argument("--owner", required=True)
+    mode = migrate.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--dry-run", action="store_true")
+    mode.add_argument("--apply", action="store_true")
     return parser
 
 
@@ -119,6 +126,28 @@ def _run(args: argparse.Namespace) -> int:
         return 0
 
     store = _store()
+    if args.command == "migrate-legacy":
+        account = _find_account(store, args.owner)
+        migrator = LegacyMigrator(data_root=data_root(), platform_store=store)
+        report = (migrator.apply if args.apply else migrator.dry_run)(
+            args.source_root, args.legacy_project_root, account.id
+        )
+        if report.already_applied:
+            operation = "Already imported"
+        else:
+            operation = "Imported" if args.apply else "Dry run"
+        print(
+            f"{operation} for {account.username} ({account.id}): "
+            f"{report.episode_count} episodes, {report.file_count} files."
+        )
+        if report.source_changed:
+            print("Legacy source changed after an earlier migration; apply is blocked until reviewed.")
+        for path in report.source_paths:
+            print(f"  {path}")
+        if not report.source_paths:
+            print("  (no supported legacy data found)")
+        return 0
+
     if args.command == "bootstrap":
         password = _read_password("New administrator password: ")
         account = store.bootstrap_admin(args.username, auth.hash_password(password), now=time.time())

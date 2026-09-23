@@ -288,6 +288,15 @@ MCP 客户端（Claude Desktop、DSH 等）里对应 `search_library` / `ask_lib
 
 ### 1. Web 界面（推荐）
 
+首次运行需要初始化本地密钥和管理员账号。密钥由 CLI 生成并写入 `.env`（不会打印在终端）；管理员密码通过安全提示输入：
+
+```bash
+uv run podcast-admin secrets-key --env-file .env
+uv run podcast-admin bootstrap --username kevin
+```
+
+完成后再启动 Web。此初始化只需执行一次；`PA_USER_SECRETS_KEY` 用于加密各账号的第三方集成凭据，丢失后已保存的凭据将无法解密。不要将 `.env` 提交到 Git。
+
 ```bash
 uv run python webapp.py    # 打开 http://127.0.0.1:8787
 ```

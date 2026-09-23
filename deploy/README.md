@@ -23,9 +23,9 @@
 /srv/podcast-article/                 代码（root 属主 + 全局可读，服务用户改不了）
   .venv/                              Python 3.11 虚拟环境
   deploy/                             Dockerfile / compose / Caddyfile（容器方案备用）
-  data/                               持久数据（podcast 用户可写）
-    output/<每集>/                     article.md、meta.json、transcript.*、cover.*
-    library.json
+  data/                               持久数据根目录（podcast 用户可写）
+    platform.sqlite                  账号、会话、队列与用量
+    users/<账号 UUID>/                各账号独立的数据工作区
 /usr/local/bin/caddy                  Caddy 静态二进制（v2.11.4）
 /etc/caddy/Caddyfile                  站点配置（HTTPS + basic auth）
 /etc/systemd/system/podcast-article.service
@@ -50,12 +50,7 @@ rsync -az --delete \
   --exclude mcp_servers.json --exclude data \
   -e "ssh -i ~/.ssh/podcast_server" ./ root@SERVER:/srv/podcast-article/
 
-# 2) 传已有文章数据（OSS 音频由服务器流水线归档）
-ssh root@SERVER 'mkdir -p /srv/podcast-article/data/output'
-rsync -az --exclude 'audio.*' -e "ssh -i ~/.ssh/podcast_server" \
-  output/ root@SERVER:/srv/podcast-article/data/output/
-rsync -az -e "ssh -i ~/.ssh/podcast_server" \
-  library.json root@SERVER:/srv/podcast-article/data/library.json
+# 2) 如果要导入旧版个人数据，先完成服务安装和账号初始化，再执行下方“旧版数据迁移”。
 
 # 3) Caddy：服务器直连 GitHub 只有 25KB/s（17MB 要 11 分钟），所以在 Mac 上下好再传
 curl -sL -o /tmp/caddy-linux.tar.gz \
@@ -82,12 +77,41 @@ systemctl enable --now podcast-article caddy
 ```
 
 `podcast-article.service` 的要点：`User=podcast`、`PA_READONLY=0`、`PA_ASR_BACKEND=cloud`、`PA_SCHEDULER=0`、
-`PA_*` 全部指向 `/srv/podcast-article/data/`、`ProtectSystem=full` + `ReadWritePaths=/srv/podcast-article/data`。
+`PA_DATA_ROOT=/srv/podcast-article/data`、`ProtectSystem=full` + `ReadWritePaths=/srv/podcast-article/data`。各账号工作区由该根目录派生。
 
 在 `/etc/podcast-article/server.env` 配置 `DASHSCOPE_API_KEY`、`OSS_ACCESS_KEY_ID`、
 `OSS_ACCESS_KEY_SECRET`、`OSS_BUCKET`、`OSS_ENDPOINT`、`OSS_PREFIX` 和 `DEEPSEEK_API_KEY`。
 ASR 提交用的 OSS 签名 URL 默认有效 24 小时（`PA_ASR_URL_EXPIRES=86400`），播放接口仍使用短时签名。
 不要把此文件上传到仓库。
+
+首次初始化账号和用户密钥加密：
+
+```bash
+install -d -m 0700 /etc/podcast-article
+touch /etc/podcast-article/server.env
+chmod 0600 /etc/podcast-article/server.env
+cd /srv/podcast-article
+PA_DATA_ROOT=/srv/podcast-article/data \
+  .venv/bin/podcast-admin secrets-key --env-file /etc/podcast-article/server.env
+sudo -u podcast env PA_DATA_ROOT=/srv/podcast-article/data \
+  .venv/bin/podcast-admin bootstrap --username kevin
+```
+
+`secrets-key` 由 root 执行，只把新密钥写入权限为 `0600` 的环境文件，不会把密钥打印到终端。确保数据目录归 `podcast` 用户后，由该服务用户创建管理员账号。核心服务商密钥也只保存在该文件；不要将这些变量放进 GitHub Actions。
+
+### 旧版数据迁移
+
+先对旧数据目录和项目目录做独立备份。迁移先运行只读清单：
+
+```bash
+sudo -u podcast env PA_DATA_ROOT=/srv/podcast-article/data \
+  .venv/bin/podcast-admin migrate-legacy \
+  --source-root /srv/podcast-article/legacy-data \
+  --legacy-project-root /srv/podcast-article/legacy-project \
+  --owner kevin --dry-run
+```
+
+核对集数、文件数和来源路径后，再将 `--dry-run` 改为 `--apply`。命令会把文章、分类、队列、订阅、设置和知识库导入 Kevin 的账号工作区，并在 `platform.sqlite` 记录完成状态；相同数据可安全重跑，目标文件内容不同会拒绝覆盖。旧文件保持原样，OSS 音频对象不复制、不删除也不改写；服务商密钥不会进入账号工作区。
 
 ## 日常更新
 
@@ -107,7 +131,7 @@ ssh root@SERVER 'systemctl restart podcast-article'
 OSS 音频长期保留。服务器本地音频只是上传和失败重试缓存；第一版不自动清理本地缓存，也不自动删除 OSS 对象。
 
 ```bash
-cd /srv/podcast-article/data/output
+cd /srv/podcast-article/data/users/<Kevin 的账号 UUID>/output
 ls -1dt */ | tail -n +21 | while read d; do rm -f "$d"/audio.*; done   # 可选：只清本地缓存，OSS 不受影响
 ```
 
