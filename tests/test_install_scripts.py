@@ -104,3 +104,9 @@ def test_server_deployment_enables_cloud_asr_without_tracking_secrets():
     assert "PA_ASR_BACKEND=cloud" in readme
     assert "server.env" in readme
     assert "PA_READONLY" in compose
+
+
+def test_ui_runner_isolates_knowledge_database():
+    script = (ROOT / "tests/ui/run.sh").read_text(encoding="utf-8")
+    assert 'export PA_KB_FILE="$TMP/kb.sqlite"' in script
+    assert 'PA_KB_FILE="$PA_KB_FILE"' in script

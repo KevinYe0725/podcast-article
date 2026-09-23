@@ -12,6 +12,7 @@ export PA_OUTPUT_DIR="$OUT"
 export PA_LIBRARY_FILE="$TMP/library.json"   # 分类数据也要隔离，别碰真实 library.json
 export PA_QUEUE_FILE="$TMP/queue.json"       # 批量队列（后台调度会读写它）
 export PA_FEEDS_FILE="$TMP/feeds.json"       # 订阅
+export PA_KB_FILE="$TMP/kb.sqlite"           # 知识库与记忆也要隔离，不能写进仓库根目录
 export PA_SCHEDULER=0                        # 关掉后台自动跑队列，让测试可控（手动触发用 /api/queue/run）
 export PA_BASE="http://127.0.0.1:$PORT"
 
@@ -26,6 +27,7 @@ fi
 node seed.js
 
 ( cd "$REPO" && PA_OUTPUT_DIR="$OUT" PA_LIBRARY_FILE="$PA_LIBRARY_FILE" \
+    PA_KB_FILE="$PA_KB_FILE" \
     PA_QUEUE_FILE="$PA_QUEUE_FILE" PA_FEEDS_FILE="$PA_FEEDS_FILE" PA_SCHEDULER=0 \
     uv run python webapp.py --port "$PORT" >/tmp/pa-ui-test-server.log 2>&1 ) &
 SERVER_PID=$!

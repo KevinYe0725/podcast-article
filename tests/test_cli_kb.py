@@ -114,6 +114,7 @@ def test_ask_uses_library_and_cites(cli_env, monkeypatch, capsys):
         seen["system"], seen["user"] = system, user
         return "结论：1906 年 [1]。"
 
+    monkeypatch.setattr(summarize, "_client", lambda: object())
     monkeypatch.setattr(summarize, "_chat", fake_chat)
     kb.memory_add("我在跟踪地震预警", pinned=True)
     assert cli.main(["ask", "旧金山地震是什么时候"]) == 0

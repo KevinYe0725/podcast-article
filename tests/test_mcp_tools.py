@@ -108,6 +108,7 @@ def test_ask_library_uses_only_library_and_cites_sources(mcp_env, monkeypatch):
         seen["system"], seen["user"] = system, user
         return "结论：地震发生在 1906 年 [1]。"
 
+    monkeypatch.setattr(summarize, "_client", lambda: object())
     monkeypatch.setattr(summarize, "_chat", fake_chat)
     mcp_env.remember("我在跟踪地震预警", kind="preference")
     out = mcp_env.ask_library("旧金山地震是什么时候")
