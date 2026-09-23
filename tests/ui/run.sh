@@ -9,6 +9,7 @@ TMP="$(mktemp -d)"
 OUT="$TMP/output"
 export PA_DATA_ROOT="$TMP/data"
 export PA_PLATFORM_DB="$PA_DATA_ROOT/platform.sqlite"
+export PA_MCP_CONFIG="$PA_DATA_ROOT/mcp_servers.json"
 export PA_USER_SECRETS_KEY="$(uv run python -c 'import base64,os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())')"
 export PA_UI_SESSION_FILE="$TMP/session.json"
 mkdir -p "$OUT" "$PA_DATA_ROOT"
@@ -47,6 +48,7 @@ mkdir -p "$PA_OUTPUT_DIR"
 node seed.js
 
 ( cd "$REPO" && PA_DATA_ROOT="$PA_DATA_ROOT" PA_PLATFORM_DB="$PA_PLATFORM_DB" \
+    PA_MCP_CONFIG="$PA_MCP_CONFIG" \
     PA_USER_SECRETS_KEY="$PA_USER_SECRETS_KEY" PA_TEST_USER_ID="$PA_TEST_USER_ID" \
     PA_UI_SESSION_FILE="$PA_UI_SESSION_FILE" PA_OUTPUT_DIR="$PA_OUTPUT_DIR" PA_LIBRARY_FILE="$PA_LIBRARY_FILE" \
     PA_KB_FILE="$PA_KB_FILE" \

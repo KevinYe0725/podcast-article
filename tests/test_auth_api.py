@@ -234,10 +234,14 @@ def test_login_and_invite_pages_are_available_and_invite_clears_fragment_in_brow
     assert login_page.status_code == 200
     response = guest_client.get("/invite")
     assert response.status_code == 200
-    assert b"location.hash" in response.data
-    assert b"history.replaceState" in response.data
-    assert b"document.querySelector('#username').value" in login_page.data
-    assert b"document.querySelector('#password').value" in login_page.data
+    assert b'id="invite-form"' in response.data
+    assert b'id="login-form"' in login_page.data
+    assert b'id="username"' in login_page.data
+    assert b'id="password"' in login_page.data
+    login_script = guest_client.get("/static/login.js")
+    assert login_script.status_code == 200
+    assert b"location.hash" in login_script.data
+    assert b"history.replaceState" in login_script.data
 
 
 def test_must_change_password_blocks_application_routes_until_password_changed(guest_client, auth_system):

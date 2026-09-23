@@ -214,3 +214,13 @@ def test_default_mcp_config_lives_under_data_root(tmp_path, monkeypatch):
     target = tmp_path / "data" / "mcp_servers.json"
     assert target.exists()
     assert target.stat().st_mode & 0o777 == 0o600
+
+
+def test_ui_runner_uses_temporary_mcp_config_for_server(tmp_path):
+    from pathlib import Path
+
+    runner = Path(__file__).parent / "ui" / "run.sh"
+    source = runner.read_text(encoding="utf-8")
+
+    assert 'export PA_MCP_CONFIG="$PA_DATA_ROOT/mcp_servers.json"' in source
+    assert 'PA_MCP_CONFIG="$PA_MCP_CONFIG"' in source

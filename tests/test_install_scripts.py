@@ -97,11 +97,15 @@ def test_server_deployment_enables_cloud_asr_without_tracking_secrets():
     assert "PA_ASR_BACKEND=cloud" in service
     assert "DASHSCOPE_API_KEY=" not in service
     assert "OSS_ACCESS_KEY_SECRET=" not in service
+    assert "Environment=PA_COOKIE_SECURE=1" in service
+    assert "Environment=PA_COOKIE_DOMAIN=podcast.squareconf.cn" in service
+    assert "Environment=PA_TRUSTED_PROXY=1" in service
     assert "podcast.squareconf.cn" in caddy
-    assert "basic_auth" in caddy
+    assert "basic_auth" not in caddy
     assert "reverse_proxy {$PA_APP_UPSTREAM:127.0.0.1:8788}" in caddy
     assert "podcast.squareconf.cn" in readme
     assert "PA_ASR_BACKEND=cloud" in readme
+    assert "Flask 负责登录" in readme
     assert "server.env" in readme
     assert "PA_READONLY" in compose
 
