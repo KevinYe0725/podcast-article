@@ -11,8 +11,8 @@
 #   · macOS 自带的 rsync 没有 --chown，属主在服务器上用一条 chown 修正
 set -euo pipefail
 
-SERVER="${SERVER:-root@120.27.128.11}"
-KEY="${KEY:-$HOME/.ssh/podcast_server}"
+SERVER="${SERVER:-root@116.62.168.32}"
+KEY="${KEY:-$HOME/.ssh/kevinye-portfolio-aliyun}"
 ROOT=/srv/podcast-article
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 SSH=(ssh -i "$KEY" -o BatchMode=yes)
@@ -44,4 +44,4 @@ echo "▸ 4/4 重启应用并自检"
 "${SSH[@]}" "$SERVER" 'curl -s -m 5 http://127.0.0.1:8788/api/config'
 
 echo
-echo "✓ 完成。站点：https://120-27-128-11.sslip.io/"
+echo "✓ 完成。播客服务已更新，宿主监听 http://127.0.0.1:8788；公网入口需由 Portfolio Hub Caddy 配置 podcast.squareconf.cn。"
