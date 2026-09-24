@@ -222,6 +222,14 @@ def _extract_info(ydl, url: str, *, download: bool, timeout: float, log):
 
 def probe(url: str, timeout: float = SOCKET_TIMEOUT, log=print) -> Episode:
     """只提取元信息与字幕地址，不下载（网络抖动自动重试，确定性错误直接抛）。"""
+    if _source(url) == "bilibili" and os.environ.get("PA_BILIBILI_API", "1").strip() != "0":
+        from . import bilibili_api
+
+        try:
+            return bilibili_api.probe(url, timeout=timeout, log=log)
+        except Exception as exc:
+            log(f"[bilibili] API 路径失败，回退 yt-dlp：{exc}")
+
     opts = {
         "quiet": True,
         "no_warnings": True,

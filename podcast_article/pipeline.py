@@ -342,6 +342,13 @@ class Pipeline:
         try:
             if ep.source == "file":
                 path = Path(ep.url)  # 本地文件本身就是音频
+            elif ep.source == "bilibili" and ep.audio_url:
+                from .sources import bilibili_api
+
+                path = Path(bilibili_api.download(
+                    ep.audio_url, str(workdir / "audio"),
+                    progress=self.progress, log=self.log,
+                ))
             elif ep.source in ("youtube", "bilibili"):
                 path = Path(download_audio(
                     ep.url, str(workdir / "audio"), progress=self.progress, log=self.log,

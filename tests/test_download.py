@@ -3,9 +3,12 @@ from __future__ import annotations
 
 import ssl
 import http.cookiejar
+import importlib
+import importlib.util
 import io
 import json
 import urllib.request
+from pathlib import Path
 
 import requests
 import pytest
@@ -130,6 +133,27 @@ def fake_info() -> dict:
         "subtitles": {"zh-Hans": [{"ext": "vtt", "url": "https://example.com/zh.vtt"}]},
         "automatic_captions": {"en": [{"ext": "vtt", "url": "https://example.com/en.vtt"}]},
     }
+
+
+def _bilibili_api_module():
+    spec = importlib.util.find_spec("podcast_article.sources.bilibili_api")
+    assert spec is not None, "Bilibili API source module has not been added"
+    return importlib.import_module("podcast_article.sources.bilibili_api")
+
+
+class FakeJSONResponse:
+    def __init__(self, payload, *, status_code=200, url="https://api.bilibili.com/"):
+        self.payload = payload
+        self.status_code = status_code
+        self.url = url
+        self.headers = {}
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise requests.HTTPError(f"{self.status_code} Error for url: {self.url}")
+
+    def json(self):
+        return self.payload
 
 
 # ---------------------------------------------------------------- 装置
@@ -537,6 +561,7 @@ def test_probe_opts_carry_retry_settings(monkeypatch, slept):
 
 
 def test_bilibili_probe_refreshes_anonymous_fingerprint_once_after_page_412(monkeypatch):
+    monkeypatch.setenv("PA_BILIBILI_API", "0")
     made = fake_ytdlp(monkeypatch, [
         DownloadError("ERROR: [BiliBili] BV196tK67Ebb: Unable to download webpage: HTTP Error 412: Precondition Failed"),
         fake_info(),
@@ -626,3 +651,195 @@ def test_download_audio_progress_hook(monkeypatch, slept):
     hook({"status": "finished", "downloaded_bytes": 100, "total_bytes": 100})
 
     assert events == [("download", {"pct": 50.0, "downloaded": 50, "total": 100})]
+
+
+# ---------------------------------------------------------------- Bilibili API + CDN path
+
+def test_bilibili_api_parse_bvid_av_b23_and_reject_other_sites(monkeypatch):
+    api = _bilibili_api_module()
+
+    assert api.parse_bvid(BILI_URL) == "BV196tK67Ebb"
+    assert api.parse_bvid("https://www.bilibili.com/video/av123456") == "av123456"
+    assert api.parse_bvid("https://example.com/video/BV196tK67Ebb") is None
+
+    class RedirectResponse:
+        url = BILI_URL
+
+        def raise_for_status(self):
+            return None
+
+    calls = []
+
+    def fake_get(url, **kwargs):
+        calls.append((url, kwargs))
+        return RedirectResponse()
+
+    monkeypatch.setattr(api.requests, "get", fake_get)
+    assert api.parse_bvid("https://b23.tv/short-code") == "BV196tK67Ebb"
+    assert calls[0][1]["allow_redirects"] is True
+
+
+def test_bilibili_api_probe_builds_episode_and_selects_requested_part(monkeypatch):
+    api = _bilibili_api_module()
+    video = {
+        "bvid": "BV196tK67Ebb",
+        "title": "测试节目",
+        "owner": {"name": "测试 UP"},
+        "duration": 160,
+        "pubdate": 1750000000,
+        "pic": "https://img.example.test/cover.jpg",
+        "desc": "视频简介",
+        "pages": [
+            {"cid": 11, "page": 1, "part": "第一部分", "duration": 70},
+            {"cid": 12, "page": 2, "part": "第二部分", "duration": 90},
+        ],
+    }
+    play_calls = []
+    track = {"id": 30280, "bandwidth": 72668, "baseUrl": "https://cdn.example.test/audio.m4s?x=1"}
+    monkeypatch.setattr(api, "view", lambda video_id, **_kwargs: video)
+    monkeypatch.setattr(
+        api, "playurl",
+        lambda bvid, cid, **_kwargs: play_calls.append((bvid, cid)) or [track],
+    )
+
+    episode = api.probe(BILI_URL + "?p=2")
+
+    assert play_calls == [("BV196tK67Ebb", 12)]
+    assert episode.source == "bilibili"
+    assert episode.title == "测试节目 - 第二部分"
+    assert episode.author == episode.podcast == "测试 UP"
+    assert episode.duration == 90
+    assert episode.cover == video["pic"]
+    assert episode.audio_url == track["baseUrl"]
+    assert episode.subtitle_tracks == []
+
+
+def test_bilibili_api_pick_audio_prefers_30280_then_highest_bandwidth():
+    api = _bilibili_api_module()
+    preferred = {"id": 30280, "bandwidth": 72000}
+    tracks = [preferred, {"id": 30232, "bandwidth": 200000}]
+
+    assert api.pick_audio(tracks) is preferred
+    assert api.pick_audio([
+        {"id": 30216, "bandwidth": 36000},
+        {"id": 30232, "bandwidth": 72000},
+    ]) == {"id": 30232, "bandwidth": 72000}
+
+
+def test_bilibili_api_playurl_falls_back_to_signed_wbi(monkeypatch):
+    api = _bilibili_api_module()
+    img_key = "0123456789abcdef0123456789abcdef"
+    sub_key = "fedcba9876543210fedcba9876543210"
+    payloads = [
+        {"code": -403, "message": "WBI required"},
+        {"code": 0, "data": {"wbi_img": {
+            "img_url": f"https://img.example.test/{img_key}.png",
+            "sub_url": f"https://img.example.test/{sub_key}.png",
+        }}},
+        {"code": 0, "data": {"dash": {"audio": [{"id": 30280, "baseUrl": "https://cdn.example.test/a.m4s"}]}}},
+    ]
+    calls = []
+
+    def fake_get(url, **kwargs):
+        calls.append({"url": url, **kwargs})
+        return FakeJSONResponse(payloads.pop(0), url=url)
+
+    monkeypatch.setattr(api.requests, "get", fake_get)
+
+    tracks = api.playurl("BV196tK67Ebb", 12345)
+
+    assert tracks == [{"id": 30280, "baseUrl": "https://cdn.example.test/a.m4s"}]
+    assert calls[0]["url"].endswith("/x/player/playurl")
+    assert calls[1]["url"].endswith("/x/web-interface/nav")
+    assert calls[2]["url"].endswith("/x/player/wbi/playurl")
+    assert "w_rid" in calls[2]["params"]
+    assert "wts" in calls[2]["params"]
+
+
+def test_bilibili_api_download_resumes_with_referer_and_retry_count(monkeypatch, tmp_path, slept):
+    api = _bilibili_api_module()
+
+    def interrupted_stream():
+        yield b"ab"
+        raise requests.ConnectionError("connection reset by peer")
+
+    responses = [
+        FakeResponse(interrupted_stream(), headers={"Content-Length": "6"},
+                     url="https://cdn.example.test/audio.m4s"),
+        FakeResponse([b"cdef"], status_code=206,
+                     headers={"Content-Length": "4", "Content-Range": "bytes 2-5/6"},
+                     url="https://cdn.example.test/audio.m4s"),
+    ]
+    calls = []
+
+    def fake_get(url, **kwargs):
+        calls.append({"url": url, **kwargs})
+        return responses.pop(0)
+
+    monkeypatch.setattr(api.requests, "get", fake_get)
+    monkeypatch.setenv("PA_DOWNLOAD_RETRIES", "2")
+    monkeypatch.setenv("PA_DOWNLOAD_BACKOFF", "0")
+
+    path = api.download("https://cdn.example.test/audio.m4s?token=x", str(tmp_path / "audio"),
+                        timeout=7.0, log=lambda *_: None)
+
+    assert Path(path).name == "audio.m4a"
+    assert Path(path).read_bytes() == b"abcdef"
+    assert len(calls) == 2
+    assert calls[0]["timeout"] == (15.0, 7.0)
+    assert calls[0]["headers"]["Referer"] == "https://www.bilibili.com/"
+    assert calls[1]["headers"]["Range"] == "bytes=2-"
+    assert calls[1]["headers"]["Referer"] == "https://www.bilibili.com/"
+    assert slept == [0.0]
+
+
+def test_bilibili_probe_uses_api_and_falls_back_to_ytdlp(monkeypatch, tmp_path):
+    api = _bilibili_api_module()
+    api_episode = Episode(source="bilibili", url=BILI_URL, title="API 视频",
+                          audio_url="https://cdn.example.test/api.m4s")
+    api_calls = []
+    monkeypatch.delenv("PA_BILIBILI_API", raising=False)
+    monkeypatch.setattr(api, "probe", lambda *args, **kwargs: api_calls.append(args[0]) or api_episode)
+    made = fake_ytdlp(monkeypatch, [fake_info()])
+
+    episode = ytdlp_src.probe(BILI_URL, log=lambda *_: None)
+
+    assert api_calls == [BILI_URL]
+    assert episode.audio_url == api_episode.audio_url
+    assert made == []
+
+    api_download_calls = []
+
+    def fake_api_download(audio_url, dest_noext, *, progress=None, log=print):
+        path = Path(dest_noext + ".m4a")
+        path.write_bytes(b"api-audio")
+        api_download_calls.append((audio_url, dest_noext))
+        return str(path)
+
+    monkeypatch.setattr(api, "download", fake_api_download)
+    audio_path = pipeline.Pipeline(BILI_URL, tmp_path, log=lambda *_: None)._stage_audio(
+        episode, tmp_path
+    )
+    assert audio_path.read_bytes() == b"api-audio"
+    assert api_download_calls == [(api_episode.audio_url, str(tmp_path / "audio"))]
+
+    def api_error(*_args, **_kwargs):
+        raise ValueError("API temporarily unavailable")
+
+    monkeypatch.setattr(api, "probe", api_error)
+    fallback_made = fake_ytdlp(monkeypatch, [fake_info()])
+    fallback = ytdlp_src.probe(BILI_URL, log=lambda *_: None)
+    assert fallback.title == "测试视频"
+    assert fallback_made[0].calls == 1
+
+
+def test_bilibili_api_environment_switch_disables_api(monkeypatch):
+    api = _bilibili_api_module()
+    monkeypatch.setenv("PA_BILIBILI_API", "0")
+    monkeypatch.setattr(api, "probe", lambda *_args, **_kwargs: pytest.fail("API path must be disabled"))
+    made = fake_ytdlp(monkeypatch, [fake_info()])
+
+    episode = ytdlp_src.probe(BILI_URL, log=lambda *_: None)
+
+    assert episode.title == "测试视频"
+    assert made[0].calls == 1
