@@ -4,9 +4,15 @@ from __future__ import annotations
 import os
 import re
 import time
+import hashlib
+import http.cookiejar
+import json
+import urllib.request
+import uuid
 from typing import Callable, TypeVar
 
 import yt_dlp
+from yt_dlp.utils.networking import std_headers
 
 from .base import Episode, SubtitleTrack
 
@@ -15,6 +21,14 @@ T = TypeVar("T")
 # 字幕语言偏好：中文简体优先，其次其他中文、英文
 _LANG_PREF = ["zh-Hans", "zh-CN", "zh", "zh-Hant", "zh-TW", "zh-HK", "en", "en-US", "en-GB"]
 _MAX_LANGS = 12
+_BILIBILI_FINGER_URL = "https://api.bilibili.com/x/frontend/finger/spi"
+_BILIBILI_HEADERS = {
+    **std_headers,
+    "Referer": "https://www.bilibili.com/",
+    "Sec-CH-UA": '"Google Chrome";v="146", "Chromium";v="146", "Not)A;Brand";v="24"',
+    "Sec-CH-UA-Mobile": "?0",
+    "Sec-CH-UA-Platform": '"Windows"',
+}
 
 # ---------------------------------------------------------------- 重试配置
 # 环境变量名与 pipeline.py 一致（PA_DOWNLOAD_RETRIES / PA_DOWNLOAD_BACKOFF），
@@ -153,6 +167,59 @@ def _source(url: str) -> str:
     return "bilibili" if ("bilibili.com" in url or "b23.tv" in url) else "youtube"
 
 
+def _set_bilibili_cookie(cookiejar, name: str, value: str) -> None:
+    cookiejar.set_cookie(http.cookiejar.Cookie(
+        0, name, value, None, False, ".bilibili.com", True, True,
+        "/", True, True, None, True, None, None, {},
+    ))
+
+
+def _prepare_bilibili_ytdlp(ydl, url: str) -> None:
+    if _source(url) != "bilibili":
+        return
+    existing = {cookie.name for cookie in ydl.cookiejar}
+    if "buvid_fp" not in existing:
+        _set_bilibili_cookie(ydl.cookiejar, "buvid_fp", hashlib.md5(uuid.uuid4().bytes).hexdigest())
+
+
+def _refresh_bilibili_fingerprint(ydl, *, timeout: float, log) -> bool:
+    headers = dict(_BILIBILI_HEADERS)
+    cookie_header = ydl.cookiejar.get_cookie_header("https://api.bilibili.com/")
+    if cookie_header:
+        headers["Cookie"] = cookie_header
+    request = urllib.request.Request(_BILIBILI_FINGER_URL, headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            payload = json.load(response)
+    except Exception as exc:
+        log(f"[bilibili] 指纹刷新失败（{type(exc).__name__}）")
+        return False
+
+    data = payload.get("data") or {}
+    if payload.get("code") != 0 or not data.get("b_3") or not data.get("b_4"):
+        log("[bilibili] 指纹接口未返回 buvid3 / buvid4")
+        return False
+    _set_bilibili_cookie(ydl.cookiejar, "buvid3", data["b_3"])
+    _set_bilibili_cookie(ydl.cookiejar, "buvid4", data["b_4"])
+    if "buvid_fp" not in {cookie.name for cookie in ydl.cookiejar}:
+        _set_bilibili_cookie(ydl.cookiejar, "buvid_fp", hashlib.md5(uuid.uuid4().bytes).hexdigest())
+    return True
+
+
+def _extract_info(ydl, url: str, *, download: bool, timeout: float, log):
+    _prepare_bilibili_ytdlp(ydl, url)
+    try:
+        return ydl.extract_info(url, download=download)
+    except Exception as exc:
+        message = str(exc).lower()
+        if _source(url) != "bilibili" or "http error 412" not in message or "unable to download webpage" not in message:
+            raise
+        log("[bilibili] 网页请求被拒绝（HTTP 412），刷新匿名指纹后重试一次")
+        if not _refresh_bilibili_fingerprint(ydl, timeout=timeout, log=log):
+            raise
+        return ydl.extract_info(url, download=download)
+
+
 def probe(url: str, timeout: float = SOCKET_TIMEOUT, log=print) -> Episode:
     """只提取元信息与字幕地址，不下载（网络抖动自动重试，确定性错误直接抛）。"""
     opts = {
@@ -164,10 +231,12 @@ def probe(url: str, timeout: float = SOCKET_TIMEOUT, log=print) -> Episode:
         "retries": _retries(),
         "extractor_retries": _retries(),
     }
+    if _source(url) == "bilibili":
+        opts["http_headers"] = _BILIBILI_HEADERS
 
     def extract() -> dict | None:
         with yt_dlp.YoutubeDL(opts) as ydl:
-            return ydl.extract_info(url, download=False)
+            return _extract_info(ydl, url, download=False, timeout=timeout, log=log)
 
     info = _with_retries("解析元信息", extract, log=log)
     if info is None:
@@ -249,6 +318,8 @@ def download_audio(
         "nopart": False,  # 保留 .part，才能跨进程续传
         "skip_unavailable_fragments": True,  # 个别分片彻底拿不到时，尽量保住其余音频
     }
+    if _source(url) == "bilibili":
+        opts["http_headers"] = _BILIBILI_HEADERS
     if progress:
         def hook(d):
             if d.get("status") != "downloading":
@@ -264,7 +335,9 @@ def download_audio(
         opts["progress_hooks"] = [hook]
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = _with_retries(
-            "下载音频", lambda: ydl.extract_info(url, download=True),
+            "下载音频", lambda: _extract_info(
+                ydl, url, download=True, timeout=timeout, log=log,
+            ),
             log=log, progress=progress,
         )
         if info is None:

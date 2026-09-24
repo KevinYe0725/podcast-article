@@ -2,6 +2,10 @@
 from __future__ import annotations
 
 import ssl
+import http.cookiejar
+import io
+import json
+import urllib.request
 
 import requests
 import pytest
@@ -13,6 +17,7 @@ from podcast_article.sources.base import Episode
 
 AUDIO_URL = "https://cdn.example.com/ep1.mp3"
 YT_URL = "https://www.youtube.com/watch?v=abcdefghijk"
+BILI_URL = "https://www.bilibili.com/video/BV196tK67Ebb/"
 
 
 # ---------------------------------------------------------------- 打桩工具
@@ -75,6 +80,7 @@ def fake_ytdlp(monkeypatch, results: list, filename: str = "/tmp/audio.m4a") -> 
         def __init__(self, opts):
             self.opts = opts
             self.calls = 0
+            self.cookiejar = _FakeCookieJar()
             made.append(self)
 
         def __enter__(self):
@@ -89,6 +95,12 @@ def fake_ytdlp(monkeypatch, results: list, filename: str = "/tmp/audio.m4a") -> 
                 raise AssertionError(f"extract_info 被多调了一次（第 {self.calls} 次）")
             item = queue.pop(0)
             if isinstance(item, Exception):
+                if "HTTP Error 412" in str(item):
+                    self.cookiejar.set_cookie(http.cookiejar.Cookie(
+                        0, "X-BILI-SEC-TOKEN", "test-challenge", None, False,
+                        ".bilibili.com", True, True, "/", True, True, None,
+                        True, None, None, {},
+                    ))
                 raise item
             return item
 
@@ -97,6 +109,13 @@ def fake_ytdlp(monkeypatch, results: list, filename: str = "/tmp/audio.m4a") -> 
 
     monkeypatch.setattr(ytdlp_src.yt_dlp, "YoutubeDL", _FakeYDL)
     return made
+
+
+class _FakeCookieJar(http.cookiejar.CookieJar):
+    def get_cookie_header(self, url: str) -> str | None:
+        request = urllib.request.Request(url)
+        self.add_cookie_header(request)
+        return request.get_header("Cookie")
 
 
 def fake_info() -> dict:
@@ -515,6 +534,40 @@ def test_probe_opts_carry_retry_settings(monkeypatch, slept):
     assert opts["extractor_retries"] >= 3
     assert opts["socket_timeout"] > 0
     assert opts["skip_download"] is True
+
+
+def test_bilibili_probe_refreshes_anonymous_fingerprint_once_after_page_412(monkeypatch):
+    made = fake_ytdlp(monkeypatch, [
+        DownloadError("ERROR: [BiliBili] BV196tK67Ebb: Unable to download webpage: HTTP Error 412: Precondition Failed"),
+        fake_info(),
+    ])
+    finger_requests = []
+    payload = {"code": 0, "data": {"b_3": "test-buvid3", "b_4": "test-buvid4"}}
+
+    def fake_urlopen(request, timeout):
+        finger_requests.append((request, timeout))
+        return io.BytesIO(json.dumps(payload).encode())
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    episode = ytdlp_src.probe(BILI_URL, log=lambda *_: None)
+
+    assert episode.source == "bilibili"
+    assert len(made) == 1 and made[0].calls == 2
+    request, timeout = finger_requests[0]
+    assert request.full_url == "https://api.bilibili.com/x/frontend/finger/spi"
+    assert request.get_header("Referer") == "https://www.bilibili.com/"
+    assert request.get_header("User-agent") == ytdlp_src.std_headers["User-Agent"]
+    finger_cookies = dict(pair.strip().split("=", 1) for pair in request.get_header("Cookie").split(";"))
+    assert finger_cookies["X-BILI-SEC-TOKEN"] == "test-challenge"
+    assert len(finger_cookies["buvid_fp"]) == 32
+    assert "SESSDATA" not in finger_cookies
+    assert timeout > 0
+    cookies = {cookie.name: cookie.value for cookie in made[0].cookiejar}
+    assert cookies["buvid3"] == "test-buvid3"
+    assert cookies["buvid4"] == "test-buvid4"
+    assert len(cookies["buvid_fp"]) == 32
+    assert made[0].opts["http_headers"]["Referer"] == "https://www.bilibili.com/"
 
 
 def test_download_audio_opts_and_retry(monkeypatch, slept):
