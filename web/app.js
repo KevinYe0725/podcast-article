@@ -1111,6 +1111,7 @@ async function openSettings(tab) {
 }
 
 function closeSettings() {
+  resetInviteView();
   $("settings").style.display = "none";
   $("main").style.display = "block";
   window.scrollTo({ top: 0 });
@@ -1125,12 +1126,15 @@ function closeSettings() {
 */
 function leaveSettings() {
   if ($("settings").style.display !== "block") return false;
+  resetInviteView();
   $("settings").style.display = "none";
   $("main").style.display = "block";
   return true;
 }
 
 function switchTab(name) {
+  if (name === "invites" && currentAccount?.role !== "admin") return;
+  if (name !== "invites") resetInviteView();
   document.querySelectorAll(".tab").forEach((t) => t.setAttribute("data-active", String(t.dataset.tab === name)));
   document.querySelectorAll(".pane").forEach((p) => { p.style.display = p.id === "pane-" + name ? "block" : "none"; });
   if (name === "mcp") loadMcp();
@@ -3367,6 +3371,7 @@ let redirectingAfterAuthFailure = false;
 function clearLocalAppState() {
   try { localStorage.clear(); } catch (_) {}
   try { sessionStorage.clear(); } catch (_) {}
+  resetInviteView(true);
   currentAccount = null;
   libItems = []; libCats = []; libAssign = {}; libStatus = {};
   mcpServers = []; mcpTools = {}; mcpPresets = [];
@@ -3399,9 +3404,10 @@ function renderAccount(account) {
   const llmLimit = llm.limit_cny == null ? "不限" : `¥${Number(llm.limit_cny).toFixed(2)}`;
   $("account-quota").innerHTML = `<div><span>本月转写</span><strong>${fmtQuotaDuration(asr.used_seconds)} / ${fmtQuotaDuration(asr.limit_seconds)}</strong></div><div><span>本月 AI 写作</span><strong>¥${Number(llm.used_cny || 0).toFixed(2)} / ${llmLimit}</strong></div>`;
   const admin = account.role === "admin";
-  [document.querySelector('[data-tab="keys"]'), document.querySelector('[data-tab="mcp"]'), $("pane-keys"), $("pane-mcp")]
+  $("account-invite").hidden = !admin;
+  [document.querySelector('[data-tab="invites"]'), document.querySelector('[data-tab="keys"]'), document.querySelector('[data-tab="mcp"]'), $("pane-invites"), $("pane-keys"), $("pane-mcp")]
     .filter(Boolean).forEach((node) => { node.hidden = !admin; });
-  document.querySelectorAll('[data-tab="keys"], [data-tab="mcp"]').forEach((node) => { node.style.display = admin ? "" : "none"; });
+  document.querySelectorAll('[data-tab="invites"], [data-tab="keys"], [data-tab="mcp"]').forEach((node) => { node.style.display = admin ? "" : "none"; });
 }
 
 async function csrfPost(path, payload) {
@@ -3410,6 +3416,20 @@ async function csrfPost(path, payload) {
   return fetch(path, { method: "POST", credentials: "same-origin",
     headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf.csrf_token || "" },
     body: JSON.stringify(payload || {}) });
+}
+
+let inviteCreating = false;
+
+function resetInviteView(force = false) {
+  if (inviteCreating && !force) return;
+  const form = $("invite-create-form");
+  if (!form) return;
+  form.reset();
+  form.hidden = false;
+  $("invite-link-view").hidden = true;
+  $("invite-url").value = "";
+  $("invite-expiry").textContent = "";
+  $("invite-error").textContent = "";
 }
 
 function initAccountControls() {
@@ -3425,6 +3445,71 @@ function initAccountControls() {
   });
   $("account-logout").addEventListener("click", async () => {
     try { await csrfPost("/api/auth/logout"); } finally { expireSession(); }
+  });
+  $("account-invite").addEventListener("click", async () => {
+    $("account-panel").hidden = true;
+    trigger.setAttribute("aria-expanded", "false");
+    try {
+      await openSettings("invites");
+    } catch (_) {
+      toast("无法打开邀请页面，请重试");
+    }
+  });
+  $("invite-new").addEventListener("click", () => {
+    resetInviteView();
+    $("invite-create-form").querySelector("input").focus();
+  });
+  $("invite-create-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    if (!form.reportValidity() || inviteCreating) return;
+    const submit = $("invite-create"), error = $("invite-error");
+    error.textContent = "";
+    inviteCreating = true;
+    submit.disabled = true;
+    submit.textContent = "正在生成…";
+    const numeric = (name) => Number(form.elements.namedItem(name).value);
+    try {
+      const response = await csrfPost("/api/admin/invites", {
+        asr_hours: numeric("asr_hours"),
+        llm_month_cny: numeric("llm_month_cny"),
+        cache_mib: numeric("cache_mib"),
+        queue_items: numeric("queue_items"),
+        max_upload_mib: numeric("max_upload_mib"),
+        expires_days: numeric("expires_days"),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.message || "邀请码生成失败，请检查额度后重试。");
+      if (typeof data.invite_url !== "string" || !data.invite_url) throw new Error("服务器没有返回邀请链接，请重新生成。");
+      $("invite-url").value = data.invite_url;
+      $("invite-expiry").textContent = String(data.expires_in_days);
+      form.hidden = true;
+      $("invite-link-view").hidden = false;
+      if ($("settings").style.display === "block" && document.querySelector('[data-tab="invites"]').getAttribute("data-active") === "true") {
+        $("invite-link-view").scrollIntoView({ behavior: "smooth", block: "start" });
+        $("invite-copy").focus();
+      } else {
+        toast("链接已生成，返回邀请朋友页面复制");
+      }
+    } catch (failure) {
+      error.textContent = failure.message || "邀请码生成失败，请重试。";
+    } finally {
+      inviteCreating = false;
+      submit.disabled = false;
+      submit.textContent = "生成邀请链接";
+    }
+  });
+  $("invite-copy").addEventListener("click", async () => {
+    const input = $("invite-url");
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error("clipboard unavailable");
+      await navigator.clipboard.writeText(input.value);
+      toast("邀请链接已复制，可以发给朋友了");
+    } catch (_) {
+      input.focus(); input.select();
+      const copied = document.execCommand && document.execCommand("copy");
+      toast(copied ? "邀请链接已复制，可以发给朋友了" : "邀请链接已选中，请复制后发给朋友");
+    }
   });
   $("account-password-form").addEventListener("submit", async (event) => {
     event.preventDefault();

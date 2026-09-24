@@ -18,15 +18,15 @@ import time
 import unicodedata
 import uuid
 from functools import wraps
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import markdown
 from flask import Flask, Response, g, jsonify, make_response, redirect, request, send_file, send_from_directory, url_for
 
 from podcast_article import auth as auth_mod
-from podcast_article.platform_store import InviteError, PlatformStore, QuotaExceeded, normalize_username
+from podcast_article.platform_store import AccountQuota, InviteError, PlatformStore, QuotaExceeded, normalize_username
 from podcast_article import library as library_mod
 from podcast_article import library_ask
 from podcast_article import mcp_client, mcp_config, notion
@@ -58,6 +58,7 @@ app.config.update(
     PA_SESSION_IDLE_SECONDS=int(os.environ.get("PA_SESSION_IDLE_SECONDS", 12 * 60 * 60)),
     PA_SESSION_ABSOLUTE_SECONDS=int(os.environ.get("PA_SESSION_ABSOLUTE_SECONDS", 7 * 24 * 60 * 60)),
     PA_COOKIE_DOMAIN=os.environ.get("PA_COOKIE_DOMAIN") or None,
+    PA_PUBLIC_BASE_URL=os.environ.get("PA_PUBLIC_BASE_URL") or None,
     PA_TRUSTED_PROXY=(os.environ.get("PA_TRUSTED_PROXY", "").strip().lower() in {"1", "true", "yes", "on"}),
     PA_COOKIE_SECURE=(
         os.environ.get("PA_COOKIE_SECURE", "").strip().lower() in {"1", "true", "yes", "on"}
@@ -189,6 +190,44 @@ document.querySelector('#invite-form').addEventListener('submit',async e=>{e.pre
 
 def _auth_store():
     return auth_mod._request_store()
+
+
+def _invite_number(payload: dict, field: str) -> Decimal:
+    raw = payload.get(field)
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        raise ValueError(f"{field} must be a number")
+    try:
+        value = Decimal(str(raw))
+    except (InvalidOperation, ValueError) as error:
+        raise ValueError(f"{field} must be a finite non-negative number") from error
+    if not value.is_finite() or value < 0:
+        raise ValueError(f"{field} must be a finite non-negative number")
+    return value
+
+
+def _invite_integer(payload: dict, field: str, *, minimum: int = 0, maximum: int = (1 << 63) - 1) -> int:
+    value = payload.get(field)
+    if isinstance(value, bool) or not isinstance(value, int) or not minimum <= value <= maximum:
+        raise ValueError(f"{field} must be an integer between {minimum} and {maximum}")
+    return value
+
+
+def _invite_public_base_url() -> str:
+    configured = app.config.get("PA_PUBLIC_BASE_URL")
+    cookie_domain = app.config.get("PA_COOKIE_DOMAIN")
+    value = str(configured or (f"https://{cookie_domain.lstrip('.')}" if cookie_domain else request.host_url)).strip()
+    parsed = urlsplit(value)
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.netloc
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise RuntimeError("PA_PUBLIC_BASE_URL must be an absolute HTTP(S) origin")
+    return value.rstrip("/")
 
 
 def _quota_guard(owner_id: str):
@@ -497,6 +536,54 @@ def api_auth_me():
         "must_change_password": account.must_change_password,
         "quota": _quota_summary(account.id),
     })
+
+
+@app.post("/api/admin/invites")
+@_admin_required
+def api_admin_invite_create():
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"error": "invalid_invite_limits", "message": "请填写完整的邀请码额度"}), 400
+
+    try:
+        asr_hours = _invite_number(payload, "asr_hours")
+        asr_seconds = asr_hours * 3600
+        if asr_seconds != asr_seconds.to_integral_value() or asr_seconds > (1 << 63) - 1:
+            raise ValueError("asr_hours must resolve to a whole number of seconds")
+        llm_month_cny = _invite_number(payload, "llm_month_cny")
+        cache_mib = _invite_integer(payload, "cache_mib", maximum=((1 << 63) - 1) // (1024 * 1024))
+        queue_items = _invite_integer(payload, "queue_items")
+        max_upload_mib = _invite_integer(payload, "max_upload_mib", maximum=((1 << 63) - 1) // (1024 * 1024))
+        expires_days = _invite_integer(payload, "expires_days", minimum=1, maximum=365)
+        quota = AccountQuota(
+            asr_month_seconds=int(asr_seconds),
+            llm_month_cny=llm_month_cny,
+            cache_bytes=cache_mib * 1024 * 1024,
+            queue_items=queue_items,
+            max_upload_bytes=max_upload_mib * 1024 * 1024,
+        )
+        base_url = _invite_public_base_url()
+    except (ValueError, InvalidOperation):
+        return jsonify({"error": "invalid_invite_limits", "message": "额度或有效期格式不正确，请检查后重试"}), 400
+
+    raw_token = auth_mod.new_token()
+    now = time.time()
+    try:
+        _auth_store().create_invite(
+            g.current_user.id,
+            auth_mod.token_hash(raw_token),
+            quota,
+            now + expires_days * 24 * 60 * 60,
+        )
+    except ValueError:
+        return jsonify({"error": "admin_required", "message": "管理员账号不可用，请重新登录"}), 403
+
+    response = jsonify({
+        "invite_url": f"{base_url}/invite#{raw_token}",
+        "expires_in_days": expires_days,
+    })
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @app.post("/api/auth/login")

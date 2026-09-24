@@ -137,6 +137,47 @@ def test_invite_registration_consumes_token_once_and_rejects_expiry(guest_client
     assert reused.get_json()["error"] == "invalid_invite"
 
 
+def test_admin_invite_page_flow_enforces_role_and_applies_selected_limits(guest_client, auth_system):
+    webapp, store, admin, password = auth_system
+    payload = {
+        "asr_hours": 2,
+        "llm_month_cny": 10,
+        "cache_mib": 1024,
+        "queue_items": 3,
+        "max_upload_mib": 200,
+        "expires_days": 7,
+    }
+    assert guest_client.post("/api/admin/invites", json=payload).status_code == 401
+
+    login = guest_client.post("/api/auth/login", json={"username": admin.username, "password": password})
+    assert login.status_code == 200
+    invalid = guest_client.post("/api/admin/invites", json={**payload, "llm_month_cny": -1})
+    assert invalid.status_code == 400
+    local = guest_client.post("/api/admin/invites", json=payload, base_url="http://localhost:8787")
+    assert local.status_code == 200
+    assert local.get_json()["invite_url"].startswith("http://localhost:8787/invite#")
+
+    webapp.app.config["PA_PUBLIC_BASE_URL"] = "https://podcast.squareconf.cn"
+    created = guest_client.post("/api/admin/invites", json=payload)
+    assert created.status_code == 200
+    assert created.headers["Cache-Control"] == "no-store"
+    link = created.get_json()["invite_url"]
+    assert link.startswith("https://podcast.squareconf.cn/invite#")
+    token = link.split("#", 1)[1]
+    assert token.encode() not in store.path.read_bytes()
+
+    registered = guest_client.post("/api/auth/register", json={
+        "invite_token": token,
+        "username": "invited-friend",
+        "password": "a valid long passphrase",
+    })
+    assert registered.status_code == 200
+    friend = store.credential_for_username("invited-friend").account
+    assert friend.role == "member"
+    assert friend.quota == AccountQuota(7200, Decimal("10"), 1024 * 1024 * 1024, 3, 200 * 1024 * 1024)
+    assert guest_client.post("/api/admin/invites", json=payload).status_code == 403
+
+
 def test_invalid_invite_is_rejected_before_argon2_hashing(guest_client, auth_system, monkeypatch):
     webapp, _, _, _ = auth_system
 

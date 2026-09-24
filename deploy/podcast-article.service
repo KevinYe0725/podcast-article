@@ -15,6 +15,7 @@ Environment=PA_ASR_URL_EXPIRES=86400
 Environment=PA_DATA_ROOT=/srv/podcast-article/data
 Environment=PA_COOKIE_SECURE=1
 Environment=PA_COOKIE_DOMAIN=podcast.squareconf.cn
+Environment=PA_PUBLIC_BASE_URL=https://podcast.squareconf.cn
 Environment=PA_TRUSTED_PROXY=1
 Environment=PA_SCHEDULER=0
 # The Portfolio Hub Caddy container reaches the host through Docker's bridge gateway.

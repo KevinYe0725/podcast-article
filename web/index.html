@@ -61,12 +61,13 @@
       <button class="usagepill" id="usagepill" onclick="openSettings('storage')" title="看一眼累计用量与费用"></button>
       <div class="meta">本地转写 · DeepSeek 精读 · MCP</div>
       <div class="account-wrap">
-        <button class="account-trigger" id="account-menu" type="button" aria-expanded="false" aria-controls="account-panel" hidden>
+        <button class="account-trigger" id="account-menu" type="button" aria-label="账号菜单" aria-expanded="false" aria-controls="account-panel" hidden>
           <span class="account-avatar" aria-hidden="true">K</span><span class="account-name" id="account-name"></span><span class="account-chevron" aria-hidden="true">⌄</span>
         </button>
         <section class="account-panel" id="account-panel" aria-label="账号设置" hidden>
           <div class="account-panel-head"><span class="account-avatar" aria-hidden="true">K</span><div><strong id="account-panel-name"></strong><small id="account-role"></small></div></div>
           <div class="account-quota" id="account-quota" aria-label="本月用量"></div>
+          <button class="account-invite" id="account-invite" type="button" hidden>邀请朋友 <span aria-hidden="true">↗</span></button>
           <details class="account-password">
             <summary>更改密码</summary>
             <form id="account-password-form">
@@ -293,13 +294,14 @@
   <div class="sethead">
     <div>
       <h1>设置</h1>
-      <p class="setintro">个人资料与使用偏好。AI 模型和服务密钥由服务器管理员管理，使用额度按账号记录。</p>
+      <p class="setintro">管理个人资料与工作台偏好。使用额度按账号记录。</p>
     </div>
     <button class="btn mini" onclick="closeSettings()">← 返回</button>
   </div>
 
   <div class="tabs">
     <button class="tab" data-tab="profile" data-active="true" onclick="switchTab('profile')">个人资料</button>
+    <button class="tab" data-tab="invites" onclick="switchTab('invites')" hidden>邀请朋友</button>
     <button class="tab" data-tab="keys" onclick="switchTab('keys')">AI 服务</button>
     <button class="tab" data-tab="dest" onclick="switchTab('dest')">发布目标</button>
     <button class="tab" data-tab="gen" onclick="switchTab('gen')">生成默认值</button>
@@ -330,6 +332,48 @@
       </select>
       <p class="fhint">当前版本的成文提示词固定输出简体中文，此项为后续多语言预留。</p>
     </div>
+  </section>
+
+  <section class="pane invite-pane" id="pane-invites" style="display:none" hidden>
+    <div class="invite-intro">
+      <div>
+        <div class="invite-eyebrow">管理员 · 账号邀请</div>
+        <h2>把工作台分享给朋友</h2>
+        <p>朋友会拥有独立的文章和使用记录。你设定每月额度，生成链接后发给对方注册。</p>
+      </div>
+      <div class="invite-mark" aria-hidden="true"><span class="invite-wave"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span><span>ONE LINK<br>ONE ACCOUNT</span></div>
+    </div>
+    <div class="invite-steps" aria-label="邀请流程"><span>设置额度</span><span aria-hidden="true">→</span><span>复制链接</span><span aria-hidden="true">→</span><span>朋友注册</span></div>
+
+    <form id="invite-create-form" novalidate>
+      <div class="invite-section-head invite-section-group"><div><h3>每月用量</h3><p>额度按朋友的账号单独计算，填 0 表示该功能不可用。</p></div></div>
+      <div class="invite-primary-grid">
+        <label class="invite-field"><span>音频转写</span><small>每月可转写的音频时长</small><span class="invite-input"><input name="asr_hours" type="number" min="0" step="0.25" placeholder="例如 2" required><em>小时 / 月</em></span></label>
+        <label class="invite-field"><span>AI 写作</span><small>每月可使用的模型费用</small><span class="invite-input"><input name="llm_month_cny" type="number" min="0" step="0.01" placeholder="例如 10" required><em>元 / 月</em></span></label>
+      </div>
+
+      <div class="invite-section-head invite-section-group invite-section-spaced"><div><h3>空间与任务</h3><p>控制单个账号可以保存和提交的内容。</p></div></div>
+      <div class="invite-secondary-grid">
+        <label class="invite-field"><span>缓存空间</span><small>音频与中间文件</small><span class="invite-input"><input name="cache_mib" type="number" min="0" step="1" placeholder="例如 1024" required><em>MB</em></span></label>
+        <label class="invite-field"><span>队列任务</span><small>同时等待处理的任务</small><span class="invite-input"><input name="queue_items" type="number" min="0" step="1" placeholder="例如 3" required><em>个</em></span></label>
+        <label class="invite-field"><span>单文件上限</span><small>每次上传的最大体积</small><span class="invite-input"><input name="max_upload_mib" type="number" min="0" step="1" placeholder="例如 200" required><em>MB</em></span></label>
+      </div>
+
+      <div class="invite-expiry-row"><div><label for="invite-expires">邀请链接有效期</label><p>链接只能注册一个账号。到期后需要重新生成。</p></div><span class="invite-input invite-expiry-input"><input id="invite-expires" name="expires_days" type="number" min="1" max="365" step="1" value="7" required><em>天</em></span></div>
+      <p class="invite-error" id="invite-error" role="alert" aria-live="assertive"></p>
+      <div class="invite-actions"><button class="btn primary" id="invite-create" type="submit">生成邀请链接</button></div>
+    </form>
+
+    <section class="invite-success" id="invite-link-view" hidden aria-live="polite">
+      <div class="invite-section-head"><span class="invite-section-number invite-section-done">✓</span><div><h3>链接已生成</h3><p>复制后发给朋友。完整链接只在这里显示一次。</p></div></div>
+      <div class="invite-ticket">
+        <div class="invite-ticket-head"><span>PODCAST ARTICLE</span><strong>一位朋友的独立空间</strong></div>
+        <div class="invite-ticket-body"><label for="invite-url">邀请链接</label><div class="invite-link-row"><input id="invite-url" type="text" readonly autocomplete="off" spellcheck="false"><button class="btn primary" id="invite-copy" type="button">复制链接</button></div></div>
+        <div class="invite-ticket-foot"><span>仅可注册 1 个账号</span><span><span id="invite-expiry"></span> 天后过期</span></div>
+      </div>
+      <p class="invite-result-note">离开此页后无法再次查看这条链接。没有保存的话，可以生成新的链接。</p>
+      <button class="btn" id="invite-new" type="button">再邀请一位朋友</button>
+    </section>
   </section>
 
   <section class="pane" id="pane-keys" style="display:none">
