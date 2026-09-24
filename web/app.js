@@ -3454,9 +3454,31 @@ async function initializeAuthenticatedApp() {
   initAccountControls();
 
   const nativeFetch = window.fetch.bind(window);
-  window.fetch = async (...args) => {
-    const result = await nativeFetch(...args);
-    const requestUrl = String(args[0]?.url || args[0] || "");
+  window.fetch = async (input, init = {}) => {
+    const requestUrl = String(input?.url || input || "");
+    const method = String(init.method || input?.method || "GET").toUpperCase();
+    const unsafeMethod = ["POST", "PUT", "PATCH", "DELETE"].includes(method);
+    let sameOrigin = false;
+    try { sameOrigin = new URL(requestUrl, window.location.href).origin === window.location.origin; }
+    catch (_) { /* Let fetch report malformed URLs through its normal error path. */ }
+
+    let requestInit = init;
+    if (unsafeMethod && sameOrigin) {
+      const headers = new Headers(init.headers || input?.headers || undefined);
+      if (!headers.has("X-CSRF-Token")) {
+        const csrfResponse = await nativeFetch("/api/auth/csrf", { credentials: "same-origin" });
+        if (!csrfResponse.ok) {
+          if (csrfResponse.status === 401) expireSession();
+          return csrfResponse;
+        }
+        const csrf = await csrfResponse.json();
+        if (!csrf.csrf_token) throw new Error("Unable to obtain a CSRF token");
+        headers.set("X-CSRF-Token", csrf.csrf_token);
+        requestInit = { ...init, headers };
+      }
+    }
+
+    const result = await nativeFetch(input, requestInit);
     if (result.status === 401 && requestUrl.includes("/api/") && !requestUrl.includes("/api/auth/me")) expireSession();
     return result;
   };

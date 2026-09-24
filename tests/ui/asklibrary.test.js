@@ -63,7 +63,10 @@ const HIT_TITLE = "命中测试这一篇";
       w.fetch = (u, o) => {
         const url = String(u);
         const method = String((o && o.method) || "GET").toUpperCase();
-        calls.push({ url, method, body: (o && o.body) || null });
+        calls.push({
+          url, method, body: (o && o.body) || null,
+          csrf: new Headers((o && o.headers) || {}).get("X-CSRF-Token") || "",
+        });
         if (url.includes("/api/kb/status")) return fakeResp(store.status);
         if (url.includes("/api/kb/search")) return manual ? hold("search", store.search) : fakeResp(store.search);
         if (url.includes("/api/kb/ask")) return manual ? hold("ask", store.ask) : fakeResp(store.ask);
@@ -116,6 +119,9 @@ const HIT_TITLE = "命中测试这一篇";
   const linkCalls = calls.slice(beforeLink);
   out.链接_发出的请求 = linkCalls.map((c) => `${c.method} ${c.url}`);
   check("链接_走的是生成文章", linkCalls.some((c) => c.url.includes("/api/run")), `粘链接点按钮应发 /api/run，实际 ${JSON.stringify(out.链接_发出的请求)}`);
+  const runRequest = linkCalls.find((c) => c.method === "POST" && c.url.includes("/api/run"));
+  out.链接_携带CSRF令牌 = !!runRequest?.csrf;
+  check("链接_携带CSRF令牌", out.链接_携带CSRF令牌, "生成文章的 POST /api/run 必须携带 X-CSRF-Token");
   check("链接_不问库", !linkCalls.some((c) => c.url.includes("/api/kb/ask")), "粘链接点按钮不该发 /api/kb/ask");
 
   // ---------- 3) 打字提问 → 问你的库
