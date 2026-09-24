@@ -95,7 +95,7 @@
        「切片 / 索引 / 实体」这些东西，所以界面上一个词都不提。 -->
   <div class="composer col">
     <div class="row">
-      <textarea id="url" rows="1" placeholder="粘贴播客或视频链接…一次可粘多条；也可以直接打字提问（问你的库）"
+      <textarea id="url" rows="1" placeholder="粘贴链接，或提问…"
                 spellcheck="false" autocomplete="off"></textarea>
       <button id="go" onclick="goSubmit()">生成文章</button>
     </div>
@@ -122,7 +122,7 @@
       </details>
     </div>
   </div>
-  <div class="hint col" id="hint">⌘/Ctrl + Enter 直接开始 · 生成完会直接进阅读页，Esc 返回 · 产物会缓存，重新生成文章不必重新转写</div>
+  <div class="hint col" id="hint">⌘/Ctrl + Enter 开始 · 已转写的音频会复用</div>
 
   <!-- 问你的库（唯一的问答界面）：像对话一样一轮轮往下接。
        一轮 = 问题 → 状态 → 出处（折叠，时间戳可回听）→ 答案 →「AI 记得的你」（折叠）。 -->
@@ -151,9 +151,7 @@
 
   <div id="lib">
     <div class="libbar">
-      <span class="bt" id="libtitle">全部文章</span>
-      <span class="bc" id="libcount"></span>
-      <span style="flex:1"></span>
+      <div class="libbar-title"><span class="bt" id="libtitle">全部文章</span><span class="bc" id="libcount"></span></div>
       <div class="quicktabs" id="quicktabs">
         <button data-quick="all" onclick="setCat('all')">全部</button>
         <button data-quick="none" onclick="setCat('none')">未分类</button>
@@ -171,7 +169,7 @@
     <div class="viewhead">
       <div>
         <h2>批量队列</h2>
-        <p class="vhint">把链接一次性排进去，后台一条条跑完。关掉浏览器、重启服务都不影响进度（队列存在本地 queue.json）。</p>
+        <p class="vhint">链接会按顺序处理。离开页面或重启服务后，队列仍会继续。</p>
       </div>
       <div class="vacts">
         <button class="btn mini" onclick="openBatch()">＋ 添加链接</button>
@@ -181,7 +179,7 @@
       </div>
     </div>
     <div id="queuelist"></div>
-    <div id="empty-queue" class="viewempty">队列是空的。把攒下来的链接丢进来吧 —— 首页支持一次粘贴多条。</div>
+    <div id="empty-queue" class="viewempty">队列空了。添加链接后会按顺序处理。</div>
   </div>
 
   <div id="feedsview" class="col" style="display:none">
@@ -284,7 +282,7 @@
     <article id="article"></article>
     <div id="readdone" class="readdone">
       <button class="btn primary" id="readdonebtn" onclick="finishReading()">✓ 读完了</button>
-      <span class="readhint">标记为已读，之后可以在侧边栏「已读」里翻到它</span>
+      <span class="readhint">读完后会加入已读列表。</span>
     </div>
     <div id="transcript"></div>
   </div>
@@ -317,14 +315,14 @@
     <div class="field">
       <div class="fhead"><label class="flabel" for="s_name">称呼</label></div>
       <input id="s_name" placeholder="Kevin" oninput="markDirty()">
-      <p class="fhint">会写进生成文章时注入的「读者画像」。</p>
+      <p class="fhint">用于调整文章的称呼和语气。</p>
     </div>
     <div class="field">
       <div class="fhead"><label class="flabel" for="s_interests">长期关注的方向</label></div>
       <textarea id="s_interests" placeholder="例如：AI 基础设施、强化学习、创业方法论" oninput="markDirty()"></textarea>
-      <p class="fhint">填了之后，文章会优先保留这些方向相关的内容，并要求「编辑点评」多给可迁移的启发。</p>
+      <p class="fhint">文章会优先保留这些方向相关的内容。</p>
     </div>
-    <div class="field">
+    <div class="field" id="field-plang">
       <div class="fhead"><label class="flabel" for="s_plang">文章输出语言</label></div>
       <select id="s_plang" onchange="markDirty()">
         <option value="zh">简体中文</option>

@@ -350,6 +350,7 @@
   .folder.add .ficon { color: #c9c9d2; }
   .sidegap { height: 1px; background: var(--border); margin: 8px 9px; }
   .libbar { display: flex; align-items: center; gap: 10px; margin-bottom: 15px; min-height: 24px; }
+  .libbar-title { display: flex; align-items: baseline; gap: 8px; flex: 0 0 auto; }
   .quicktabs { display: inline-flex; border: 1px solid var(--border2); border-radius: 999px; overflow: hidden; background: #fff; }
   .quicktabs button {
     border: 0; background: transparent; font: inherit; font-size: 12.5px; color: var(--dim);
@@ -357,6 +358,7 @@
   }
   .quicktabs button:hover { background: var(--bg2); color: var(--text); }
   .quicktabs button.on { background: var(--text); color: #fff; }
+  .quicktabs { margin-left: auto; }
   .libbar .bt { font-size: 14.5px; font-weight: 600; }
   .libbar .bc { font-size: 12px; color: var(--dim); }
 
@@ -922,6 +924,71 @@
     #article table { display: block; overflow-x: auto; max-width: 100%; }
     #article pre { overflow-x: auto; max-width: 100%; }
     #article { overflow-wrap: anywhere; }
+  }
+
+  @media (max-width: 600px) {
+    /* On phones, preserve the full input as wrapped text instead of forcing a horizontal scroll. */
+    .composer #url { white-space: pre-wrap; overflow-wrap: anywhere; word-break: normal; overflow-x: hidden; overflow-y: hidden; }
+    #urlhint { font-size: 13.5px; line-height: 1.55; }
+    #hint:not(.batch-hint) { display: none; }
+    #hint.batch-hint { margin-top: 8px; padding: 9px 11px; border-radius: 9px; background: var(--bg2); color: #62626b; font-size: 13px; line-height: 1.55; }
+    .composer .opts { gap: 8px; padding-inline: 4px; }
+    .composer .chip { flex: 0 0 auto; min-height: 40px; font-size: 13.5px; white-space: nowrap; }
+    .composer .chip select, .composer .chip input[type=text] { font-size: 13.5px; }
+
+    /* Give the library title its own line; filter labels keep their natural width and scroll. */
+    .libbar { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px 8px; align-items: center; }
+    .libbar-title { min-width: 0; }
+    .libbar .bt { font-size: 16px; color: var(--text); letter-spacing: 0; text-transform: none; }
+    .libbar .bc { font-size: 13px; white-space: nowrap; }
+    #quicktabs { grid-column: 1 / -1; grid-row: 2; display: flex; width: 100%; max-width: 100%; margin: 0; border-radius: 12px; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
+    #quicktabs::-webkit-scrollbar { display: none; }
+    #quicktabs button { flex: 0 0 auto; min-height: 42px; padding: 8px 9px; font-size: 13px; white-space: nowrap; }
+    #zipbtn { grid-column: 2; grid-row: 1; min-height: 40px; white-space: nowrap; }
+
+    /* Keep useful episode context and remove the repeated technical counters. */
+    .ep { padding: 16px; }
+    .ep .cover { margin: -16px -16px 14px; border-radius: 13px 13px 0 0; }
+    .ep .t { font-size: 16px; line-height: 1.5; }
+    .ep .deck { font-size: 14px; line-height: 1.65; color: #55555f; }
+    .ep .tk li { font-size: 13px; line-height: 1.6; }
+    .ep .s { gap: 6px 12px; padding-top: 12px; font-size: 13px; }
+    .ep .catlabel { min-height: 34px; padding: 2px 0; font-size: 13px; }
+    .ep-podcast-meta, .ep-article-ready, .ep-char-count, .ep-cost { display: none !important; }
+
+    /* The article heading below already shows the title; keep the sticky bar to navigation. */
+    .rdtop { height: 56px; }
+    .rdtop .rmeta { display: none; }
+    .rdtop .rdback { min-height: 44px; font-size: 14px; }
+    .rdbody { padding: 22px 16px calc(112px + env(safe-area-inset-bottom)); }
+    #article { font-size: 16px; line-height: 1.78; }
+    #article h1 { font-size: 28px; line-height: 1.32; margin-bottom: 18px; }
+    #article h2 { font-size: 19px; line-height: 1.45; }
+    #article h3 { font-size: 16px; line-height: 1.5; }
+    .rdtools .btnrow { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+    .rdtools .btnrow > .pubrow { grid-column: 1 / -1; min-width: 0; }
+    .rdtools .btnrow > .btn, .rdtools .btnrow > .menuwrap { width: 100%; min-width: 0; }
+    .rdtools .btnrow > .btn, .rdtools .menuwrap > .btn { min-height: 44px; justify-content: center; padding-inline: 8px; font-size: 13px; white-space: normal; }
+
+    /* Helper copy should be readable when it matters and disappear when it repeats the control. */
+    .setintro { display: none; }
+    #field-plang { display: none; }
+    .fhint, .viewhead .vhint { font-size: 13.5px; line-height: 1.6; color: #62626b; }
+    .viewempty { font-size: 14px; line-height: 1.65; color: #62626b; }
+    .readdone .readhint, .modalhint { font-size: 13.5px; line-height: 1.6; color: #62626b; }
+    .field input, .field textarea, .field select { font-size: 16px; }
+    .account-password input { min-height: 44px; font-size: 16px; }
+    .qstate { font-size: 12.5px; }
+    .qtitle { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; font-size: 14.5px; line-height: 1.5; white-space: normal; }
+    .qurl, .furl, .fmeta { display: none; }
+    .ftitle { font-size: 14.5px; line-height: 1.5; flex-wrap: wrap; }
+    .ftag { font-size: 12px; }
+    .qacts .btn, .facts .btn { min-height: 44px; font-size: 13px; }
+    .ferr, .qerr { font-size: 13.5px; line-height: 1.6; }
+    .savebar .msg { font-size: 13px; }
+    #transcript { font-size: 13px; line-height: 1.75; }
+    .inforow { flex-wrap: wrap; gap: 4px; }
+    .inforow .k { width: 100%; }
   }
 
   /* 触屏设备没有 hover：靠悬停才显示的入口必须直接可见 */

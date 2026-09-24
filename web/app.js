@@ -683,7 +683,7 @@ function applyServerConfig(cfg) {
   if (url) {
     url.disabled = ro;
     url.placeholder = ro ? "只读镜像：请在 Mac 上提交链接"
-                         : "粘贴播客或视频链接…（一次可粘多条；连标题说明一起粘也没关系）";
+                         : "粘贴链接，或提问…";
   }
   if (go) { go.disabled = ro; go.textContent = ro ? "只读镜像" : "生成文章"; }
   if (ro && $("hint")) $("hint").textContent = "📖 " + note;
@@ -844,15 +844,16 @@ function setUrlHint(kind, n) {
     : `💬 问你的库${kbScaleText()}`;
 }
 
-const COMPOSER_HINT = "⌘/Ctrl + Enter 直接开始（批量时一行一条链接）· 生成完会直接进阅读页，Esc 返回 · 产物会缓存，重新生成文章不必重新转写";
+const COMPOSER_HINT = "⌘/Ctrl + Enter 开始 · 已转写的音频会复用";
 
 function updateComposerHint() {
   if (serverConfig.readonly) { $("go").textContent = "只读镜像"; $("go").disabled = true; setUrlHint("empty"); return; }
   const n = urlsIn($("url").value).length;
+  $("hint").classList.toggle("batch-hint", n > 1);
   const btn = $("go");
   if (n > 1) {
     btn.textContent = `加入队列 (${n})`;
-    $("hint").innerHTML = `检测到 ${n} 条链接 —— 点按钮会全部排队，后台依次跑完；不想排队就只留一条。`;
+    $("hint").textContent = `检测到 ${n} 条链接，会按顺序加入队列。`;
     setUrlHint("link", n);
     return;
   }
@@ -1860,10 +1861,10 @@ function cardHTML(it) {
       ${c
         ? `<span class="catlabel" title="点击更换分类" onclick="event.stopPropagation();openCatMenu(event,'${dir}')"><span class="dot" style="background:${esc(c.color)}"></span>${esc(c.name)}</span>`
         : `<span class="catlabel empty" title="点击归类" onclick="event.stopPropagation();openCatMenu(event,'${dir}')">＋ 分类</span>`}
-      ${it.podcast ? `<span>${esc(it.podcast)}</span>` : ""}
-      ${it.has_article ? `<span class="ok">✓ 有文章</span>` : `<span>无文章</span>`}
-      ${pv.chars ? `<span>${pv.chars} 字</span>` : ""}
-      ${cost ? `<span title="这一集累计消耗">${cost.trim().replace(/^·\s*/, "")}</span>` : ""}
+      ${it.podcast ? `<span class="ep-podcast-meta">${esc(it.podcast)}</span>` : ""}
+      ${it.has_article ? `<span class="ok ep-article-ready">✓ 有文章</span>` : `<span class="ep-article-missing">无文章</span>`}
+      ${pv.chars ? `<span class="ep-char-count">${pv.chars} 字</span>` : ""}
+      ${cost ? `<span class="ep-cost" title="这一集累计消耗">${cost.trim().replace(/^·\s*/, "")}</span>` : ""}
     </div>
   </div>`;
 }
