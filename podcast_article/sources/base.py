@@ -1,7 +1,7 @@
 """来源层数据模型：一集播客/视频的元信息。"""
 from __future__ import annotations
 
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field, asdict, fields
 
 
 @dataclass
@@ -32,7 +32,9 @@ class Episode:
 
     @classmethod
     def from_dict(cls, d: dict) -> "Episode":
-        tracks = [SubtitleTrack(**t) for t in d.pop("subtitle_tracks", [])]
-        ep = cls(**d)
-        ep.subtitle_tracks = tracks
-        return ep
+        data = dict(d)
+        data["subtitle_tracks"] = [
+            SubtitleTrack(**track) for track in data.get("subtitle_tracks", [])
+        ]
+        episode_fields = {item.name for item in fields(cls)}
+        return cls(**{key: value for key, value in data.items() if key in episode_fields})

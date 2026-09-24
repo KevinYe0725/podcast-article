@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from podcast_article.pipeline import Pipeline
+from podcast_article.sources.base import Episode
 
 
 class FakeStorage:
@@ -34,6 +35,30 @@ class FakeStorage:
 
 def episode_for(path: Path):
     return SimpleNamespace(source="file", url=str(path), audio_url=None, subtitle_tracks=[])
+
+
+def test_episode_metadata_can_be_reloaded_after_cloud_audio_archival(tmp_path):
+    metadata = {
+        "source": "xiaoyuzhou",
+        "url": "https://www.xiaoyuzhoufm.com/episode/example",
+        "title": "Episode",
+        "podcast": "Show",
+        "duration": 3221,
+        "subtitle_tracks": [],
+        "audio_storage": "oss",
+        "audio_object_key": "audio/episode/audio.m4a",
+        "audio_content_type": "audio/mp4",
+        "audio_size": 1234,
+        "audio_sha256": "abc123",
+    }
+    path = tmp_path / "meta.json"
+    path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    episode = Episode.from_dict(json.loads(path.read_text(encoding="utf-8")))
+
+    assert episode.source == "xiaoyuzhou"
+    assert episode.title == "Episode"
+    assert episode.duration == 3221
 
 
 def test_cloud_audio_is_uploaded_and_meta_records_object(tmp_path):
