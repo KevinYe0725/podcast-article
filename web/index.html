@@ -294,24 +294,49 @@
   <div class="sethead">
     <div>
       <h1>设置</h1>
-      <p class="setintro">管理个人资料与工作台偏好。使用额度按账号记录。</p>
+      <p class="setintro">常用选项放在前面；不需要调整的设置可以保持默认。</p>
     </div>
     <button class="btn mini" onclick="closeSettings()">← 返回</button>
   </div>
 
-  <div class="tabs">
-    <button class="tab" data-tab="profile" data-active="true" onclick="switchTab('profile')">个人资料</button>
-    <button class="tab" data-tab="invites" onclick="switchTab('invites')" hidden>邀请朋友</button>
-    <button class="tab" data-tab="keys" onclick="switchTab('keys')">AI 服务</button>
-    <button class="tab" data-tab="dest" onclick="switchTab('dest')">发布目标</button>
-    <button class="tab" data-tab="gen" onclick="switchTab('gen')">生成默认值</button>
-    <button class="tab" data-tab="subs" onclick="switchTab('subs')">订阅调度</button>
-    <button class="tab" data-tab="assist" onclick="switchTab('assist')">阅读助手</button>
-    <button class="tab" data-tab="tts" onclick="switchTab('tts')">朗读</button>
-    <button class="tab" data-tab="memory" onclick="switchTab('memory')">记忆</button>
-    <button class="tab" data-tab="mcp" onclick="switchTab('mcp')">MCP 服务器</button>
-    <button class="tab" data-tab="storage" onclick="switchTab('storage')">存储与用量</button>
-  </div>
+  <div class="settings-layout">
+    <nav class="settings-nav" aria-label="设置分类">
+      <div class="settings-nav-group">
+        <p class="settings-nav-label">常用</p>
+        <div class="settings-nav-items">
+          <button class="tab" data-tab="profile" data-summary="调整称呼和关注方向，让文章更贴合你的兴趣。" data-active="true" onclick="switchTab('profile')">个人资料</button>
+          <button class="tab" data-tab="gen" data-summary="设定转写和成文的默认方式；每次生成时仍可临时调整。" onclick="switchTab('gen')">生成默认值</button>
+          <button class="tab" data-tab="subs" data-summary="设置新单集检查频率，以及是否自动生成文章。" onclick="switchTab('subs')">订阅调度</button>
+        </div>
+      </div>
+
+      <div class="settings-nav-group">
+        <p class="settings-nav-label">阅读体验</p>
+        <div class="settings-nav-items">
+          <button class="tab" data-tab="assist" data-summary="控制阅读时的问答助手和联网补充。" onclick="switchTab('assist')">阅读助手</button>
+          <button class="tab" data-tab="tts" data-summary="选择朗读方式、声音和语速。" onclick="switchTab('tts')">朗读</button>
+        </div>
+      </div>
+
+      <details class="settings-nav-group settings-nav-advanced">
+        <summary>更多设置</summary>
+        <div class="settings-nav-items">
+          <button class="tab" data-tab="keys" data-summary="AI 模型由服务器统一管理；这里不会显示或修改密钥。" onclick="switchTab('keys')">AI 服务</button>
+          <button class="tab" data-tab="dest" data-summary="配置文章发布到 Notion 等目标。" onclick="switchTab('dest')">发布目标</button>
+          <button class="tab" data-tab="memory" data-summary="管理阅读助手可以参考的记忆条目。" onclick="switchTab('memory')">记忆</button>
+          <button class="tab" data-tab="mcp" data-summary="管理发布和外部工具连接。" onclick="switchTab('mcp')">MCP 服务器</button>
+          <button class="tab" data-tab="storage" data-summary="查看账号用量估算和本机存储。" onclick="switchTab('storage')">存储与用量</button>
+          <button class="tab" data-tab="invites" data-summary="为朋友创建独立账号并设置每月用量。" onclick="switchTab('invites')" hidden>邀请朋友</button>
+        </div>
+      </details>
+    </nav>
+
+    <div class="settings-content">
+      <header class="settings-pane-heading">
+        <p id="settings-pane-group">常用</p>
+        <h2 id="settings-pane-title">个人资料</h2>
+        <p id="settings-pane-summary">调整称呼和关注方向，让文章更贴合你的兴趣。</p>
+      </header>
 
   <section class="pane" id="pane-profile">
     <div class="field">
@@ -662,6 +687,8 @@
     <button class="btn mini" onclick="loadSettings()">放弃更改</button>
     <button class="btn primary mini" onclick="saveSettings()">保存</button>
   </div>
+    </div><!-- /settings-content -->
+  </div><!-- /settings-layout -->
 </div><!-- /settings -->
   </div><!-- /appmain -->
 </div><!-- /app -->

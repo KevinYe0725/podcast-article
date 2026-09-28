@@ -1135,6 +1135,13 @@ function leaveSettings() {
 function switchTab(name) {
   if (name === "invites" && currentAccount?.role !== "admin") return;
   if (name !== "invites") resetInviteView();
+  const activeTab = document.querySelector(`.settings-nav .tab[data-tab="${name}"]`);
+  const group = activeTab?.closest(".settings-nav-group");
+  if (group?.tagName === "DETAILS") group.open = true;
+  const groupTitle = group?.querySelector(".settings-nav-label, summary")?.textContent.trim() || "设置";
+  if ($("settings-pane-group")) $("settings-pane-group").textContent = groupTitle;
+  if ($("settings-pane-title")) $("settings-pane-title").textContent = activeTab?.textContent.trim() || "设置";
+  if ($("settings-pane-summary")) $("settings-pane-summary").textContent = activeTab?.dataset.summary || "";
   document.querySelectorAll(".tab").forEach((t) => t.setAttribute("data-active", String(t.dataset.tab === name)));
   document.querySelectorAll(".pane").forEach((p) => { p.style.display = p.id === "pane-" + name ? "block" : "none"; });
   if (name === "mcp") loadMcp();
