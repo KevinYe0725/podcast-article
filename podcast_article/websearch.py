@@ -52,6 +52,8 @@ import os
 import re
 import threading
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 import xml.etree.ElementTree as ET
 from urllib.parse import parse_qs, unquote, urlparse
 
@@ -80,6 +82,20 @@ LABELS: dict[str, str] = {
 
 #: 每个 key 型 provider 对应的环境变量
 KEY_ENV: dict[str, str] = {"tavily": "TAVILY_API_KEY", "serper": "SERPER_API_KEY"}
+
+_ACCOUNT_SEARCH: ContextVar[dict | None] = ContextVar("podcast_account_search", default=None)
+
+
+@contextmanager
+def account_search_override(*, account_id: str = "", provider: str = "default",
+                            keys: dict[str, str] | None = None):
+    clean_keys = {str(k).lower(): str(v).strip() for k, v in (keys or {}).items() if str(v).strip()}
+    token = _ACCOUNT_SEARCH.set({"account_id": str(account_id or ""),
+                                 "provider": str(provider or "default").lower(), "keys": clean_keys})
+    try:
+        yield
+    finally:
+        _ACCOUNT_SEARCH.reset(token)
 
 #: 用户配了 key 时的优先级（越靠前越优先）
 KEYED_ORDER: tuple[str, ...] = ("tavily", "serper")
@@ -884,10 +900,15 @@ def _env_keys() -> set[str]:
 
 
 def _key_of(provider: str) -> str:
-    """取某个 key 型 provider 的 key（环境变量优先，其次 .env）；没有则空串。"""
+    """优先取当前账号自己的密钥，再回退服务器默认密钥。"""
     name = KEY_ENV.get(provider)
     if not name:
         return ""
+    account = _ACCOUNT_SEARCH.get() or {}
+    personal = (str((account.get("keys") or {}).get(provider) or "").strip()
+                if str(account.get("provider") or "default").lower() == provider else "")
+    if personal:
+        return personal
     value = (os.environ.get(name) or "").strip()
     if value:
         return value
@@ -926,16 +947,25 @@ def available() -> dict:
     """
     enabled, forced = _config()
     present = _env_keys()
+    account = _ACCOUNT_SEARCH.get() or {}
+    personal_keys = account.get("keys") or {}
 
     providers: dict[str, dict] = {}
     for name in PROVIDERS:
         needs_key = name in KEYED
         env_name = KEY_ENV.get(name, "")
-        configured = True if not needs_key else env_name in present
+        personal_configured = bool(needs_key and str(personal_keys.get(name) or "").strip())
+        server_configured = bool(needs_key and env_name in present)
+        configured = True if not needs_key else personal_configured or server_configured
         providers[name] = {"label": LABELS[name], "needs_key": needs_key,
-                           "configured": configured, "env": env_name}
+                           "configured": configured, "personal_configured": personal_configured,
+                           "server_configured": server_configured,
+                           "env": env_name}
 
-    if forced:
+    account_provider = str(account.get("provider") or "default").lower()
+    if account_provider in PROVIDERS and providers[account_provider]["configured"]:
+        default = account_provider
+    elif forced:
         if providers[forced]["configured"]:
             default = forced
         else:
@@ -952,17 +982,18 @@ def available() -> dict:
             default = FALLBACK_PROVIDER          # bing：实测最稳的免 key 通道
 
     return {"providers": providers, "default": default, "enabled": enabled,
+            "account_provider": account_provider,
             "env": list(SEARCH_ENV)}
 
 
 # --------------------------------------------------------------- 缓存
 
-def _cache_key(query: str, provider: str, limit: int) -> str:
-    """缓存键：query 归一化（去空白 + 小写）+ provider + limit 的摘要。
+def _cache_key(query: str, provider: str, limit: int, account_id: str = "") -> str:
+    """缓存键：账号 + query 归一化 + provider + limit 的摘要。
 
-    带 limit 是因为搜索条数不同会调不同页数；小写归一让 "AI" / "ai" 复用同一份结果。
+    账号隔离可避免不同用户共用自备搜索 API 的结果缓存；带 limit 是因为搜索条数不同会调不同页数。
     """
-    digest = hashlib.sha256(f"{provider}\x00{limit}".encode("utf-8")).hexdigest()[:8]
+    digest = hashlib.sha256(f"{account_id}\x00{provider}\x00{limit}".encode("utf-8")).hexdigest()[:8]
     return f"{query.strip().lower()}\x00{digest}"
 
 
@@ -1099,10 +1130,14 @@ def search(query: str, *, limit: int = 6, provider: str | None = None,
         return {"query": query, "provider": "", "results": [], "ok": False,
                 "error": "联网搜索已关闭（PA_SEARCH=0）"}
 
-    want = (provider or "").strip().lower()
+    account = _ACCOUNT_SEARCH.get() or {}
+    account_provider = str(account.get("provider") or "default").lower()
+    want = (provider or account_provider or "").strip().lower()
     avail = available()
     if want not in PROVIDERS:
         want = forced if (forced and avail["providers"][forced]["configured"]) else avail["default"]
+    elif want in KEYED and not avail["providers"][want]["configured"]:
+        want = avail["default"]
 
     attempted: list[str] = []
     errors: list[str] = []
@@ -1111,7 +1146,7 @@ def search(query: str, *, limit: int = 6, provider: str | None = None,
     filtered_out = False
     for name in _chain(want, forced):
         attempted.append(name)
-        key = _cache_key(query, name, limit)
+        key = _cache_key(query, name, limit, str(account.get("account_id") or ""))
         cached = _cache_get(key)
         if cached is not None:
             return cached                       # 缓存命中：连「已尝试」都照旧回显

@@ -43,6 +43,8 @@ const mb = (b) => (b / 1048576).toFixed(1);
 const mmss = (s) => { s = Math.round(s); const m = Math.floor(s / 60); return m ? `${m}分${String(s % 60).padStart(2, "0")}秒` : `${s}秒`; };
 const humanDur = (sec) => { if (!sec) return ""; const h = Math.floor(sec / 3600), m = Math.round((sec % 3600) / 60); return h ? `${h}小时${m}分` : `${m}分钟`; };
 let toastTimer = null;
+let integrationStatuses = {};
+let integrationStoreAvailable = true;
 function toast(html) {
   $("toast").innerHTML = html; $("toast").classList.add("show");
   clearTimeout(toastTimer); toastTimer = setTimeout(() => $("toast").classList.remove("show"), 6000);
@@ -1044,17 +1046,26 @@ function finishJob(d) {
 let curUsage = null;
 
 const fmtTokens = (n) => (n >= 1e6 ? (n / 1e6).toFixed(2) + "M" : n >= 1000 ? (n / 1000).toFixed(1) + "k" : String(n || 0));
-const fmtCost = (c) => (c >= 1 ? c.toFixed(2) : c.toFixed(3)) + " 元";
+const fmtCost = (c) => c == null ? "由服务商结算" : (c >= 1 ? c.toFixed(2) : c.toFixed(3)) + " 元";
 
 function renderCostPill() {
   const el = $("costpill");
   if (!el) return;
   if (!curUsage || !curUsage.calls) { el.textContent = ""; return; }
   const hit = curUsage.cache_hit_rate ? ` · 缓存命中 ${curUsage.cache_hit_rate}%` : "";
-  el.textContent = `≈ ${fmtCost(curUsage.cost_cny)} · ${fmtTokens(curUsage.total_tokens)} tokens · ${curUsage.calls} 次调用${hit}`;
+  const costLabel = curUsage.billing_source === "mixed"
+    ? "平台/自备 API 混合 · 金额不可估算"
+    : curUsage.external_billing
+      ? (curUsage.cost_cny == null ? "自备 API · 服务商结算" : `平台约 ${fmtCost(curUsage.cost_cny)} · 含自备 API`)
+    : `≈ ${fmtCost(curUsage.cost_cny)}`;
+  el.textContent = `${costLabel} · ${fmtTokens(curUsage.total_tokens)} tokens · ${curUsage.calls} 次调用${hit}`;
   el.title = `输入 ${curUsage.input_tokens.toLocaleString()} tokens（其中缓存命中 ${curUsage.hit_tokens.toLocaleString()}）\n` +
              `输出 ${curUsage.out_tokens.toLocaleString()} tokens\n` +
-             `按 DeepSeek 官方价格表估算，分高峰/空闲时段计价`;
+             (curUsage.billing_source === "mixed"
+               ? "平台与自备 API 混用，无法准确估算费用"
+               : curUsage.external_billing
+                 ? "自备 API 的费用由服务商结算"
+               : "按 DeepSeek 官方价格表估算，分高峰/空闲时段计价");
 }
 
 async function toggleTranscript() {
@@ -1155,9 +1166,18 @@ const clearDirty = () => $("savebar").classList.remove("dirty");
 async function loadSettings() {
   const d = await (await fetch("/api/settings")).json();
   const p = d.profile || {}, g = d.generation || {}, s = d.storage || {};
+  const services = d.services || {};
+  integrationStatuses = d.integrations?.secrets || {};
+  integrationStoreAvailable = d.integrations?.available !== false;
   $("s_name").value = p.name || "";
   $("s_interests").value = p.interests || "";
   $("s_plang").value = p.language || "zh";
+  $("api_llm_mode").value = services.llm_mode || "platform";
+  $("api_llm_base").value = services.llm_base_url || "https://api.openai.com/v1";
+  $("api_llm_model").value = services.llm_model || "gpt-4o-mini";
+  $("api_asr_mode").value = services.asr_mode || "platform";
+  $("api_asr_base").value = services.asr_base_url || "https://dashscope.aliyuncs.com";
+  $("api_asr_model").value = services.asr_model || "paraformer-v2";
   const t = d.tts || {};
   if ($("t_provider")) {
     $("t_provider").value = t.provider || "off";
@@ -1211,6 +1231,15 @@ async function loadSettings() {
   $("as_web").checked = as.web_default !== false;
   $("aweb_toggle").checked = as.web_default !== false;
   $("as_mode").value = as.length_mode || "concise";
+  $("as_provider").value = as.search_provider || "default";
+  [
+    ["LLM_API_KEY", "api_llm_key_status"],
+    ["ASR_API_KEY", "api_asr_key_status"],
+    ["TAVILY_API_KEY", "api_tavily_key_status"],
+    ["SERPER_API_KEY", "api_serper_key_status"],
+    ["TTS_API_KEY", "st_TTS_API_KEY"],
+  ].forEach(([name, id]) => paintIntegrationSecret(name, id));
+  syncAccountApiForms();
   syncFab();
   loadSearchService();
 
@@ -1246,14 +1275,16 @@ async function loadUsageBox() {
     $("usage_state").textContent = `${t.episodes} 篇有记录`;
     $("usage_state").className = "fstate ok";
     const rows = [
-      ["累计费用（估算）", fmtCost(t.cost_cny)],
+      ["平台费用（估算）", fmtCost(t.cost_cny)],
       ["总计 tokens", `${t.total_tokens.toLocaleString()}（输入 ${t.input_tokens.toLocaleString()} / 输出 ${t.out_tokens.toLocaleString()}）`],
       ["缓存命中", `${t.hit_tokens.toLocaleString()} tokens · ${t.cache_hit_rate}%（命中部分单价只有 1/50）`],
       ["模型调用次数", `${t.calls} 次`],
-      ["平均每篇", t.episodes ? `${fmtCost(t.cost_cny / t.episodes)} · ${Math.round(t.total_tokens / t.episodes).toLocaleString()} tokens` : "—"],
+      ...(t.external_billing ? [["自备/混合 API", `${t.external_episodes || 0} 篇 · 费用由服务商结算或无法估算`]] : []),
+      ["平均每篇", t.episodes ? `${t.cost_cny == null ? (t.billing_source === "mixed" ? "平台/自备 API 混用，金额不可估算" : "自备 API 由服务商结算") : `${fmtCost(t.cost_cny / t.episodes)}${t.external_billing ? " + 自备 API 另计" : ""}`} · ${Math.round(t.total_tokens / t.episodes).toLocaleString()} tokens` : "—"],
     ];
     Object.entries(t.by_model || {}).forEach(([model, u]) => {
-      rows.push([`　${model}`, `${u.episodes || ""}${u.episodes ? " 篇 · " : ""}${fmtCost(u.cost_cny)} · ${fmtTokens(u.total_tokens)} tokens`]);
+      const amount = u.billing_source === "mixed" ? "平台/自备 API 混用，金额不可准确估算" : fmtCost(u.cost_cny);
+      rows.push([`　${model}`, `${u.episodes || ""}${u.episodes ? " 篇 · " : ""}${amount} · ${fmtTokens(u.total_tokens)} tokens`]);
     });
     box.innerHTML = rows.map(([k, v]) =>
       `<div class="inforow"><span class="k">${esc(k)}</span><span class="v">${esc(String(v))}</span></div>`).join("");
@@ -1297,6 +1328,15 @@ async function saveSettings() {
       enabled: $("as_enabled").checked,
       web_default: $("as_web").checked,
       length_mode: $("as_mode").value,
+      search_provider: $("as_provider").value,
+    },
+    services: {
+      llm_mode: $("api_llm_mode").value,
+      llm_base_url: $("api_llm_base").value.trim(),
+      llm_model: $("api_llm_model").value.trim(),
+      asr_mode: $("api_asr_mode").value,
+      asr_base_url: $("api_asr_base").value.trim(),
+      asr_model: $("api_asr_model").value.trim(),
     },
     tts: ttsFormValues(),
   };
@@ -1306,7 +1346,117 @@ async function saveSettings() {
   const d = await resp.json();
   if (!resp.ok) { toast("⚠ " + esc(d.error || "保存失败")); return; }
   await loadSettings();
+  if (currentAccount) {
+    currentAccount.services = {
+      personal_llm_active: $("api_llm_mode").value === "personal" && !!integrationStatuses.LLM_API_KEY?.configured,
+      personal_asr_active: $("api_asr_mode").value === "personal" && !!integrationStatuses.ASR_API_KEY?.configured,
+    };
+    renderAccount(currentAccount);
+  }
   toast("✦ 已保存");
+}
+
+function paintIntegrationSecret(name, elementId) {
+  const node = $(elementId);
+  if (!node) return;
+  const item = integrationStatuses[name] || {};
+  if (!integrationStoreAvailable) {
+    node.textContent = "密钥保存未启用";
+    node.className = "fstate";
+    return;
+  }
+  node.textContent = item.configured
+    ? `已配置${item.masked ? ` · ${item.masked}` : ""}`
+    : "未配置";
+  node.className = "fstate" + (item.configured ? " ok" : "");
+}
+
+function syncAccountApiForms() {
+  const llmPersonal = $("api_llm_mode")?.value === "personal";
+  const asrPersonal = $("api_asr_mode")?.value === "personal";
+  const llmReady = !!integrationStatuses.LLM_API_KEY?.configured;
+  const asrReady = !!integrationStatuses.ASR_API_KEY?.configured;
+  if ($("api_llm_form")) $("api_llm_form").hidden = !llmPersonal;
+  if ($("api_asr_form")) $("api_asr_form").hidden = !asrPersonal;
+
+  const llmStatus = $("api_llm_status");
+  if (llmStatus) {
+    llmStatus.textContent = !llmPersonal ? "使用平台默认" : llmReady ? "自备 API 已配置" : "缺少密钥 · 暂用默认";
+    llmStatus.className = "fstate" + (llmPersonal && llmReady ? " ok" : "");
+  }
+  const asrStatus = $("api_asr_status");
+  if (asrStatus) {
+    asrStatus.textContent = !asrPersonal ? "使用当前转写方式" : asrReady ? "自备 API 已配置" : "缺少密钥 · 暂用默认";
+    asrStatus.className = "fstate" + (asrPersonal && asrReady ? " ok" : "");
+  }
+  if ($("api_llm_fallback")) $("api_llm_fallback").hidden = !llmPersonal || llmReady;
+  if ($("api_asr_fallback")) $("api_asr_fallback").hidden = !asrPersonal || asrReady;
+  if ($("g_llm")) $("g_llm").disabled = llmPersonal && llmReady;
+  if ($("g_backend")) $("g_backend").disabled = asrPersonal && asrReady;
+}
+
+async function csrfWrite(path, method, payload) {
+  const csrfResponse = await fetch("/api/auth/csrf", { credentials: "same-origin" });
+  const csrf = await csrfResponse.json();
+  return fetch(path, {
+    method, credentials: "same-origin",
+    headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf.csrf_token || "" },
+    body: payload === undefined ? undefined : JSON.stringify(payload),
+  });
+}
+
+async function saveIntegrationSecret(name, inputId, statusId) {
+  const input = $(inputId), value = input?.value.trim() || "";
+  if (!value) { toast("请先填写 API 密钥"); input?.focus(); return; }
+  const status = $(statusId);
+  if (status) { status.textContent = "正在保存…"; status.className = "fstate"; }
+  try {
+    const response = await csrfWrite(`/api/integrations/secrets/${encodeURIComponent(name)}`, "PUT", { value });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "密钥保存失败");
+    integrationStatuses[name] = data.status || { configured: true, masked: "" };
+    input.value = "";
+    if (name === "LLM_API_KEY") $("api_llm_mode").value = "personal";
+    if (name === "ASR_API_KEY") $("api_asr_mode").value = "personal";
+    if (name === "TAVILY_API_KEY") $("as_provider").value = "tavily";
+    if (name === "SERPER_API_KEY") $("as_provider").value = "serper";
+    paintIntegrationSecret(name, statusId);
+    syncAccountApiForms();
+    if (name === "TAVILY_API_KEY" || name === "SERPER_API_KEY") await loadSearchService();
+    markDirty();
+    toast("密钥已加密保存；点击页面底部“保存”启用此服务");
+  } catch (error) {
+    if (status) { status.textContent = "保存失败"; status.className = "fstate"; }
+    toast("⚠ " + esc(error.message || "密钥保存失败"));
+  }
+}
+
+async function deleteIntegrationSecret(name, statusId) {
+  const label = {
+    LLM_API_KEY: "文章生成 API", ASR_API_KEY: "语音转写 API",
+    TAVILY_API_KEY: "Tavily", SERPER_API_KEY: "Serper", TTS_API_KEY: "朗读 API",
+  }[name] || "API";
+  if (!window.confirm(`删除已保存的${label}密钥？之后可以重新填写。`)) return;
+  try {
+    const response = await csrfWrite(`/api/integrations/secrets/${encodeURIComponent(name)}`, "DELETE");
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "密钥删除失败");
+    integrationStatuses[name] = data.status || { configured: false, masked: "" };
+    paintIntegrationSecret(name, statusId);
+    syncAccountApiForms();
+    if (currentAccount && name === "LLM_API_KEY") {
+      currentAccount.services = { ...(currentAccount.services || {}), personal_llm_active: false };
+      renderAccount(currentAccount);
+    }
+    if (currentAccount && name === "ASR_API_KEY") {
+      currentAccount.services = { ...(currentAccount.services || {}), personal_asr_active: false };
+      renderAccount(currentAccount);
+    }
+    if (name === "TAVILY_API_KEY" || name === "SERPER_API_KEY") await loadSearchService();
+    toast("已删除该账号保存的密钥");
+  } catch (error) {
+    toast("⚠ " + esc(error.message || "密钥删除失败"));
+  }
 }
 
 /* ---------------- 时间戳回听（本地音频）---------------- */
@@ -1729,9 +1879,12 @@ function renderUsagePill() {
   const el = $("usagepill");
   const t = libUsageTotal;
   if (!t || !t.episodes) { el.textContent = ""; el.title = ""; return; }
+  const costLabel = t.external_billing
+    ? (t.cost_cny == null ? `自备 API ${t.external_episodes || 0} 篇` : `${fmtCost(t.cost_cny)} + 自备 API ${t.external_episodes || 0} 篇`)
+    : `≈${fmtCost(t.cost_cny)}`;
   el.textContent = isNarrow()
-    ? `≈${fmtCost(t.cost_cny)}`
-    : `累计 ${fmtCost(t.cost_cny)} · ${fmtTokens(t.total_tokens)} tokens`;
+    ? costLabel
+    : `累计 ${costLabel} · ${fmtTokens(t.total_tokens)} tokens`;
   el.title = `${t.episodes} 篇 · ${t.calls} 次模型调用\n` +
     `输入 ${t.input_tokens.toLocaleString()} tokens（缓存命中 ${t.hit_tokens.toLocaleString()}，命中率 ${t.cache_hit_rate}%）\n` +
     `输出 ${t.out_tokens.toLocaleString()} tokens\n点开看分模型明细`;
@@ -1832,7 +1985,9 @@ function cardHTML(it) {
   const st = statusOf(it.dir);
   const take = (pv.takeaways || []).map((t) => `<li>${esc(t)}</li>`).join("");
   const dir = esc(it.dir);
-  const cost = it.usage && it.usage.calls ? ` · ≈${fmtCost(it.usage.cost_cny)}` : "";
+  const cost = it.usage && it.usage.calls
+    ? ` · ${it.usage.billing_source === "mixed" ? "平台/自备 API 混用" : it.usage.external_billing ? (it.usage.cost_cny == null ? "自备 API" : `平台约 ${fmtCost(it.usage.cost_cny)} + 自备 API`) : `≈${fmtCost(it.usage.cost_cny)}`}`
+    : "";
   // 视频类封面是 16:9，铺满即可；播客类封面是方形（节目 logo），
   // 用 1:1 的容器完整显示 —— 裁成 16:9 会把 logo 的上下切掉（小宇宙那张就是个圆环）。
   const squareCover = ["xiaoyuzhou", "rss", "file", ""].includes(it.source || "");
@@ -3340,10 +3495,12 @@ async function loadSearchService() {
     box.innerHTML = Object.entries(provs).map(([name, p]) => `
       <div class="inforow">
         <span class="k">${esc(p.label || name)}${p.needs_key ? "（需密钥）" : "（免密钥）"}</span>
-        <span class="v">${p.configured ? (name === d.default ? "✓ 当前使用" : "可用") : "未配置"}</span>
+        <span class="v">${name === d.default ? "✓ 当前使用" : p.personal_configured ? "个人密钥已保存" : p.server_configured ? "平台已配置" : p.configured ? "可用" : "未配置"}</span>
       </div>`).join("");
     $("as_state").textContent = d.enabled ? `当前：${d.default}` : "已彻底关闭";
     $("as_state").className = "fstate" + (d.enabled ? " ok" : "");
+    paintIntegrationSecret("TAVILY_API_KEY", "api_tavily_key_status");
+    paintIntegrationSecret("SERPER_API_KEY", "api_serper_key_status");
   } catch (e) {
     box.innerHTML = `<div class="inforow"><span class="k">读取失败</span><span class="v">${esc(String(e))}</span></div>`;
   }
@@ -3354,9 +3511,8 @@ async function testSearchService(btn) {
   btn.disabled = true;
   out.className = "vres"; out.textContent = "搜索中…";
   try {
-    const d = await (await fetch("/api/search-service/test", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query: "DeepSeek" }),
+    const d = await (await csrfWrite("/api/search-service/test", "POST", {
+      query: "DeepSeek", provider: $("as_provider").value,
     })).json();
     if (d.ok) {
       out.className = "vres ok";
@@ -3410,12 +3566,17 @@ function renderAccount(account) {
   $("account-role").textContent = account.role === "admin" ? "管理员账号" : "个人账号";
   const quota = account.quota || {}, asr = quota.asr || {}, llm = quota.llm || {};
   const llmLimit = llm.limit_cny == null ? "不限" : `¥${Number(llm.limit_cny).toFixed(2)}`;
-  $("account-quota").innerHTML = `<div><span>本月转写</span><strong>${fmtQuotaDuration(asr.used_seconds)} / ${fmtQuotaDuration(asr.limit_seconds)}</strong></div><div><span>本月 AI 写作</span><strong>¥${Number(llm.used_cny || 0).toFixed(2)} / ${llmLimit}</strong></div>`;
+  const services = account.services || {};
+  const asrUsage = services.personal_asr_active ? "自备 API · 服务商结算"
+    : `${fmtQuotaDuration(asr.used_seconds)} / ${fmtQuotaDuration(asr.limit_seconds)}`;
+  const llmUsage = services.personal_llm_active ? "自备 API · 服务商结算"
+    : `¥${Number(llm.used_cny || 0).toFixed(2)} / ${llmLimit}`;
+  $("account-quota").innerHTML = `<div><span>本月转写</span><strong>${asrUsage}</strong></div><div><span>本月 AI 写作</span><strong>${llmUsage}</strong></div>`;
   const admin = account.role === "admin";
   $("account-invite").hidden = !admin;
-  [document.querySelector('[data-tab="invites"]'), document.querySelector('[data-tab="keys"]'), document.querySelector('[data-tab="mcp"]'), $("pane-invites"), $("pane-keys"), $("pane-mcp")]
+  [document.querySelector('[data-tab="invites"]'), document.querySelector('[data-tab="mcp"]'), $("pane-invites"), $("pane-mcp")]
     .filter(Boolean).forEach((node) => { node.hidden = !admin; });
-  document.querySelectorAll('[data-tab="invites"], [data-tab="keys"], [data-tab="mcp"]').forEach((node) => { node.style.display = admin ? "" : "none"; });
+  document.querySelectorAll('[data-tab="invites"], [data-tab="mcp"]').forEach((node) => { node.style.display = admin ? "" : "none"; });
 }
 
 async function csrfPost(path, payload) {

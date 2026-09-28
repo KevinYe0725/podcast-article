@@ -499,6 +499,7 @@ class Pipeline:
         model = self.llm_model or config.deepseek_model()
         meter = usage.Recorder(model, workdir, on_update=self.on_usage,
                                started=usage.load(workdir),
+                               billing_source="platform" if config.uses_platform_llm_api() else "external",
                                before_save=(
                                    lambda path, size: self.check_workspace_cache(
                                        replacing=path, projected_bytes=size
@@ -529,10 +530,14 @@ class Pipeline:
             if self.on_usage:
                 self.on_usage(usage.describe(snapshot))
         if snapshot.get("calls"):
+            charge = usage.cost_cny(snapshot)
+            if snapshot.get("billing_source") == "mixed":
+                cost_note = "平台与自备 API 混用，金额无法准确估算"
+            else:
+                cost_note = f"约 {charge:.3f} 元" if charge is not None else "费用由自备 API 服务商结算"
             self.log(f"[write] 本次用量：输入 {snapshot['hit_tokens'] + snapshot['miss_tokens']:,} "
                      f"tokens（缓存命中 {snapshot['hit_tokens']:,}）· "
-                     f"输出 {snapshot['out_tokens']:,} tokens · "
-                     f"约 {usage.cost_cny(snapshot):.3f} 元")
+                     f"输出 {snapshot['out_tokens']:,} tokens · {cost_note}")
         if not article:
             raise RuntimeError("模型没有返回任何内容")
         content = article + "\n"

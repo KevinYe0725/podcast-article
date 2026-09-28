@@ -445,6 +445,15 @@
     border: 1px solid var(--border); border-radius: 16px; box-shadow: 0 8px 30px rgba(0,0,0,.035);
   }
   .settings-content > .pane { padding-bottom: 10px; }
+  .settings-api-block { margin: 14px 0; padding: 4px 16px 10px; border: 1px solid var(--border); border-radius: 14px; }
+  .settings-api-title { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; padding: 16px 0 12px; border-bottom: 1px solid var(--border); }
+  .settings-api-title h3 { margin: 0; font-size: 14px; font-weight: 600; }
+  .settings-api-title p { margin: 4px 0 0; color: var(--dim); font-size: 12px; line-height: 1.5; }
+  .settings-api-secret-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .settings-api-secret-row input { flex: 1; min-width: 0; }
+  .settings-api-secret-row .btn { flex: 0 0 auto; }
+  .settings-api-secret-block { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
+  .settings-api-fallback { margin: 0 0 12px; padding: 10px 12px; border-radius: 8px; background: var(--bg2); color: var(--dim); font-size: 12px; line-height: 1.5; }
   .settings-pane-heading { margin-bottom: 10px; padding-bottom: 16px; border-bottom: 1px solid var(--border); }
   #settings-pane-group { margin-bottom: 4px; color: var(--dim); font-size: 11px; font-weight: 600; letter-spacing: .04em; }
   #settings-pane-title { font-size: 18px; font-weight: 600; line-height: 1.35; }
@@ -1370,6 +1379,12 @@ body.assistopen .fab { display: none; }
   .settings-nav-group:nth-child(2) .settings-nav-items { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .settings-nav-group:nth-child(2), .settings-nav-advanced { grid-column: 1 / -1; }
   .settings-content { padding: 17px 16px; }
+  .settings-api-block { padding: 3px 12px 8px; border-radius: 12px; }
+  .settings-api-title { align-items: center; gap: 8px; }
+  .settings-api-title .fstate { font-size: 10px; }
+  .settings-api-secret-row { flex-wrap: wrap; }
+  .settings-api-secret-row input { flex-basis: 100%; }
+  .settings-api-secret-row .btn { flex: 1 1 auto; }
   .settings-pane-heading { padding-bottom: 13px; }
   .sethead > div { min-width: 0; }
   .sethead .btn { flex: 0 0 auto; white-space: nowrap; }

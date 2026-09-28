@@ -901,11 +901,14 @@ def _profile(settings_path: Path | None = None) -> str:
 
 def _start_usage(workdir: Path | None, model: str, log=print, on_update=None, before_save=None):
     """为当前提问创建独立记录器，不读取或抢占别的请求的活动记录。"""
+    billing_source = "platform" if config.uses_platform_llm_api() else "external"
     if workdir is None:
-        return usage.Recorder(model, on_update=on_update, before_save=before_save), False
+        return usage.Recorder(model, on_update=on_update, before_save=before_save,
+                              billing_source=billing_source), False
     try:
         recorder = usage.Recorder(model, workdir=Path(workdir), on_update=on_update,
-                                  started=usage.load(workdir) or {}, before_save=before_save)
+                                  started=usage.load(workdir) or {}, before_save=before_save,
+                                  billing_source=billing_source)
         return recorder, True
     except Exception as exc:
         log(f"[deepdive] 用量记录器启动失败，本次不记账（{type(exc).__name__}: {exc}）")

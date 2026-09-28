@@ -34,7 +34,9 @@ def _has_faster() -> bool:
 
 
 def _has_cloud() -> bool:
-    return bool(os.environ.get("DASHSCOPE_API_KEY", "").strip())
+    from . import cloud_asr
+
+    return cloud_asr.available()
 
 
 def available_backends() -> list[str]:
@@ -92,8 +94,9 @@ def transcribe(
 
 def _transcribe_cloud(audio_url: str, language: str, model: str | None, log, progress=None) -> list[dict]:
     from .cloud_asr import CloudASRClient
+    from . import cloud_asr
 
-    selected_model = model or os.environ.get("PA_ASR_MODEL", "paraformer-v2")
+    selected_model = model or cloud_asr.account_asr_model() or os.environ.get("PA_ASR_MODEL", "paraformer-v2")
     log(f"[asr] 云端模型：{selected_model}")
     client = CloudASRClient()
     return client.transcribe(

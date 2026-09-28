@@ -25,6 +25,7 @@ from urllib.parse import quote, urlsplit
 import markdown
 from flask import Flask, Response, g, jsonify, make_response, redirect, request, send_file, send_from_directory, url_for
 
+from podcast_article import account_services
 from podcast_article import auth as auth_mod
 from podcast_article.platform_store import AccountQuota, InviteError, PlatformStore, QuotaExceeded, normalize_username
 from podcast_article import library as library_mod
@@ -253,8 +254,9 @@ def _integration_status(owner_id: str) -> dict:
         return {
             "available": False,
             "secrets": {
-                "NOTION_TOKEN": {"configured": False, "masked": ""},
-                "TTS_API_KEY": {"configured": False, "masked": ""},
+                name: {"configured": False, "masked": ""}
+                for name in ("NOTION_TOKEN", "TTS_API_KEY", "LLM_API_KEY", "ASR_API_KEY",
+                             "TAVILY_API_KEY", "SERPER_API_KEY")
             },
         }
 
@@ -263,13 +265,22 @@ def _integration_secret_values(owner_id: str) -> dict[str, str]:
     try:
         store = _integration_secret_store()
         values = {}
-        for name in ("NOTION_TOKEN", "TTS_API_KEY"):
+        for name in ("NOTION_TOKEN", "TTS_API_KEY", "LLM_API_KEY", "ASR_API_KEY",
+                     "TAVILY_API_KEY", "SERPER_API_KEY"):
             secret = store.get_for_user(owner_id, name)
             if secret:
                 values[name] = secret
         return values
     except RuntimeError:
         return {}
+
+
+def _account_api_profile(workspace=None, settings_data: dict | None = None):
+    workspace = workspace or _workspace()
+    user_settings = settings_data or settings_mod.load(settings_path=workspace.settings_path)
+    return account_services.resolve(
+        workspace.account_id, user_settings, _integration_secret_values(workspace.account_id)
+    )
 
 
 _SYSTEM_STORE_LOCK = threading.Lock()
@@ -528,6 +539,8 @@ def api_auth_me():
     account = auth_mod.resolve_request(request)
     if account is None:
         return jsonify({"authenticated": False})
+    workspace = workspace_for(account.id, data_root())
+    api_profile = _account_api_profile(workspace)
     return jsonify({
         "authenticated": True,
         "id": account.id,
@@ -535,6 +548,10 @@ def api_auth_me():
         "role": account.role,
         "must_change_password": account.must_change_password,
         "quota": _quota_summary(account.id),
+        "services": {
+            "personal_llm_active": api_profile.uses_personal_llm,
+            "personal_asr_active": api_profile.uses_personal_asr,
+        },
     })
 
 
@@ -746,10 +763,15 @@ def get_job(owner_id: str, job_id: str) -> dict | None:
 
 def _new_job(url: str, opts: dict, *, source: str = "manual",
              queue_id: str | None = None, workspace=None, quota_guard=None,
-             worker_lease: _WorkerLease | None = None) -> str:
+             worker_lease: _WorkerLease | None = None, account_api_profile=None) -> str:
     output_root = workspace.output_root if workspace is not None else OUTPUT_ROOT
     settings_path = workspace.settings_path if workspace is not None else None
     owner_id = workspace.account_id if workspace is not None else "system"
+    if workspace is not None and account_api_profile is None:
+        account_api_profile = _account_api_profile(workspace)
+    personal_llm = bool(account_api_profile and account_api_profile.uses_personal_llm)
+    personal_asr = bool(account_api_profile and account_api_profile.uses_personal_asr)
+    billable_asr_callbacks = quota_guard is not None and not personal_asr
     cache_limit = None
     cache_baseline_bytes = 0
     if workspace is not None and quota_guard is not None:
@@ -835,7 +857,7 @@ def _new_job(url: str, opts: dict, *, source: str = "manual",
         job["usage"] = snapshot
 
     def before_billable_asr(episode, audio_seconds=None):
-        if quota_guard is None:
+        if quota_guard is None or personal_asr:
             return None
         from podcast_article.quota import asr_reservation_seconds
 
@@ -862,10 +884,15 @@ def _new_job(url: str, opts: dict, *, source: str = "manual",
             # 请求没有显式指定时，落到设置页里的「生成默认值」
             defaults = settings_mod.load(settings_path=settings_path)["generation"]
             lang = opts.get("lang") or defaults.get("language") or "auto"
-            pipeline_backend = (opts.get("backend")
+            pipeline_backend = ("cloud" if personal_asr
+                                else opts.get("backend")
                                 or os.environ.get("PA_ASR_BACKEND")
                                 or defaults.get("backend")
                                 or "auto")
+            asr_model = (account_api_profile.asr_model if personal_asr
+                         else opts.get("model") or defaults.get("asr_model"))
+            llm_model = (account_api_profile.llm_model if personal_llm
+                         else opts.get("llm_model") or defaults.get("llm_model"))
             scoped_object_storage = (
                 object_storage.ObjectStorage(prefix=object_storage_prefix)
                 if pipeline_backend == "cloud" and object_storage_prefix
@@ -876,8 +903,8 @@ def _new_job(url: str, opts: dict, *, source: str = "manual",
                 output_dir=output_root,
                 language=lang,
                 backend=pipeline_backend,
-                asr_model=(opts.get("model") or defaults.get("asr_model") or None),
-                llm_model=(opts.get("llm_model") or defaults.get("llm_model") or None),
+                asr_model=asr_model or None,
+                llm_model=llm_model or None,
                 no_subs=bool(opts.get("no_subs", defaults.get("no_subs"))),
                 force_transcript=bool(opts.get("force_transcript")),
                 force_article=bool(opts.get("force_article")),
@@ -892,10 +919,10 @@ def _new_job(url: str, opts: dict, *, source: str = "manual",
                 episode=opts.get("episode") or None,
                 settings_path=settings_path,
                 quota_guard=quota_guard,
-                before_billable_asr=before_billable_asr if quota_guard is not None else None,
-                resize_billable_asr=resize_billable_asr if quota_guard is not None else None,
-                settle_billable_asr=settle_billable_asr if quota_guard is not None else None,
-                release_billable_asr=release_billable_asr if quota_guard is not None else None,
+                before_billable_asr=before_billable_asr if billable_asr_callbacks else None,
+                resize_billable_asr=resize_billable_asr if billable_asr_callbacks else None,
+                settle_billable_asr=settle_billable_asr if billable_asr_callbacks else None,
+                release_billable_asr=release_billable_asr if billable_asr_callbacks else None,
                 check_workspace_cache=check_workspace_cache if cache_limit is not None else None,
                 object_storage_client=scoped_object_storage,
                 object_storage_prefix=object_storage_prefix,
@@ -929,10 +956,17 @@ def _new_job(url: str, opts: dict, *, source: str = "manual",
                 if worker_lease is not None:
                     worker_lease.release()
 
+    def worker_with_account_services() -> None:
+        if account_api_profile is None:
+            worker()
+            return
+        with account_services.activate(account_api_profile):
+            worker()
+
     if worker_lease is not None:
         worker_lease.transfer()
     try:
-        threading.Thread(target=worker, daemon=True).start()
+        threading.Thread(target=worker_with_account_services, daemon=True).start()
     except Exception as exc:
         job["status"] = "error"
         job["error"] = f"无法启动任务：{type(exc).__name__}"
@@ -1092,6 +1126,7 @@ def api_run():
     if not url:
         return jsonify({"error": "请填写链接"}), 400
     workspace = _workspace()
+    api_profile = _account_api_profile(workspace)
     with _WORKER_ADMISSION_LOCK:
         lease = _acquire_worker_lease()
         if lease is None:
@@ -1109,11 +1144,12 @@ def api_run():
             ignore_subtitles = bool(data.get("no_subs", defaults.get("no_subs", False)))
             # Cached work may require no model call. Only preflight an explicit force
             # action; ordinary runs reserve at the exact billable step in Pipeline.
-            if data.get("force_article"):
+            if data.get("force_article") and not api_profile.uses_personal_llm:
                 quota_block = _quota_exhausted_response(workspace.account_id, "llm_month_cny")
                 if quota_block:
                     return quota_block
-            if backend == "cloud" and ignore_subtitles and data.get("force_transcript"):
+            if (backend == "cloud" and ignore_subtitles and data.get("force_transcript")
+                    and not api_profile.uses_personal_asr):
                 quota_block = _quota_exhausted_response(workspace.account_id, "asr_month_seconds")
                 if quota_block:
                     return quota_block
@@ -1124,7 +1160,8 @@ def api_run():
                 return jsonify({"error": "quota_exceeded", "resource": exc.resource,
                                 "remaining": str(exc.remaining), "message": "存储或文件大小超过账号限额"}), 429
             job_id = _new_job(url, data, workspace=workspace,
-                              quota_guard=_quota_guard(workspace.account_id), worker_lease=lease)
+                              quota_guard=_quota_guard(workspace.account_id), worker_lease=lease,
+                              account_api_profile=api_profile)
             return jsonify({"job_id": job_id})
         finally:
             if not lease.transferred:
@@ -1317,7 +1354,7 @@ def api_publish():
 
 @app.get("/api/settings")
 def api_settings_get():
-    """设置页数据：当前账号的偏好与存储信息。服务器凭据不通过成员接口显示。"""
+    """设置页数据：账号偏好与密钥状态；任何 API 密钥明文都不通过接口返回。"""
     workspace = _workspace()
     current = settings_mod.load(settings_path=workspace.settings_path)
     return jsonify({
@@ -1325,13 +1362,13 @@ def api_settings_get():
         "generation": current["generation"],
         "subscriptions": current["subscriptions"],
         "assistant": current["assistant"],
+        "services": current["services"],
         "tts": current["tts"],
         "notion": current["notion"],
         "integrations": _integration_status(workspace.account_id),
         "tts_voices": tts_mod.macos_voices(),      # macOS 上可用的中文音色（给设置页做提示）
         "tts_available": bool(shutil.which("say")) or tts_mod.DEFAULTS["provider"] != "off",
         "server_credentials": "managed_by_server",
-        "integrations": _integration_status(workspace.account_id),
         "storage": settings_mod.storage_info(output_root=workspace.output_root,
                                               settings_path=workspace.settings_path),
     })
@@ -1340,16 +1377,36 @@ def api_settings_get():
 @app.post("/api/settings")
 @_readonly_guard
 def api_settings_post():
-    """保存当前账号偏好。服务端模型密钥由管理员管理，不接受成员写入。"""
+    """保存账号偏好；密钥必须走加密的账号集成密钥端点。"""
     data = request.get_json(force=True, silent=True) or {}
     if data.get("secrets"):
         return jsonify({"error": "server_credentials_managed"}), 400
     workspace = _workspace()
+    services = dict(data.get("services") or {})
+    tts_values = dict(data.get("tts") or {})
+    current_settings = settings_mod.load(settings_path=workspace.settings_path)
+    current_services = current_settings["services"]
+    current_tts = current_settings["tts"]
+    try:
+        for key, mode_key, label in (
+            ("llm_base_url", "llm_mode", "写作 API 地址"),
+            ("asr_base_url", "asr_mode", "转写 API 地址"),
+        ):
+            if (key in services and
+                    ((services.get(mode_key) == "personal" and current_services.get(mode_key) != "personal") or
+                     str(services.get(key) or "").strip() != str(current_services.get(key) or "").strip())):
+                services[key] = settings_mod.validate_api_base_url(services[key], label=label)
+        next_tts_base = str(tts_values.get("base_url") or "").strip()
+        if next_tts_base and next_tts_base.rstrip("/") != str(current_tts.get("base_url") or "").rstrip("/"):
+            tts_values["base_url"] = settings_mod.validate_api_base_url(next_tts_base, label="朗读 API 地址")
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
     saved = settings_mod.save(profile=data.get("profile"),
                               generation=data.get("generation"),
                               subscriptions=data.get("subscriptions"),
                               assistant=data.get("assistant"),
-                              tts=data.get("tts"),
+                              services=services,
+                              tts=tts_values,
                               notion=data.get("notion"),
                               settings_path=workspace.settings_path)
     return jsonify({
@@ -1357,6 +1414,7 @@ def api_settings_post():
         "generation": saved["generation"],
         "subscriptions": saved["subscriptions"],
         "assistant": saved["assistant"],
+        "services": saved["services"],
         "tts": saved["tts"],
         "notion": saved["notion"],
         "integrations": _integration_status(_workspace().account_id),
@@ -1809,11 +1867,17 @@ def api_kb_ask():
     from podcast_article import config
     from podcast_article.platform_store import QuotaExceeded
 
-    recorder = usage_mod.Recorder(config.deepseek_model())
+    api_profile = _account_api_profile(workspace)
+    model = api_profile.llm_model if api_profile.uses_personal_llm else config.deepseek_model()
+    recorder = usage_mod.Recorder(
+        model,
+        billing_source="external" if api_profile.uses_personal_llm else "platform",
+    )
     try:
         # 作答规则统一在 podcast_article/library_ask.py（Web / CLI / MCP 共用一份）
-        answer = library_ask.answer(q, hits, [m["text"] for m in memories], usage_recorder=recorder,
-                                    quota_guard=_quota_guard(workspace.account_id))
+        with account_services.activate(api_profile):
+            answer = library_ask.answer(q, hits, [m["text"] for m in memories], usage_recorder=recorder,
+                                        quota_guard=_quota_guard(workspace.account_id))
     except QuotaExceeded as exc:
         recorder.flush()
         return jsonify({"error": "quota_exceeded", "resource": exc.resource,
@@ -2255,7 +2319,9 @@ def api_ask():
         return jsonify({"error": "先选中一段文字，或者写一个问题"}), 400
 
     workspace = _workspace()
-    quota_block = _quota_exhausted_response(workspace.account_id, "llm_month_cny")
+    api_profile = _account_api_profile(workspace)
+    quota_block = (None if api_profile.uses_personal_llm
+                   else _quota_exhausted_response(workspace.account_id, "llm_month_cny"))
     if quota_block:
         return quota_block
     try:
@@ -2383,7 +2449,11 @@ def api_ask():
             job["error"] = f"{type(exc).__name__}: {exc}"[:300]
             job.setdefault("logs", []).append(f"[error] {exc}")
 
-    threading.Thread(target=worker, daemon=True).start()
+    def worker_with_account_services() -> None:
+        with account_services.activate(api_profile):
+            worker()
+
+    threading.Thread(target=worker_with_account_services, daemon=True).start()
     return jsonify({"id": ask_id, "web": use_web})
 
 
@@ -2476,8 +2546,10 @@ def api_qa_clear(dir_name: str):
 def api_search_service():
     """联网搜索服务的状态（给设置页用）。"""
     from podcast_article import websearch
-
-    return jsonify(websearch.available())
+    workspace = _workspace()
+    profile = _account_api_profile(workspace)
+    with account_services.activate(profile):
+        return jsonify(websearch.available())
 
 
 @app.post("/api/search-service/test")
@@ -2488,7 +2560,15 @@ def api_search_service_test():
 
     data = request.get_json(force=True, silent=True) or {}
     query = (data.get("query") or "").strip() or "DeepSeek"
-    result = websearch.search(query, limit=3)
+    workspace = _workspace()
+    profile = _account_api_profile(workspace)
+    requested_provider = str(data.get("provider") or "default").strip().lower()
+    if requested_provider in {"default", "bing", "brave", "tavily", "serper"}:
+        from dataclasses import replace
+
+        profile = replace(profile, search_provider=requested_provider)
+    with account_services.activate(profile):
+        result = websearch.search(query, limit=3, provider=requested_provider)
     return jsonify(result)
 
 

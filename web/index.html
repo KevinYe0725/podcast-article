@@ -59,7 +59,7 @@
     <div class="wordmark">podcast<span>-article</span></div>
     <div style="display:flex;align-items:center;gap:12px">
       <button class="usagepill" id="usagepill" onclick="openSettings('storage')" title="看一眼累计用量与费用"></button>
-      <div class="meta">本地转写 · DeepSeek 精读 · MCP</div>
+      <div class="meta">播客转写 · AI 精读 · MCP</div>
       <div class="account-wrap">
         <button class="account-trigger" id="account-menu" type="button" aria-label="账号菜单" aria-expanded="false" aria-controls="account-panel" hidden>
           <span class="account-avatar" aria-hidden="true">K</span><span class="account-name" id="account-name"></span><span class="account-chevron" aria-hidden="true">⌄</span>
@@ -306,6 +306,7 @@
         <div class="settings-nav-items">
           <button class="tab" data-tab="profile" data-summary="调整称呼和关注方向，让文章更贴合你的兴趣。" data-active="true" onclick="switchTab('profile')">个人资料</button>
           <button class="tab" data-tab="gen" data-summary="设定转写和成文的默认方式；每次生成时仍可临时调整。" onclick="switchTab('gen')">生成默认值</button>
+          <button class="tab" data-tab="keys" data-summary="使用平台默认 API，或为当前账号配置自己的服务。" onclick="switchTab('keys')">API 服务</button>
           <button class="tab" data-tab="subs" data-summary="设置新单集检查频率，以及是否自动生成文章。" onclick="switchTab('subs')">订阅调度</button>
         </div>
       </div>
@@ -321,7 +322,6 @@
       <details class="settings-nav-group settings-nav-advanced">
         <summary>更多设置</summary>
         <div class="settings-nav-items">
-          <button class="tab" data-tab="keys" data-summary="AI 模型由服务器统一管理；这里不会显示或修改密钥。" onclick="switchTab('keys')">AI 服务</button>
           <button class="tab" data-tab="dest" data-summary="配置文章发布到 Notion 等目标。" onclick="switchTab('dest')">发布目标</button>
           <button class="tab" data-tab="memory" data-summary="管理阅读助手可以参考的记忆条目。" onclick="switchTab('memory')">记忆</button>
           <button class="tab" data-tab="mcp" data-summary="管理发布和外部工具连接。" onclick="switchTab('mcp')">MCP 服务器</button>
@@ -364,7 +364,7 @@
     <div class="invite-steps" aria-label="邀请流程"><span>设置额度</span><span aria-hidden="true">→</span><span>复制链接</span><span aria-hidden="true">→</span><span>朋友注册</span></div>
 
     <form id="invite-create-form" novalidate>
-      <div class="invite-section-head invite-section-group"><div><h3>每月用量</h3><p>额度按朋友的账号单独计算，填 0 表示该功能不可用。</p></div></div>
+      <div class="invite-section-head invite-section-group"><div><h3>每月用量</h3><p>额度控制平台提供的服务；朋友自备 API 由服务商计费，不占这部分额度。</p></div></div>
       <div class="invite-primary-grid">
         <label class="invite-field"><span>音频转写</span><small>推荐额度：2 小时 / 月</small><span class="invite-input"><input name="asr_hours" type="number" min="0" step="0.25" value="2" required><em>小时 / 月</em></span></label>
         <label class="invite-field"><span>AI 写作</span><small>推荐额度：¥10 / 月</small><span class="invite-input"><input name="llm_month_cny" type="number" min="0" step="0.01" value="10" required><em>元 / 月</em></span></label>
@@ -395,10 +395,60 @@
   </section>
 
   <section class="pane" id="pane-keys" style="display:none">
-    <div class="field">
-      <div class="fhead"><label class="flabel">服务端 AI</label><span class="fstate ok">已集中管理</span></div>
-      <p class="fhint">文章生成与 AI 助手使用服务器配置的模型服务。你的账号用量单独统计；这里不会显示或修改服务器密钥。</p>
-    </div>
+    <section class="settings-api-block">
+      <div class="settings-api-title"><div><h3>文章生成与 AI 助手</h3><p>不配置时继续使用平台默认模型。</p></div><span class="fstate" id="api_llm_status">使用平台默认</span></div>
+      <div class="field">
+        <div class="fhead"><label class="flabel" for="api_llm_mode">服务来源</label></div>
+        <select id="api_llm_mode" onchange="syncAccountApiForms();markDirty()">
+          <option value="platform">平台默认 · DeepSeek</option>
+          <option value="personal">我自己的 OpenAI 兼容 API</option>
+        </select>
+      </div>
+      <div id="api_llm_form" hidden>
+        <div class="field">
+          <div class="fhead"><label class="flabel" for="api_llm_base">API 地址</label></div>
+          <input id="api_llm_base" type="url" placeholder="https://api.openai.com/v1" autocomplete="url" spellcheck="false" oninput="markDirty()">
+          <p class="fhint">填写服务商提供的 HTTPS 地址。</p>
+        </div>
+        <div class="field">
+          <div class="fhead"><label class="flabel" for="api_llm_model">模型名称</label></div>
+          <input id="api_llm_model" placeholder="例如 gpt-4o-mini" autocomplete="off" spellcheck="false" oninput="markDirty()">
+        </div>
+        <div class="field">
+          <div class="fhead"><label class="flabel" for="api_llm_key">API 密钥</label><span class="fstate" id="api_llm_key_status">未配置</span></div>
+          <div class="settings-api-secret-row"><input id="api_llm_key" type="password" placeholder="粘贴你自己的 API 密钥" autocomplete="new-password" spellcheck="false"><button class="btn mini" type="button" onclick="saveIntegrationSecret('LLM_API_KEY','api_llm_key','api_llm_key_status')">保存密钥</button><button class="linkbtn" type="button" onclick="deleteIntegrationSecret('LLM_API_KEY','api_llm_key_status')">删除</button></div>
+          <p class="fhint">文章和提问内容会发送到你选的服务商。密钥按账号加密保存，费用由服务商结算，不扣平台 AI 额度。</p>
+        </div>
+        <p class="settings-api-fallback" id="api_llm_fallback" hidden>尚未保存个人密钥，当前仍使用平台默认服务。</p>
+      </div>
+    </section>
+
+    <section class="settings-api-block">
+      <div class="settings-api-title"><div><h3>语音转写</h3><p>本地转写默认保持不变；也可以接入阿里云百炼。</p></div><span class="fstate" id="api_asr_status">使用当前转写方式</span></div>
+      <div class="field">
+        <div class="fhead"><label class="flabel" for="api_asr_mode">云端服务</label></div>
+        <select id="api_asr_mode" onchange="syncAccountApiForms();markDirty()">
+          <option value="platform">平台默认转写方式</option>
+          <option value="personal">使用我自己的阿里云百炼 API</option>
+        </select>
+      </div>
+      <div id="api_asr_form" hidden>
+        <div class="field">
+          <div class="fhead"><label class="flabel" for="api_asr_base">API 地址</label></div>
+          <input id="api_asr_base" type="url" placeholder="https://dashscope.aliyuncs.com" autocomplete="url" spellcheck="false" oninput="markDirty()">
+        </div>
+        <div class="field">
+          <div class="fhead"><label class="flabel" for="api_asr_model">转写模型</label></div>
+          <input id="api_asr_model" placeholder="paraformer-v2" autocomplete="off" spellcheck="false" oninput="markDirty()">
+        </div>
+        <div class="field">
+          <div class="fhead"><label class="flabel" for="api_asr_key">百炼 API 密钥</label><span class="fstate" id="api_asr_key_status">未配置</span></div>
+          <div class="settings-api-secret-row"><input id="api_asr_key" type="password" placeholder="粘贴你自己的百炼 API 密钥" autocomplete="new-password" spellcheck="false"><button class="btn mini" type="button" onclick="saveIntegrationSecret('ASR_API_KEY','api_asr_key','api_asr_key_status')">保存密钥</button><button class="linkbtn" type="button" onclick="deleteIntegrationSecret('ASR_API_KEY','api_asr_key_status')">删除</button></div>
+          <p class="fhint">音频会发送到阿里云百炼处理；有可用字幕时仍优先用字幕。密钥按账号加密保存，费用由百炼结算，不扣平台转写额度。</p>
+        </div>
+        <p class="settings-api-fallback" id="api_asr_fallback" hidden>尚未保存个人密钥，当前仍使用平台默认转写方式。</p>
+      </div>
+    </section>
   </section>
 
   <section class="pane" id="pane-dest" style="display:none">
@@ -447,8 +497,9 @@
         <select id="g_backend" onchange="markDirty()">
           <option value="mlx">mlx-whisper（Apple Silicon GPU，推荐）</option>
           <option value="faster-whisper">faster-whisper（CPU/其他平台）</option>
+          <option value="cloud">云端语音 API（使用平台配置）</option>
         </select>
-        <p class="fhint">可用模型：<span id="g_models" style="font-family:var(--mono)"></span></p>
+        <p class="fhint">个人百炼 API 在「API 服务」里开启。可用本地模型：<span id="g_models" style="font-family:var(--mono)"></span></p>
       </div>
       <div class="field">
         <div class="fhead"><label class="flabel" for="g_asr_model">ASR 模型名</label></div>
@@ -524,8 +575,24 @@
       <summary>联网搜索与隐私</summary>
       <div class="field">
         <div class="fhead"><label class="flabel">搜索服务</label><span class="fstate" id="as_state"></span></div>
-        <p class="fhint">默认使用免密钥搜索；也可选择已配置的服务。</p>
+        <label class="flabel" for="as_provider">默认搜索来源</label>
+        <select id="as_provider" onchange="markDirty()">
+          <option value="default">平台默认</option>
+          <option value="bing">Bing</option>
+          <option value="brave">Brave</option>
+          <option value="tavily">Tavily</option>
+          <option value="serper">Serper</option>
+        </select>
+        <p class="fhint">搜索词会发送给所选服务。没有个人密钥时会回退到平台可用服务；个人密钥仅用于当前账号。</p>
         <div id="as_providers" style="margin-top:10px"></div>
+        <div class="settings-api-secret-block">
+          <div class="fhead"><label class="flabel" for="api_tavily_key">Tavily API 密钥</label><span class="fstate" id="api_tavily_key_status">未配置</span></div>
+          <div class="settings-api-secret-row"><input id="api_tavily_key" type="password" placeholder="粘贴 Tavily API 密钥" autocomplete="new-password" spellcheck="false"><button class="btn mini" type="button" onclick="saveIntegrationSecret('TAVILY_API_KEY','api_tavily_key','api_tavily_key_status')">保存密钥</button><button class="linkbtn" type="button" onclick="deleteIntegrationSecret('TAVILY_API_KEY','api_tavily_key_status')">删除</button></div>
+        </div>
+        <div class="settings-api-secret-block">
+          <div class="fhead"><label class="flabel" for="api_serper_key">Serper API 密钥</label><span class="fstate" id="api_serper_key_status">未配置</span></div>
+          <div class="settings-api-secret-row"><input id="api_serper_key" type="password" placeholder="粘贴 Serper API 密钥" autocomplete="new-password" spellcheck="false"><button class="btn mini" type="button" onclick="saveIntegrationSecret('SERPER_API_KEY','api_serper_key','api_serper_key_status')">保存密钥</button><button class="linkbtn" type="button" onclick="deleteIntegrationSecret('SERPER_API_KEY','api_serper_key_status')">删除</button></div>
+        </div>
       <div class="field" style="border-top:none;padding-top:0">
         <p class="fhint">
           <button class="linkbtn" onclick="testSearchService(this)">测试联网搜索</button>
@@ -574,8 +641,8 @@
 
     <div class="field" id="t_key_box" style="display:none">
       <div class="fhead"><label class="flabel" for="k_TTS_API_KEY">API 密钥</label><span class="fstate" id="st_TTS_API_KEY">未配置</span></div>
-      <input type="password" id="k_TTS_API_KEY" placeholder="留空 = 保持原值" spellcheck="false" autocomplete="off">
-      <p class="fhint">只写不读：接口只回报「是否已配置」与打码值，明文不会回到浏览器。保存在 <code>.env</code> 的 <code>TTS_API_KEY</code>。</p>
+      <div class="settings-api-secret-row"><input type="password" id="k_TTS_API_KEY" placeholder="粘贴你的朗读 API 密钥" spellcheck="false" autocomplete="new-password"><button class="btn mini" type="button" onclick="saveIntegrationSecret('TTS_API_KEY','k_TTS_API_KEY','st_TTS_API_KEY')">保存密钥</button><button class="linkbtn" type="button" onclick="deleteIntegrationSecret('TTS_API_KEY','st_TTS_API_KEY')">删除</button></div>
+      <p class="fhint">文章文字会发送到所选朗读服务。密钥按账号加密保存，只用于当前账号。</p>
     </div>
 
     <div class="field">

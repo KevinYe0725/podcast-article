@@ -11,7 +11,14 @@ from uuid import UUID
 
 from cryptography.fernet import Fernet, InvalidToken
 
-_ALLOWED_NAMES = frozenset({"NOTION_TOKEN", "TTS_API_KEY"})
+_ALLOWED_NAMES = frozenset({
+    "NOTION_TOKEN",
+    "TTS_API_KEY",
+    "LLM_API_KEY",
+    "ASR_API_KEY",
+    "TAVILY_API_KEY",
+    "SERPER_API_KEY",
+})
 _FORMAT = b"v1:"
 
 
@@ -154,9 +161,11 @@ class IntegrationSecrets:
     def set_for_user(self, user_id: str, name: str, value: str) -> None:
         key = self._validate_name(name)
         canonical = self._validate_user_id(user_id)
+        secret = str(value or "").strip()
+        if len(secret) > 4096 or "\x00" in secret:
+            raise ValueError("integration secret is too long or malformed")
         with self._user_lock(canonical):
             values, _needs_rotation = self._read_locked(canonical)
-            secret = str(value or "").strip()
             if secret:
                 values[key] = secret
             else:

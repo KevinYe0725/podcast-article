@@ -69,9 +69,10 @@ def prices_for(model: str | None) -> dict[str, tuple[float, float]]:
     return MODEL_PRICES.get((model or "").strip(), FALLBACK_PRICES)
 
 
-def empty(model: str | None = None) -> dict:
+def empty(model: str | None = None, billing_source: str = "platform") -> dict:
     return {
         "model": model or FALLBACK_MODEL,
+        "billing_source": billing_source,
         "calls": 0,
         "hit_tokens": 0,
         "miss_tokens": 0,
@@ -123,8 +124,10 @@ def add(target: dict, part: dict, peak: bool) -> None:
     target["calls"] = target.get("calls", 0) + 1
 
 
-def cost_cny(usage: dict) -> float:
+def cost_cny(usage: dict) -> float | None:
     """按价格表算费用（元）。三类 token 分别落在高峰/空闲桶里，所以能精确计价。"""
+    if usage.get("billing_source") in {"external", "mixed"}:
+        return None
     price = prices_for(usage.get("model"))
     total = 0.0
     for bucket, idx in (("off", 0), ("peak", 1)):
@@ -142,6 +145,7 @@ def describe(usage: dict) -> dict:
         "total_tokens": total_in + usage.get("out_tokens", 0),
         "input_tokens": total_in,
         "cost_cny": cost_cny(usage),
+        "external_billing": usage.get("billing_source") in {"external", "mixed"},
         "cache_hit_rate": round(usage.get("hit_tokens", 0) / total_in * 100, 1) if total_in else 0.0,
     }
 
@@ -171,13 +175,15 @@ def save(workdir: Path, usage: dict) -> None:
     )
 
 
-def merge(usages: list[dict], model: str | None = None) -> dict:
+def merge(usages: list[dict], model: str | None = None,
+          billing_source: str | None = None) -> dict:
     """把多集（或多次运行）的用量合成一份总数。
 
     model 参数很重要：合并时若把 model 退回默认值，费用就会按 flash 的价格算，
     混用 pro 的历史数据会被严重低估。没显式给就用第一份里记着的模型。
     """
-    total = empty(model)
+    source = billing_source or (usages[0].get("billing_source", "platform") if usages else "platform")
+    total = empty(model, source)
     if not model:
         for u in usages:
             if u and u.get("model"):
@@ -206,8 +212,13 @@ class Recorder:
     """一次任务的用量累加器；每次调用后回调 on_update，界面就能实时看到花费。"""
 
     def __init__(self, model: str, workdir: Path | None = None, on_update=None,
-                 started: dict | None = None, before_save=None):
+                 started: dict | None = None, before_save=None,
+                 billing_source: str = "platform"):
         self.usage = {**empty(model), **(started or {})}
+        previous_source = (started or {}).get("billing_source", "platform")
+        self.usage["billing_source"] = (
+            "mixed" if started and previous_source != billing_source else billing_source
+        )
         self.usage["model"] = model or FALLBACK_MODEL
         self.workdir = workdir
         self.on_update = on_update
@@ -292,16 +303,29 @@ def summary_over(root: Path) -> dict:
                 episodes += 1
                 usages.append(u)
 
-    # 先按模型分组：一个 usage 结构只能有一个单价，混用 flash / pro 时
-    # 必须分组算钱再加总，否则 pro 的 token 会被按 flash 的价格算（低估 4 倍以上）
-    grouped: dict[str, list[dict]] = {}
+    # 按计费来源和模型分组，避免把自备 API 的 token 按 DeepSeek 价格估算。
+    grouped: dict[tuple[str, str], list[dict]] = {}
     for u in usages:
-        grouped.setdefault(u.get("model") or FALLBACK_MODEL, []).append(u)
-    by_model = {m: describe(merge(v, model=m)) for m, v in sorted(grouped.items())}
+        source = u.get("billing_source") or "platform"
+        model = u.get("model") or FALLBACK_MODEL
+        grouped.setdefault((source, model), []).append(u)
+    by_model: dict[str, dict] = {}
+    for (source, model), rows in sorted(grouped.items()):
+        label = model if source == "platform" else f"{'自备 API' if source == 'external' else '混合计费'} · {model}"
+        by_model[label] = describe(merge(rows, model=model, billing_source=source))
 
-    described = describe(merge(usages))
+    sources = {u.get("billing_source") or "platform" for u in usages}
+    merged_source = "mixed" if len(sources) > 1 else next(iter(sources), "platform")
+    described = describe(merge(usages, billing_source=merged_source))
     described["model"] = next(iter(by_model)) if len(by_model) == 1 else "mixed"
-    described["cost_cny"] = round(sum(d["cost_cny"] for d in by_model.values()), 4)
+    platform_costs = [d["cost_cny"] for d in by_model.values()
+                      if d.get("billing_source") == "platform" and d.get("cost_cny") is not None]
+    described["cost_cny"] = round(sum(platform_costs), 4) if platform_costs else None
+    described["external_billing"] = any(source in {"external", "mixed"} for source in sources)
+    described["external_calls"] = sum(d.get("calls", 0) for d in by_model.values()
+                                       if d.get("billing_source") in {"external", "mixed"})
+    described["external_episodes"] = sum(1 for u in usages
+                                          if u.get("billing_source") in {"external", "mixed"})
     described["episodes"] = episodes
     described["by_model"] = by_model
     return described

@@ -17,7 +17,8 @@ from .util import html_to_text, ts_clock
 
 
 def _client() -> OpenAI:
-    return OpenAI(api_key=config.deepseek_api_key(), base_url=config.DEEPSEEK_BASE_URL)
+    api_key, base_url = config.llm_connection()
+    return OpenAI(api_key=api_key, base_url=base_url)
 
 
 def ask_once(system: str, user: str, *, model: str | None = None,
@@ -79,22 +80,27 @@ def _chat(
         # 流式响应默认不带 usage，必须显式索要：最后一个 chunk 会带完整用量
         "stream_options": {"include_usage": True},
     }
-    if thinking:
-        kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
-        kwargs["reasoning_effort"] = reasoning_effort
-    else:
-        kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+    if config.uses_platform_llm_api():
+        if thinking:
+            kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
+            kwargs["reasoning_effort"] = reasoning_effort
+        else:
+            kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+            kwargs["temperature"] = temperature
+    elif not thinking:
+        # OpenAI-compatible providers need not implement DeepSeek's thinking fields.
         kwargs["temperature"] = temperature
 
-    reservation = quota_guard.reserve_llm_call(
+    billable_guard = quota_guard if config.uses_platform_llm_api() else None
+    reservation = billable_guard.reserve_llm_call(
         model, system, user, max_tokens=max_tokens, history=history
-    ) if quota_guard is not None else None
+    ) if billable_guard is not None else None
     reservation_settled = False
 
     def settle_quota(raw_usage=None) -> None:
         nonlocal reservation_settled
         if reservation is not None and not reservation_settled:
-            quota_guard.settle_llm_call(reservation, model, raw_usage)
+            billable_guard.settle_llm_call(reservation, model, raw_usage)
             reservation_settled = True
 
     try:

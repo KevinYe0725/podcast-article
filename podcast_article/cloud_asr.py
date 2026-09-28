@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import os
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from collections.abc import Callable
 
 import requests
@@ -14,6 +16,32 @@ class CloudASRError(RuntimeError):
 
 class CloudASRTimeoutError(CloudASRError):
     pass
+
+
+_ACCOUNT_ASR: ContextVar[dict | None] = ContextVar("podcast_account_asr", default=None)
+
+
+@contextmanager
+def account_asr_override(*, api_key: str, base_url: str, model: str):
+    token = _ACCOUNT_ASR.set({
+        "api_key": str(api_key or "").strip(),
+        "base_url": str(base_url or "").strip().rstrip("/"),
+        "model": str(model or "").strip(),
+    })
+    try:
+        yield
+    finally:
+        _ACCOUNT_ASR.reset(token)
+
+
+def account_asr_model() -> str | None:
+    current = _ACCOUNT_ASR.get()
+    return str(current.get("model") or "").strip() or None if current else None
+
+
+def available() -> bool:
+    current = _ACCOUNT_ASR.get()
+    return bool((current or {}).get("api_key") or os.environ.get("DASHSCOPE_API_KEY", "").strip())
 
 
 def _segments_from_result(payload: dict) -> list[dict]:
@@ -43,10 +71,12 @@ def _segments_from_result(payload: dict) -> list[dict]:
 class CloudASRClient:
     def __init__(self, *, api_key: str | None = None, base_url: str | None = None,
                  session: requests.Session | None = None):
-        self.api_key = (api_key or os.environ.get("DASHSCOPE_API_KEY", "")).strip()
+        current = _ACCOUNT_ASR.get() or {}
+        self.api_key = (api_key or current.get("api_key")
+                        or os.environ.get("DASHSCOPE_API_KEY", "")).strip()
         if not self.api_key:
             raise CloudASRError("未配置 DASHSCOPE_API_KEY")
-        self.base_url = (base_url or os.environ.get(
+        self.base_url = (base_url or current.get("base_url") or os.environ.get(
             "DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com"
         )).rstrip("/")
         self.session = session or requests.Session()

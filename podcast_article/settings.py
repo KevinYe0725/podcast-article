@@ -10,7 +10,10 @@ from __future__ import annotations
 import json
 import os
 import re
+import ipaddress
+import socket
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from .config import PROJECT_ROOT
 
@@ -53,7 +56,57 @@ ASSISTANT_DEFAULTS: dict = {
     "enabled": True,           # 是否显示助手悬浮球
     "web_default": True,       # 提问时默认是否联网补充信息
     "length_mode": "concise",  # 回答篇幅：concise（只答所问）/ detail（展开相关要点）
+    "search_provider": "default",  # default / bing / brave / tavily / serper
 }
+
+SERVICE_DEFAULTS: dict = {
+    "llm_mode": "platform",  # platform / personal
+    "llm_base_url": "https://api.openai.com/v1",
+    "llm_model": "gpt-4o-mini",
+    "asr_mode": "platform",  # platform / personal (DashScope)
+    "asr_base_url": "https://dashscope.aliyuncs.com",
+    "asr_model": "paraformer-v2",
+}
+
+
+def validate_api_base_url(value: str, *, label: str = "API 地址") -> str:
+    """Accept public HTTPS service URLs, rejecting local and credential-bearing URLs."""
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    if len(raw) > 500:
+        raise ValueError(f"{label}过长")
+    try:
+        parsed = urlsplit(raw)
+        host = parsed.hostname or ""
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError(f"{label}格式不正确") from exc
+    if (parsed.scheme.lower() != "https" or not host or parsed.username or parsed.password
+            or parsed.query or parsed.fragment):
+        raise ValueError(f"{label}须为不含账号信息、查询参数或片段的 HTTPS 地址")
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        pass
+    else:
+        raise ValueError(f"{label}不能使用 IP 地址")
+    hostname = host.lower().rstrip(".")
+    if ("." not in hostname or hostname.endswith((".localhost", ".local", ".internal", ".lan"))
+            or hostname in {"localhost", "metadata.google.internal"}):
+        raise ValueError(f"{label}须指向公开的 API 服务")
+    if port not in (None, 443, 8443):
+        raise ValueError(f"{label}仅支持 HTTPS 端口 443 或 8443")
+    try:
+        addresses = {
+            ipaddress.ip_address(item[4][0].split("%", 1)[0])
+            for item in socket.getaddrinfo(hostname, port or 443, type=socket.SOCK_STREAM)
+        }
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"{label}的域名无法解析") from exc
+    if not addresses or any(not address.is_global for address in addresses):
+        raise ValueError(f"{label}必须解析到公开的 HTTPS 服务地址")
+    return raw.rstrip("/")
 
 # 朗读（把文章读出来）的默认值。provider=off 表示没启用。
 # macos 用系统自带的 say：零配置、离线、免费；openai 泛指任何兼容
@@ -79,6 +132,7 @@ DEFAULTS: dict = {
     "generation": GENERATION_DEFAULTS,
     "subscriptions": SUBSCRIPTION_DEFAULTS,
     "assistant": ASSISTANT_DEFAULTS,
+    "services": SERVICE_DEFAULTS,
     "tts": TTS_DEFAULTS,
     "notion": NOTION_DEFAULTS,
 }
@@ -97,6 +151,7 @@ def load(*, settings_path: Path | None = None) -> dict:
         "generation": {**GENERATION_DEFAULTS, **(data.get("generation") or {})},
         "subscriptions": {**SUBSCRIPTION_DEFAULTS, **(data.get("subscriptions") or {})},
         "assistant": {**ASSISTANT_DEFAULTS, **(data.get("assistant") or {})},
+        "services": {**SERVICE_DEFAULTS, **(data.get("services") or {})},
         "tts": {**TTS_DEFAULTS, **(data.get("tts") or {})},
         "notion": {**NOTION_DEFAULTS, **(data.get("notion") or {})},
     }
@@ -105,7 +160,7 @@ def load(*, settings_path: Path | None = None) -> dict:
 
 def save(profile: dict | None = None, generation: dict | None = None,
          subscriptions: dict | None = None, assistant: dict | None = None,
-         tts: dict | None = None, notion: dict | None = None,
+         services: dict | None = None, tts: dict | None = None, notion: dict | None = None,
          *, settings_path: Path | None = None) -> dict:
     path = Path(settings_path) if settings_path is not None else SETTINGS_PATH
     current = load(settings_path=path)
@@ -123,6 +178,20 @@ def save(profile: dict | None = None, generation: dict | None = None,
         for k, v in assistant.items():
             if k in ASSISTANT_DEFAULTS:
                 current["assistant"][k] = v
+        if current["assistant"].get("search_provider") not in {"default", "bing", "brave", "tavily", "serper"}:
+            current["assistant"]["search_provider"] = "default"
+    if services:
+        for key, value in services.items():
+            if key in SERVICE_DEFAULTS:
+                current["services"][key] = value
+        if current["services"].get("llm_mode") not in {"platform", "personal"}:
+            current["services"]["llm_mode"] = "platform"
+        if current["services"].get("asr_mode") not in {"platform", "personal"}:
+            current["services"]["asr_mode"] = "platform"
+        for key, limit in (("llm_model", 120), ("asr_model", 120)):
+            current["services"][key] = str(current["services"].get(key) or "").strip()[:limit]
+        for key in ("llm_base_url", "asr_base_url"):
+            current["services"][key] = str(current["services"].get(key) or "").strip()[:500]
     if tts:
         for k, v in tts.items():
             if k in TTS_DEFAULTS:

@@ -2,12 +2,47 @@
 from __future__ import annotations
 
 import os
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 DEFAULT_LLM_MODEL = "deepseek-flash"  # 见 api-docs.deepseek.com/guides/thinking_mode
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+
+_ACCOUNT_LLM: ContextVar[dict | None] = ContextVar("podcast_account_llm", default=None)
+
+
+@contextmanager
+def account_llm_override(*, api_key: str, base_url: str, model: str):
+    """Scope a user's own OpenAI-compatible API to the current request/thread."""
+    token = _ACCOUNT_LLM.set({
+        "api_key": str(api_key or "").strip(),
+        "base_url": str(base_url or "").strip().rstrip("/"),
+        "model": str(model or "").strip(),
+    })
+    try:
+        yield
+    finally:
+        _ACCOUNT_LLM.reset(token)
+
+
+def uses_platform_llm_api() -> bool:
+    current = _ACCOUNT_LLM.get()
+    return not bool(current and current.get("api_key"))
+
+
+def llm_base_url() -> str:
+    current = _ACCOUNT_LLM.get()
+    if current and current.get("api_key"):
+        return current["base_url"]
+    return DEEPSEEK_BASE_URL
+
+
+def llm_connection() -> tuple[str, str]:
+    """Return the active API key and base URL without exposing them to the UI."""
+    return deepseek_api_key(), llm_base_url()
 
 
 def _load_dotenv() -> None:
@@ -35,6 +70,9 @@ class MissingKeyError(RuntimeError):
 
 
 def deepseek_api_key() -> str:
+    current = _ACCOUNT_LLM.get()
+    if current and current.get("api_key"):
+        return current["api_key"]
     key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
     if not key or key.startswith("sk-xxxx"):
         raise MissingKeyError(
@@ -45,6 +83,9 @@ def deepseek_api_key() -> str:
 
 
 def deepseek_model() -> str:
+    current = _ACCOUNT_LLM.get()
+    if current and current.get("api_key") and current.get("model"):
+        return current["model"]
     return os.environ.get("DEEPSEEK_MODEL", DEFAULT_LLM_MODEL)
 
 
