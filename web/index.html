@@ -357,7 +357,7 @@
       <div>
         <div class="invite-eyebrow">管理员 · 账号邀请</div>
         <h2>把工作台分享给朋友</h2>
-        <p>朋友会拥有独立的文章和使用记录。你设定每月额度，生成链接后发给对方注册。</p>
+        <p>默认额度已填好，可按朋友的使用情况调整；每位朋友都有独立的文章和用量记录。</p>
       </div>
       <div class="invite-mark" aria-hidden="true"><span class="invite-wave"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span><span>ONE LINK<br>ONE ACCOUNT</span></div>
     </div>
@@ -366,15 +366,15 @@
     <form id="invite-create-form" novalidate>
       <div class="invite-section-head invite-section-group"><div><h3>每月用量</h3><p>额度按朋友的账号单独计算，填 0 表示该功能不可用。</p></div></div>
       <div class="invite-primary-grid">
-        <label class="invite-field"><span>音频转写</span><small>每月可转写的音频时长</small><span class="invite-input"><input name="asr_hours" type="number" min="0" step="0.25" placeholder="例如 2" required><em>小时 / 月</em></span></label>
-        <label class="invite-field"><span>AI 写作</span><small>每月可使用的模型费用</small><span class="invite-input"><input name="llm_month_cny" type="number" min="0" step="0.01" placeholder="例如 10" required><em>元 / 月</em></span></label>
+        <label class="invite-field"><span>音频转写</span><small>推荐额度：2 小时 / 月</small><span class="invite-input"><input name="asr_hours" type="number" min="0" step="0.25" value="2" required><em>小时 / 月</em></span></label>
+        <label class="invite-field"><span>AI 写作</span><small>推荐额度：¥10 / 月</small><span class="invite-input"><input name="llm_month_cny" type="number" min="0" step="0.01" value="10" required><em>元 / 月</em></span></label>
       </div>
 
       <div class="invite-section-head invite-section-group invite-section-spaced"><div><h3>空间与任务</h3><p>控制单个账号可以保存和提交的内容。</p></div></div>
       <div class="invite-secondary-grid">
-        <label class="invite-field"><span>缓存空间</span><small>音频与中间文件</small><span class="invite-input"><input name="cache_mib" type="number" min="0" step="1" placeholder="例如 1024" required><em>MB</em></span></label>
-        <label class="invite-field"><span>队列任务</span><small>同时等待处理的任务</small><span class="invite-input"><input name="queue_items" type="number" min="0" step="1" placeholder="例如 3" required><em>个</em></span></label>
-        <label class="invite-field"><span>单文件上限</span><small>每次上传的最大体积</small><span class="invite-input"><input name="max_upload_mib" type="number" min="0" step="1" placeholder="例如 200" required><em>MB</em></span></label>
+        <label class="invite-field"><span>缓存空间</span><small>推荐额度：1 GiB</small><span class="invite-input"><input name="cache_mib" type="number" min="0" step="1" value="1024" required><em>MB</em></span></label>
+        <label class="invite-field"><span>队列任务</span><small>推荐额度：3 个</small><span class="invite-input"><input name="queue_items" type="number" min="0" step="1" value="3" required><em>个</em></span></label>
+        <label class="invite-field"><span>单文件上限</span><small>推荐额度：200 MiB</small><span class="invite-input"><input name="max_upload_mib" type="number" min="0" step="1" value="200" required><em>MB</em></span></label>
       </div>
 
       <div class="invite-expiry-row"><div><label for="invite-expires">邀请链接有效期</label><p>链接只能注册一个账号。到期后需要重新生成。</p></div><span class="invite-input invite-expiry-input"><input id="invite-expires" name="expires_days" type="number" min="1" max="365" step="1" value="7" required><em>天</em></span></div>
