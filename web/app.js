@@ -454,6 +454,7 @@ function onTtsProviderChange(quiet) {
   show("t_macos_box", isMac);
   show("t_openai_box", isOpenai);
   show("t_key_box", isOpenai);
+  if (!quiet && provider !== "off" && $("tts-options")) $("tts-options").open = true;
   if (!quiet) markDirty();          // 载入设置时不算改动
 }
 

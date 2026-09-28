@@ -429,10 +429,22 @@
   .settings-nav-advanced summary::after { content: "⌄"; font-size: 14px; transition: transform .15s; }
   .settings-nav-advanced[open] summary::after { transform: rotate(180deg); }
   .settings-nav-advanced .settings-nav-items { margin-top: 4px; }
+  .settings-advanced { margin-top: 10px; border-top: 1px solid var(--border); }
+  .settings-advanced > summary {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 0 10px;
+    color: var(--text); font-size: 13px; font-weight: 500; cursor: pointer; list-style: none;
+  }
+  .settings-advanced > summary::-webkit-details-marker { display: none; }
+  .settings-advanced > summary::after { content: "+"; color: var(--dim); font-size: 16px; font-weight: 400; }
+  .settings-advanced[open] > summary::after { content: "−"; }
+  .settings-advanced > summary:focus-visible { outline: 2px solid var(--text); outline-offset: 3px; }
+  .settings-advanced > .field:first-of-type { padding-top: 4px; border-top: 0; }
+  .settings-advanced > .field:last-child { padding-bottom: 12px; }
   .settings-content {
     min-width: 0; padding: clamp(18px, 2.5vw, 28px); background: #fff;
     border: 1px solid var(--border); border-radius: 16px; box-shadow: 0 8px 30px rgba(0,0,0,.035);
   }
+  .settings-content > .pane { padding-bottom: 10px; }
   .settings-pane-heading { margin-bottom: 10px; padding-bottom: 16px; border-bottom: 1px solid var(--border); }
   #settings-pane-group { margin-bottom: 4px; color: var(--dim); font-size: 11px; font-weight: 600; letter-spacing: .04em; }
   #settings-pane-title { font-size: 18px; font-weight: 600; line-height: 1.35; }

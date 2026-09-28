@@ -294,7 +294,7 @@
   <div class="sethead">
     <div>
       <h1>设置</h1>
-      <p class="setintro">常用选项放在前面；不需要调整的设置可以保持默认。</p>
+      <p class="setintro">大多数时候保持默认即可，按需调整后保存。</p>
     </div>
     <button class="btn mini" onclick="closeSettings()">← 返回</button>
   </div>
@@ -347,16 +347,9 @@
     <div class="field">
       <div class="fhead"><label class="flabel" for="s_interests">长期关注的方向</label></div>
       <textarea id="s_interests" placeholder="例如：AI 基础设施、强化学习、创业方法论" oninput="markDirty()"></textarea>
-      <p class="fhint">填了之后，文章会优先保留这些方向相关的内容，并要求「编辑点评」多给可迁移的启发。</p>
+      <p class="fhint">用于调整文章重点和编辑点评。</p>
     </div>
-    <div class="field">
-      <div class="fhead"><label class="flabel" for="s_plang">文章输出语言</label></div>
-      <select id="s_plang" onchange="markDirty()">
-        <option value="zh">简体中文</option>
-        <option value="en">English（暂未启用）</option>
-      </select>
-      <p class="fhint">当前版本的成文提示词固定输出简体中文，此项为后续多语言预留。</p>
-    </div>
+    <input type="hidden" id="s_plang" value="zh">
   </section>
 
   <section class="pane invite-pane" id="pane-invites" style="display:none" hidden>
@@ -421,20 +414,6 @@
       <select id="g_language" onchange="markDirty()">
         <option value="">自动检测</option><option value="zh">中文</option><option value="en">English</option>
       </select>
-      <p class="fhint">首页输入框的「转写语言」会以此作为初值。</p>
-    </div>
-    <div class="field">
-      <div class="fhead"><label class="flabel" for="g_backend">转写后端</label></div>
-      <select id="g_backend" onchange="markDirty()">
-        <option value="mlx">mlx-whisper（Apple Silicon GPU，推荐）</option>
-        <option value="faster-whisper">faster-whisper（CPU/其他平台）</option>
-      </select>
-      <p class="fhint">本机检测到的模型：<span id="g_models" style="font-family:var(--mono)"></span></p>
-    </div>
-    <div class="field">
-      <div class="fhead"><label class="flabel" for="g_asr_model">ASR 模型名</label></div>
-      <input id="g_asr_model" placeholder="留空使用默认（whisper-large-v3-turbo）" oninput="markDirty()">
-      <p class="fhint">对应 --model 参数；本地缓存目录优先。</p>
     </div>
     <div class="field">
       <div class="fhead"><label class="flabel" for="g_llm">成文模型</label><span class="fstate" id="g_llm_state"></span></div>
@@ -443,7 +422,7 @@
         <option value="deepseek-v4-pro">deepseek-v4-pro（慢约 4 倍，适合重要节目）</option>
         <option value="deepseek-chat">deepseek-chat（会由服务端解析为 flash）</option>
       </select>
-      <p class="fhint">用于精读与成文。转写是本地跑的，与此无关；改这里不影响已有缓存的文字稿。</p>
+      <p class="fhint">影响后续精读与成文，已有文章不变。</p>
     </div>
     <div class="field">
       <div class="fhead"><label class="flabel" for="g_mode">默认篇幅</label></div>
@@ -452,27 +431,43 @@
         <option value="standard">标准版：2500-4000 字，6-8 分钟读完</option>
         <option value="deep">深度版：5000-8000 字，10-15 分钟读完</option>
       </select>
-      <p class="fhint">首页输入框的「篇幅」会以此作为初值。精华版适合先判断"这期值不值得听"。</p>
+      <p class="fhint">每次生成时仍可单独调整。</p>
     </div>
     <div class="field">
       <div class="fhead"><label class="flabel" for="g_polish">生成后自动复检</label></div>
       <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text)">
         <input type="checkbox" id="g_polish" style="width:auto" onchange="markDirty()"> 让模型按可读性清单复查并重写
       </label>
-      <p class="fhint">复检会压缩到目标字数、清掉套话、修正含糊小标题与超长段落。多花约 30% token，但成稿可读性明显更好。</p>
+      <p class="fhint">会再检查表达和篇幅，模型用量约增加 30%。</p>
     </div>
-    <div class="field">
-      <div class="fhead"><label class="flabel" for="g_max_chars">单次直读上限（字符）</label></div>
-      <input id="g_max_chars" inputmode="numeric" placeholder="75000" oninput="markDirty()">
-      <p class="fhint">文字稿超过此长度会切换为「分段精读 → 汇总」模式。</p>
-    </div>
-    <div class="field">
-      <div class="fhead"><label class="flabel" for="g_no_subs">默认强制语音转写</label></div>
-      <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text)">
-        <input type="checkbox" id="g_no_subs" style="width:auto" onchange="markDirty()"> 忽略平台字幕，一律本地转写
-      </label>
-      <p class="fhint">平台字幕通常更快更准、且零转写成本；只有怀疑字幕质量时才需要打开。</p>
-    </div>
+    <details class="settings-advanced">
+      <summary>转写高级选项</summary>
+      <div class="field">
+        <div class="fhead"><label class="flabel" for="g_backend">转写后端</label></div>
+        <select id="g_backend" onchange="markDirty()">
+          <option value="mlx">mlx-whisper（Apple Silicon GPU，推荐）</option>
+          <option value="faster-whisper">faster-whisper（CPU/其他平台）</option>
+        </select>
+        <p class="fhint">可用模型：<span id="g_models" style="font-family:var(--mono)"></span></p>
+      </div>
+      <div class="field">
+        <div class="fhead"><label class="flabel" for="g_asr_model">ASR 模型名</label></div>
+        <input id="g_asr_model" placeholder="留空使用默认模型" oninput="markDirty()">
+        <p class="fhint">留空即可使用默认模型。</p>
+      </div>
+      <div class="field">
+        <div class="fhead"><label class="flabel" for="g_max_chars">长稿分段阈值</label></div>
+        <input id="g_max_chars" inputmode="numeric" placeholder="75000" oninput="markDirty()">
+        <p class="fhint">超过后自动分段处理。</p>
+      </div>
+      <div class="field">
+        <div class="fhead"><label class="flabel" for="g_no_subs">优先使用音频转写</label></div>
+        <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text)">
+          <input type="checkbox" id="g_no_subs" style="width:auto" onchange="markDirty()"> 忽略平台字幕
+        </label>
+        <p class="fhint">字幕质量较差时再开启；处理会更慢，且可能消耗更多额度。</p>
+      </div>
+    </details>
   </section>
 
   <section class="pane" id="pane-subs" style="display:none">
@@ -481,7 +476,7 @@
       <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text)">
         <input type="checkbox" id="sub_enabled" style="width:auto" onchange="markDirty()"> 服务开着时，按下面间隔自动检查新单集
       </label>
-      <p class="fhint">只在 <code>python webapp.py</code> 常驻运行时生效；关掉浏览器不影响。</p>
+      <p class="fhint">服务运行时生效，关闭浏览器后仍会继续。</p>
     </div>
     <div class="field">
       <div class="fhead"><label class="flabel" for="sub_interval">检查间隔（分钟）</label></div>
@@ -493,12 +488,12 @@
       <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text)">
         <input type="checkbox" id="sub_auto" style="width:auto" onchange="markDirty()"> 自动排队（关闭则只提示，不消耗额度）
       </label>
-      <p class="fhint">自动生成会真的跑下载与转写，请确认磁盘空间与额度。</p>
+      <p class="fhint">会下载并处理新单集，消耗存储和账号额度。</p>
     </div>
     <div class="field">
       <div class="fhead"><label class="flabel" for="sub_dest">自动生成的文章归入</label></div>
       <select id="sub_dest" onchange="markDirty()"><option value="">未分类</option></select>
-      <p class="fhint">按节目来源归类会很省事，比如建一个「订阅」分类。</p>
+      <p class="fhint">可按节目来源归入分类。</p>
     </div>
   </section>
 
@@ -508,14 +503,14 @@
       <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text)">
         <input type="checkbox" id="as_enabled" style="width:auto" onchange="markDirty()"> 在文章阅读页显示悬浮球
       </label>
-      <p class="fhint">选中文章里的文字即可让 AI 结合播客原文（带时间戳、可点回听）与网络信息做进一步解读。</p>
+      <p class="fhint">选中文字即可结合播客原文提问。</p>
     </div>
     <div class="field">
       <div class="fhead"><label class="flabel">提问时默认联网补充</label></div>
       <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text)">
         <input type="checkbox" id="as_web" style="width:auto" onchange="markDirty()"> 默认勾选「联网补充」
       </label>
-      <p class="fhint">关掉后只基于播客原文回答（更快、更省，也更不容易被网上的错误信息带偏）。每次提问时抽屉里都能临时切换。</p>
+      <p class="fhint">每次提问时也可以临时切换。</p>
     </div>
     <div class="field">
       <div class="fhead"><label class="flabel" for="as_mode">回答篇幅</label></div>
@@ -523,31 +518,28 @@
         <option value="concise">简洁：只回答你问的那一点（120-320 字，默认）</option>
         <option value="detail">详细：会展开相关的其他要点（400-900 字）</option>
       </select>
-      <p class="fhint">抽屉里每次提问还能用「详细」临时切换。默认简洁是有意的：重点是别答非所问。</p>
+      <p class="fhint">每次提问时也可以临时切换。</p>
     </div>
-    <div class="field">
-      <div class="fhead"><label class="flabel">联网搜索服务</label><span class="fstate" id="as_state"></span></div>
-      <p class="fhint">
-        <b>DeepSeek 官方 API 没有内置联网能力</b>（官方文档把 <code>web_search</code> 内置工具列为「忽略」），
-        所以搜索由本工具自己完成。默认走<b>免密钥</b>的 Bing / Brave 网页搜索，够用且开箱可用；
-        如果你有搜索服务的 key，填在下面质量会更好。
-      </p>
-      <div id="as_providers" style="margin-top:10px"></div>
+    <details class="settings-advanced">
+      <summary>联网搜索与隐私</summary>
+      <div class="field">
+        <div class="fhead"><label class="flabel">搜索服务</label><span class="fstate" id="as_state"></span></div>
+        <p class="fhint">默认使用免密钥搜索；也可选择已配置的服务。</p>
+        <div id="as_providers" style="margin-top:10px"></div>
       <div class="field" style="border-top:none;padding-top:0">
         <p class="fhint">
-          需要密钥的搜索服务由服务器管理员配置。
           <button class="linkbtn" onclick="testSearchService(this)">测试联网搜索</button>
           <span class="vres" id="as_testres"></span>
         </p>
       </div>
-    </div>
-    <div class="field">
-      <div class="fhead"><label class="flabel">彻底关闭联网</label></div>
-      <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text)">
-        <input type="checkbox" id="as_off" style="width:auto" onchange="markDirty()"> 设 PA_SEARCH=0，助手只读原文
-      </label>
-      <p class="fhint">写回 .env。适合完全不想让任何内容外发的场景。</p>
-    </div>
+      </div>
+      <div class="field">
+        <div class="fhead"><label class="flabel">关闭联网搜索</label></div>
+        <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text)">
+          <input type="checkbox" id="as_off" style="width:auto" onchange="markDirty()"> 助手只基于播客原文回答
+        </label>
+      </div>
+    </details>
   </section>
 
   <section class="pane" id="pane-tts" style="display:none">
@@ -558,28 +550,26 @@
         <option value="macos">macOS 本地（系统 say，免费·离线·不需要密钥）</option>
         <option value="openai">OpenAI 兼容接口（填 base_url，可接 OpenAI / 硅基流动 / Groq / 中转站）</option>
       </select>
-      <p class="fhint">
-        朗读会把文章念成音频，生成在每篇的 <code>tts/</code> 目录里，阅读页上多出一个播放条。
-        <b>macOS 本地</b>零配置、不花钱、断网也能用（音色见下）；想用更自然的声音就选第二种，
-        任何兼容 <code>POST /v1/audio/speech</code> 的服务都能接。
-      </p>
+      <p class="fhint">不需要朗读时保持关闭；启用后再设置声音和接口。</p>
     </div>
 
+    <details class="settings-advanced" id="tts-options">
+      <summary>声音、接口与试听</summary>
     <div class="field" id="t_openai_box" style="display:none">
       <div class="fhead"><label class="flabel" for="t_base">接口地址（base_url）</label></div>
-      <input type="text" id="t_base" placeholder="https://api.openai.com/v1" spellcheck="false" autocomplete="off">
-      <p class="fhint">填到 <code>/v1</code> 为止即可，程序会自己拼 <code>/audio/speech</code>。留空按 OpenAI 官方地址算。</p>
+      <input type="text" id="t_base" placeholder="https://api.openai.com/v1" spellcheck="false" autocomplete="off" oninput="markDirty()">
+      <p class="fhint">留空使用 OpenAI 官方地址。</p>
       <div class="fhead" style="margin-top:14px"><label class="flabel" for="t_model">模型</label></div>
-      <input type="text" id="t_model" placeholder="tts-1 / gpt-4o-mini-tts / FunAudioLLM/CosyVoice2-0.5B" spellcheck="false" autocomplete="off">
+      <input type="text" id="t_model" placeholder="tts-1" spellcheck="false" autocomplete="off" oninput="markDirty()">
       <div class="fhead" style="margin-top:14px"><label class="flabel" for="t_voice">音色</label></div>
-      <input type="text" id="t_voice" placeholder="alloy / alex / FunAudioLLM/CosyVoice2-0.5B:anna" spellcheck="false" autocomplete="off">
+      <input type="text" id="t_voice" placeholder="alloy" spellcheck="false" autocomplete="off" oninput="markDirty()">
     </div>
 
     <div class="field" id="t_macos_box" style="display:none">
       <div class="fhead"><label class="flabel" for="t_voice_mac">音色</label></div>
-      <input type="text" id="t_voice_mac" placeholder="Tingting（默认留空即用系统默认）" spellcheck="false" autocomplete="off">
+      <input type="text" id="t_voice_mac" placeholder="Tingting（留空使用系统默认）" spellcheck="false" autocomplete="off" oninput="markDirty()">
       <div class="vchips" id="t_voice_chips"></div>
-      <p class="fhint">上面是这台机器上可用的中文音色，点一下即可填入。</p>
+      <p class="fhint">选择这台设备支持的音色。</p>
     </div>
 
     <div class="field" id="t_key_box" style="display:none">
@@ -591,19 +581,20 @@
     <div class="field">
       <div class="fhead"><label class="flabel" for="t_speed">语速</label></div>
       <div class="speedrow">
-        <input type="range" id="t_speed" min="0.5" max="2" step="0.05" value="1" oninput="$('t_speed_val').textContent = Number(this.value).toFixed(2) + '×'">
+        <input type="range" id="t_speed" min="0.5" max="2" step="0.05" value="1" oninput="$('t_speed_val').textContent = Number(this.value).toFixed(2) + '×';markDirty()">
         <span class="fstate" id="t_speed_val">1.00×</span>
       </div>
       <div class="fhead" style="margin-top:14px"><label class="flabel" for="t_chunk">每块字数</label></div>
-      <input type="text" id="t_chunk" size="6" placeholder="700" spellcheck="false" autocomplete="off">
-      <p class="fhint">TTS 接口普遍有单次字数上限（常见 4096），分块还能单块重试 —— 第 8 块失败时前 7 块不用重读（也就不会重复计费）。</p>
+      <input type="text" id="t_chunk" size="6" placeholder="700" spellcheck="false" autocomplete="off" oninput="markDirty()">
+      <p class="fhint">分块可以在失败后单独重试。</p>
       <div class="row" style="margin-top:14px">
         <button class="btn mini" id="t_testbtn" onclick="ttsPreview(this)">试听一句</button>
         <span class="vres" id="t_testres"></span>
       </div>
       <audio id="t_preview" preload="none" style="display:none"></audio>
-      <p class="fhint">先保存设置再试听：否则试的是旧配置。</p>
+      <p class="fhint">试听前会先保存当前设置。</p>
     </div>
+    </details>
   </section>
 
   <section class="pane" id="pane-memory" style="display:none">
