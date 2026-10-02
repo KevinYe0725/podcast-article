@@ -711,6 +711,7 @@ function applyServerConfig(cfg) {
     $("fab").classList.remove("show");
     $("selbtn").classList.remove("show");
   }
+  updateAvatarControls();
   syncFab();
   updateComposerHint();     // 按钮文案与意图提示跟着模式一起回正
   return serverConfig;
@@ -3839,6 +3840,7 @@ function clearLocalAppState() {
   try { sessionStorage.clear(); } catch (_) {}
   resetInviteView(true);
   currentAccount = null;
+  cancelAvatarSelection();
   libItems = []; libCats = []; libAssign = {}; libStatus = {};
   mcpServers = []; mcpTools = {}; mcpPresets = [];
   const grid = $("libgrid"); if (grid) grid.replaceChildren();
@@ -3859,8 +3861,129 @@ function fmtQuotaDuration(seconds) {
   return hours ? `${hours} 小时${minutes ? ` ${minutes} 分` : ""}` : `${minutes} 分钟`;
 }
 
+let avatarPendingFile = null, avatarPreviewUrl = null, avatarSaving = false, avatarLoading = false;
+let avatarSelectionVersion = 0;
+
+function avatarStatus(message = "", error = false) {
+  $("avatar-status").textContent = message;
+  $("avatar-status").classList.toggle("error", error);
+}
+
+function updateAvatarControls() {
+  const busy = avatarSaving || avatarLoading;
+  const readonly = !!serverConfig.readonly;
+  ["avatar-choose", "avatar-file", "avatar-save", "avatar-cancel", "avatar-reset"].forEach(id => {
+    $(id).disabled = busy || readonly || !currentAccount;
+  });
+  $("avatar-save").hidden = !avatarPendingFile;
+  $("avatar-cancel").hidden = !avatarPendingFile;
+  $("avatar-reset").hidden = !!avatarPendingFile || !currentAccount?.avatar_url;
+  $("avatar-save").textContent = avatarSaving ? "保存中…" : "保存头像";
+  $("profile-avatar").setAttribute("aria-busy", String(busy));
+  if (readonly && !avatarPendingFile) avatarStatus("当前服务器为只读模式，请在主设备修改头像。");
+}
+
+function renderAccountAvatars() {
+  const initial = Array.from(String(currentAccount?.username || "?").trim())[0]?.toLocaleUpperCase() || "?";
+  const savedUrl = /^\/api\/auth\/avatar\?v=[a-f0-9]+$/.test(currentAccount?.avatar_url || "") ? currentAccount.avatar_url : null;
+  document.querySelectorAll(".account-avatar").forEach(node => {
+    const source = node.id === "profile-avatar" && avatarPreviewUrl ? avatarPreviewUrl : savedUrl;
+    node.replaceChildren();
+    if (!source) { node.textContent = initial; return; }
+    const img = document.createElement("img");
+    img.alt = "";
+    img.addEventListener("error", () => { if (node.contains(img)) node.textContent = initial; }, { once: true });
+    img.src = source;
+    node.appendChild(img);
+  });
+  updateAvatarControls();
+}
+
+function cancelAvatarSelection() {
+  ++avatarSelectionVersion;
+  if (avatarPreviewUrl) URL.revokeObjectURL(avatarPreviewUrl);
+  avatarPendingFile = null;
+  avatarPreviewUrl = null;
+  avatarLoading = false;
+  $("avatar-file").value = "";
+  avatarStatus();
+  renderAccountAvatars();
+}
+
+function selectAvatar(file) {
+  if (!file || avatarSaving || avatarLoading || !currentAccount) return;
+  if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+    cancelAvatarSelection();
+    avatarStatus("请选择 JPG、PNG 或 WebP 图片。", true); return;
+  }
+  if (file.size > 5 * 1024 * 1024) {
+    cancelAvatarSelection();
+    avatarStatus("图片超过 5 MB，请选择小一点的图片。", true); return;
+  }
+  const version = ++avatarSelectionVersion;
+  const source = URL.createObjectURL(file);
+  avatarLoading = true;
+  avatarStatus("正在读取图片…");
+  updateAvatarControls();
+  const img = new Image();
+  img.onload = () => {
+    if (version !== avatarSelectionVersion) { URL.revokeObjectURL(source); return; }
+    if (avatarPreviewUrl) URL.revokeObjectURL(avatarPreviewUrl);
+    avatarPendingFile = file;
+    avatarPreviewUrl = source;
+    avatarLoading = false;
+    renderAccountAvatars();
+    avatarStatus("预览已就绪，点击保存头像。");
+  };
+  img.onerror = () => {
+    URL.revokeObjectURL(source);
+    if (version !== avatarSelectionVersion) return;
+    avatarPendingFile = null;
+    avatarPreviewUrl = null;
+    avatarLoading = false;
+    renderAccountAvatars();
+    avatarStatus("无法读取这张图片，请换一张试试。", true);
+  };
+  img.src = source;
+}
+
+async function saveAvatar() {
+  if (avatarSaving || avatarLoading || !avatarPendingFile || !currentAccount) return;
+  const owner = currentAccount.id || currentAccount.username;
+  const body = new FormData();
+  body.append("avatar", avatarPendingFile);
+  avatarSaving = true;
+  avatarStatus("正在保存头像…");
+  updateAvatarControls();
+  try {
+    const result = await requestJSON("/api/auth/avatar", { method: "POST", body });
+    if ((currentAccount?.id || currentAccount?.username) !== owner) return;
+    currentAccount.avatar_url = result.avatar_url;
+    cancelAvatarSelection();
+    avatarStatus("头像已更新。");
+  } catch (error) { avatarStatus(error.message || "头像保存失败，请重试。", true); }
+  finally { avatarSaving = false; updateAvatarControls(); }
+}
+
+async function resetAvatar() {
+  if (avatarSaving || avatarLoading || !currentAccount?.avatar_url) return;
+  const owner = currentAccount.id || currentAccount.username;
+  avatarSaving = true;
+  avatarStatus("正在恢复默认头像…");
+  updateAvatarControls();
+  try {
+    await requestJSON("/api/auth/avatar", { method: "DELETE" });
+    if ((currentAccount?.id || currentAccount?.username) !== owner) return;
+    currentAccount.avatar_url = null;
+    cancelAvatarSelection();
+    avatarStatus("已恢复默认头像。");
+  } catch (error) { avatarStatus(error.message || "暂时无法恢复，请重试。", true); }
+  finally { avatarSaving = false; updateAvatarControls(); }
+}
+
 function renderAccount(account) {
   currentAccount = account;
+  renderAccountAvatars();
   const trigger = $("account-menu");
   trigger.hidden = false;
   $("account-name").textContent = account.username;
@@ -3909,6 +4032,16 @@ function resetInviteView(force = false) {
 
 function initAccountControls() {
   const trigger = $("account-menu");
+  $("avatar-file").addEventListener("change", event => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    selectAvatar(file);
+  });
+  $("account-profile").addEventListener("click", () => {
+    $("account-panel").hidden = true;
+    trigger.setAttribute("aria-expanded", "false");
+    openSettings("profile");
+  });
   trigger.addEventListener("click", () => {
     const panel = $("account-panel"); panel.hidden = !panel.hidden;
     trigger.setAttribute("aria-expanded", String(!panel.hidden));

@@ -1746,6 +1746,29 @@ body.sideopen, body.assistopen { overflow: hidden; }
 /* JS 使用 getBoundingClientRect() 给选区按钮写入视口坐标，因此必须固定在视口上。 */
 .selbtn { position: fixed; }
 
+/* 头像草稿单独保存，不干扰个人资料中的其他未保存内容。 */
+.account-avatar { overflow: hidden; }
+.account-avatar img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.account-profile { width: 100%; display: flex; justify-content: space-between; align-items: center; min-height: 44px; border: 0; border-radius: 8px; padding: 8px 0; background: transparent; color: var(--text); font: 500 13px var(--font); text-align: left; cursor: pointer; }
+.account-profile:hover { color: var(--green); }
+.profile-avatar-editor { display: flex; align-items: center; gap: 18px; padding: 10px 0 24px; border-bottom: 1px solid var(--border); }
+.account-avatar.profile-avatar { width: 80px; height: 80px; flex: 0 0 80px; font-size: 28px; box-shadow: 0 0 0 4px var(--bg2); }
+.profile-avatar-controls { flex: 1; min-width: 0; }
+.profile-avatar-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.profile-avatar-actions [hidden], #avatar-file[hidden] { display: none !important; }
+.profile-avatar-actions .linkbtn { min-height: 36px; padding: 4px 2px; }
+.profile-avatar-actions button:disabled { cursor: wait; opacity: .55; }
+.avatar-hint { margin-top: 8px; }
+.avatar-status { color: var(--dim); font-size: 12px; line-height: 1.6; margin-top: 4px; overflow-wrap: anywhere; }
+.avatar-status:empty { display: none; }
+.avatar-status.error { color: #b42318; }
+@media (max-width: 600px) {
+  .profile-avatar-editor { align-items: flex-start; gap: 14px; }
+  .account-avatar.profile-avatar { width: 68px; height: 68px; flex-basis: 68px; font-size: 25px; }
+  .profile-avatar-actions .linkbtn { min-height: 44px; }
+  .avatar-status { font-size: 13px; }
+}
+
 /* ==================================================================
    Mobile liquid glass layer
    只在移动端启用，正文和文章卡片继续使用实白底，保证阅读清晰。

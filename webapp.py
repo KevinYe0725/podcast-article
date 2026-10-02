@@ -24,6 +24,7 @@ from urllib.parse import quote, urlsplit
 
 import markdown
 from flask import Flask, Response, g, jsonify, make_response, redirect, request, send_file, send_from_directory, url_for
+from werkzeug.exceptions import RequestEntityTooLarge
 
 from podcast_article import account_services
 from podcast_article import auth as auth_mod
@@ -45,6 +46,7 @@ from podcast_article import queue as queue_mod
 from podcast_article import search as search_mod
 from podcast_article import timestamps as timestamps_mod
 from podcast_article import tts as tts_mod
+from podcast_article import avatar as avatar_mod
 from podcast_article.config import PROJECT_ROOT
 from podcast_article.util import ts_clock
 from podcast_article.pipeline import Pipeline
@@ -554,12 +556,55 @@ def api_auth_me():
         "username": account.username,
         "role": account.role,
         "must_change_password": account.must_change_password,
+        "avatar_url": avatar_mod.avatar_url(workspace),
         "quota": _quota_summary(account.id),
         "services": {
             "personal_llm_active": api_profile.uses_personal_llm,
             "personal_asr_active": api_profile.uses_personal_asr,
         },
     })
+
+
+@app.route("/api/auth/avatar", methods=["GET", "POST", "DELETE"])
+def api_auth_avatar():
+    """Read or replace the current account's sanitized profile image."""
+    if request.method == "GET":
+        path = avatar_mod.avatar_path(_workspace())
+        if not path.is_file() or path.is_symlink():
+            return jsonify({"error": "avatar_not_found", "message": "还没有设置头像"}), 404
+        response = send_file(path, mimetype="image/png", conditional=False, max_age=0)
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
+
+    if READONLY:
+        return jsonify({"error": READONLY_HINT, "readonly": True}), 503
+
+    if request.method == "DELETE":
+        try:
+            avatar_mod.delete_avatar(_workspace())
+        except OSError:
+            return jsonify({"error": "avatar_storage_error", "message": "头像暂时无法保存，请稍后重试"}), 500
+        return jsonify({"avatar_url": None})
+
+    account_quota = getattr(getattr(g, "current_user", None), "quota", None)
+    account_limit = getattr(account_quota, "max_upload_bytes", None)
+    effective_limit = avatar_mod.MAX_AVATAR_BYTES if account_limit is None else max(0, min(avatar_mod.MAX_AVATAR_BYTES, int(account_limit)))
+    request.max_content_length = effective_limit + 64 * 1024
+    try:
+        upload = request.files.get("avatar")
+    except RequestEntityTooLarge:
+        return jsonify({"error": "avatar_too_large", "message": "头像图片不能超过 5 MB"}), 413
+    if upload is None or not upload.filename:
+        return jsonify({"error": "avatar_missing", "message": "请选择头像图片"}), 400
+    try:
+        data = avatar_mod._read_upload(upload.stream, max_bytes=effective_limit)
+        avatar_mod.save_avatar(_workspace(), data)
+    except avatar_mod.AvatarError as exc:
+        return jsonify({"error": exc.code, "message": exc.message}), exc.status
+    except OSError:
+        return jsonify({"error": "avatar_storage_error", "message": "头像暂时无法保存，请稍后重试"}), 500
+    return jsonify({"avatar_url": avatar_mod.avatar_url(_workspace())})
 
 
 @app.post("/api/admin/invites")
