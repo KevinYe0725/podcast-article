@@ -1940,3 +1940,11 @@ body.sideopen, body.assistopen { overflow: hidden; }
   .topbar-actions { gap: 4px; }
   .topbar .wordmark span { display: none; }
 }
+
+@media (max-width: 600px) {
+  .srhead { display: block; }
+  .srtitle { font-size: 16px; line-height: 1.5; }
+  .srmeta { display: block; margin-top: 6px; white-space: normal; color: #62626b; }
+  .srhit { font-size: 14px; line-height: 1.7; }
+  .srtext { color: #525b63; }
+}
