@@ -53,8 +53,8 @@ jobs:
           ssh -i "$HOME/.ssh/id_ed25519" -o IdentitiesOnly=yes "$SERVER_USER@$SERVER_HOST" "set -e; cd '$SERVER_PATH'; \
             python3 -m venv .venv 2>/dev/null || true; \
             .venv/bin/pip install --disable-pip-version-check -i https://mirrors.aliyun.com/pypi/simple/ .; \
-            chown -R root:root '$SERVER_PATH'; \
-            chmod -R u+rwX,go+rX '$SERVER_PATH'; \
+            find '$SERVER_PATH' -path '$SERVER_PATH/data' -prune -o -path '$SERVER_PATH/.venv' -prune -o -exec chown root:root {} +; \
+            find '$SERVER_PATH' -path '$SERVER_PATH/data' -prune -o -path '$SERVER_PATH/.venv' -prune -o -exec chmod u+rwX,go+rX {} +; \
             chown -R podcast:podcast '$SERVER_PATH/data'; \
             systemctl daemon-reload; systemctl enable podcast-article; systemctl restart podcast-article; \
             systemctl is-active podcast-article; \

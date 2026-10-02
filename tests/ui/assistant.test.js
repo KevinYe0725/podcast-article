@@ -251,12 +251,22 @@ const DIR = "__UI测试单集";        // seed.js 造的那一集
   if (!out.Esc_抽屉已关) fails.push("Esc 应关闭抽屉");
   if (!out.Esc_文章还在) fails.push("Esc 关抽屉时不该把文章也关掉");
   if (!out.Esc_悬浮球回来了) fails.push("抽屉关闭后悬浮球应回来");
+  const hiddenStream = window.__streams[window.__streams.length - 1];
+  out.关闭后_回答继续接收 = !!hiddenStream && !hiddenStream.closed;
+  if (!out.关闭后_回答继续接收) fails.push("收起助手不应中断当前回答");
+  if (hiddenStream && !hiddenStream.closed) {
+    hiddenStream.emit("delta", {text:"后台继续接收的回答。"});
+    hiddenStream.emit("done", {status:"done",answer:"后台继续接收的回答。",error:"",thread:"t123"});
+  }
+  await until(() => !$("agobtn").disabled, 2000);
 
   // ---------- 10) 只用悬浮球提问（没有选文，直接问问题）
   click(fab());
   await sleep(400);
   out.直接提问_抽屉打开 = drawer().classList.contains("show");
   out.直接提问_消息数 = doc.querySelectorAll("#amessages .amsg").length;
+  out.重新打开_保留回答 = $("amessages").textContent.includes("后台继续接收的回答");
+  if (!out.重新打开_保留回答) fails.push("重新打开助手应保留当前对话");
   asked.length = 0;
   const before = window.__streams.length;
   $("aq").value = "他提到的 SGLang 是什么？";

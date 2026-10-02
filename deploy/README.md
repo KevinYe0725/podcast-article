@@ -75,11 +75,12 @@ cp /srv/podcast-article/deploy/Caddyfile /etc/caddy/Caddyfile
 systemctl enable --now podcast-article caddy
 ```
 
-`podcast-article.service` 的要点：`User=podcast`、`PA_READONLY=0`、`PA_ASR_BACKEND=cloud`、`PA_SCHEDULER=0`、
+`podcast-article.service` 的要点：`User=podcast`、`PA_READONLY=0`、`PA_ASR_BACKEND=cloud`、`PA_SCHEDULER=1`、
 `PA_DATA_ROOT=/srv/podcast-article/data`、`PA_COOKIE_SECURE=1`、`PA_COOKIE_DOMAIN=podcast.squareconf.cn`、
 `PA_PUBLIC_BASE_URL=https://podcast.squareconf.cn`、
 `PA_TRUSTED_PROXY=1`、`ProtectSystem=full` + `ReadWritePaths=/srv/podcast-article/data`。各账号工作区由该根目录派生。
 可信代理设置用于让登录限流从 `X-Real-IP` 读取访客地址；仅在请求始终经过 Portfolio Hub 边缘 Caddy 时启用，并确保代理传递真实远端地址。
+后台调度负责连续执行批量队列和检查订阅。订阅检查与自动成文仍以各账号保存的开关和每个订阅的设置为准；关闭浏览器不影响队列，重启后会恢复未完成的任务。
 公开访问后由 Flask 登录页处理账号身份；管理员先执行 `podcast-admin bootstrap`，登录后可从账号菜单进入“邀请朋友”页面生成一次性链接。`podcast-admin invite create` 仍可用于命令行管理。不要在 Caddy 配置或浏览器存储中放置共享密码。
 
 在 `/etc/podcast-article/server.env` 配置 `DASHSCOPE_API_KEY`、`OSS_ACCESS_KEY_ID`、
@@ -119,7 +120,7 @@ sudo -u podcast env PA_DATA_ROOT=/srv/podcast-article/data \
 ## 日常更新
 
 ```bash
-# 代码 + 数据一起推，然后重启应用（脚本见 scripts/deploy-server.sh）
+# 只同步代码和服务配置；保留服务器各账号的数据与密钥
 bash scripts/deploy-server.sh             # 默认 root@116.62.168.32
 ```
 

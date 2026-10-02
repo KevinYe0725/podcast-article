@@ -142,11 +142,11 @@ const DIR = "__UI测试单集";        // seed.js 造的那一集
   }
 
   await window.openSettings("storage");
-  await until(() => ($("usagebox").textContent || "").includes("累计费用"), 8000, 150);
+  await until(() => ($("usagebox").textContent || "").includes("平台费用"), 8000, 150);
   out.用量面板 = $("usagebox").textContent.replace(/\s+/g, " ").trim();
   out.用量状态标 = $("usage_state").textContent.trim();
   out.存储行 = $("storagerows").textContent.replace(/\s+/g, " ").trim().slice(0, 60);
-  if (!out.用量面板.includes("累计费用（估算）")) fails.push("设置页用量面板缺少累计费用");
+  if (!out.用量面板.includes("平台费用（估算）")) fails.push("设置页用量面板缺少平台费用");
   if (!out.用量面板.includes("缓存命中")) fails.push("设置页用量面板缺少缓存命中统计");
   if (!/篇有记录/.test(out.用量状态标)) fails.push(`用量状态标文案不对：「${out.用量状态标}」`);
 

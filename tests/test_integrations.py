@@ -231,3 +231,45 @@ def test_tts_key_is_resolved_from_member_encrypted_store(two_user_clients, monke
 
     assert webapp._tts_key(alice["workspace"]) == "alice-tts-secret"
     assert webapp._tts_key(two_user_clients["bob"]["workspace"]) == ""
+
+
+def test_connection_check_uses_the_members_saved_api(two_user_clients, monkeypatch):
+    from types import SimpleNamespace
+    import openai
+    from cryptography.fernet import Fernet
+    from podcast_article import settings
+
+    monkeypatch.setenv("PA_USER_SECRETS_KEY", Fernet.generate_key().decode("ascii"))
+    alice = two_user_clients["alice"]
+    alice["client"].put("/api/integrations/secrets/LLM_API_KEY", json={"value": "test-alice-key"})
+    settings.save(services={"llm_mode": "personal", "llm_base_url": "https://custom.example/v1", "llm_model": "custom-model"}, settings_path=alice["workspace"].settings_path)
+    captured = []
+
+    def fake_client(**kwargs):
+        captured.append(kwargs)
+        return SimpleNamespace(models=SimpleNamespace(list=lambda: SimpleNamespace(data=[SimpleNamespace(id="custom-model")])))
+
+    monkeypatch.setattr(openai, "OpenAI", fake_client)
+    result = alice["client"].post("/api/settings/verify", json={"what": "deepseek"})
+    assert result.status_code == 200 and result.get_json()["ok"] is True
+    assert captured[0]["base_url"] == "https://custom.example/v1"
+    assert captured[0]["api_key"] == "test-alice-key"
+    assert "test-alice-key" not in result.get_data(as_text=True)
+
+
+def test_connection_error_does_not_expose_provider_credentials(client, monkeypatch):
+    import openai
+
+    def fail_client(**kwargs):
+        raise ValueError("sensitive-provider-key")
+
+    monkeypatch.setattr(openai, "OpenAI", fail_client)
+    body = client.post("/api/settings/verify", json={"what": "deepseek"}).get_data(as_text=True)
+    assert "sensitive-provider-key" not in body
+
+
+def test_private_settings_and_csrf_are_not_cached(client):
+    for path in ("/api/auth/csrf", "/api/settings", "/api/library", "/"):
+        response = client.get(path)
+        assert response.status_code == 200
+        assert response.headers["Cache-Control"] == "no-store"

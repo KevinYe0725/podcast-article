@@ -107,6 +107,13 @@ def _workspace():
     """The immutable paths derived from this request's authenticated account."""
     return g.workspace
 
+
+@app.after_request
+def prevent_stale_private_responses(response):
+    if response.is_json or request.endpoint in {"index", "login_page", "invite_page"}:
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
 # ---------------------------------------------------------------- 只读镜像
 #
 # 部署到公网服务器时用 PA_READONLY=1：那台机器只负责「看」——文章、检索、
@@ -1369,6 +1376,12 @@ def api_settings_get():
         "tts_voices": tts_mod.macos_voices(),      # macOS 上可用的中文音色（给设置页做提示）
         "tts_available": bool(shutil.which("say")) or tts_mod.DEFAULTS["provider"] != "off",
         "server_credentials": "managed_by_server",
+        "runtime": {
+            "asr_backend": os.environ.get("PA_ASR_BACKEND") or current["generation"].get("backend", "mlx"),
+            "asr_managed": bool(os.environ.get("PA_ASR_BACKEND")),
+            "local_tts": bool(shutil.which("say")),
+            "scheduler_enabled": _scheduler_started,
+        },
         "storage": settings_mod.storage_info(output_root=workspace.output_root,
                                               settings_path=workspace.settings_path),
     })
@@ -1474,12 +1487,16 @@ def api_settings_verify():
         from podcast_article import config
 
         try:
-            client = OpenAI(
-                api_key=config.deepseek_api_key(), base_url=config.DEEPSEEK_BASE_URL
-            )
-            models = [m.id for m in client.models.list().data]
+            with account_services.activate(_account_api_profile()):
+                client = OpenAI(
+                    api_key=config.deepseek_api_key(),
+                    base_url=config.llm_base_url(),
+                    timeout=15,
+                    max_retries=0,
+                )
+                models = [m.id for m in client.models.list().data]
         except Exception as exc:
-            return jsonify({"ok": False, "detail": f"{type(exc).__name__}: {exc}"[:300]})
+            return jsonify({"ok": False, "detail": f"连接失败，请检查已保存的 API 地址和密钥（{type(exc).__name__}）"})
         return jsonify({"ok": True, "detail": "可用模型：" + "、".join(models[:8])})
 
     if what == "notion":
@@ -1648,6 +1665,93 @@ def api_mcp_call():
     except (ValueError, mcp_client.MCPClientError) as exc:
         return jsonify({"error": str(exc)}), 400
     return jsonify(result)
+
+
+def _reading_room_source_owner_required():
+    account = getattr(g, "current_user", None)
+    if account is None:
+        return jsonify({"error": "authentication_required"}), 401
+    if account.id != _auth_store().legacy_owner_id():
+        return jsonify({"error": "owner_required", "message": "只有主账号可以导入播客文章"}), 403
+    return None
+
+
+def _reading_room_source_summary(item: dict) -> str:
+    preview = item.get("preview")
+    if not isinstance(preview, dict):
+        return str(preview or "")[:4000]
+    deck = str(preview.get("deck") or "").strip()
+    if deck:
+        return deck[:4000]
+    takeaways = preview.get("takeaways") or []
+    return " · ".join(str(value).strip() for value in takeaways[:2] if str(value).strip())[:4000]
+
+
+@app.get("/api/reading-room/candidates")
+def api_reading_room_candidates():
+    """Owner-only source list for importing selected articles into Portfolio Hub."""
+    denied = _reading_room_source_owner_required()
+    if denied:
+        return denied
+    workspace = workspace_for(g.current_user.id, data_root())
+    candidates = []
+    for item in _library_items(output_root=workspace.output_root):
+        if not item.get("has_article"):
+            continue
+        candidates.append({
+            "dir": item["dir"],
+            "title": item["title"],
+            "summary": _reading_room_source_summary(item),
+            "podcast": item.get("podcast", ""),
+            "source": item.get("source", ""),
+            "pub_date": item.get("pub_date", ""),
+        })
+    response = jsonify({"items": candidates})
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.get("/api/reading-room/candidates/<job_dir>")
+def api_reading_room_candidate(job_dir: str):
+    """Export the selected article and safe labels, without audio, transcript or settings."""
+    denied = _reading_room_source_owner_required()
+    if denied:
+        return denied
+    if not job_dir or Path(job_dir).name != job_dir or job_dir in {".", ".."}:
+        return jsonify({"error": "文章不存在"}), 404
+    workspace = workspace_for(g.current_user.id, data_root())
+    output_root = workspace.output_root.resolve()
+    article_path = (output_root / job_dir / "article.md").resolve()
+    if output_root not in article_path.parents or not article_path.is_file():
+        return jsonify({"error": "文章不存在"}), 404
+    candidate = next((item for item in _library_items(output_root=workspace.output_root)
+                      if item.get("dir") == job_dir and item.get("has_article")), None)
+    if not candidate:
+        return jsonify({"error": "文章不存在"}), 404
+    try:
+        meta = json.loads((article_path.parent / "meta.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        meta = {}
+    if not isinstance(meta, dict):
+        meta = {}
+    source_url = str(meta.get("url") or "").strip()
+    parsed_source = urlsplit(source_url)
+    if (parsed_source.scheme.lower() not in {"http", "https"} or not parsed_source.hostname or
+            parsed_source.username or parsed_source.password or any(ord(char) < 32 for char in source_url)):
+        source_url = ""
+    try:
+        body = article_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return jsonify({"error": "无法读取文章"}), 500
+    response = jsonify({
+        "title": str(meta.get("title") or candidate.get("title") or job_dir)[:240],
+        "summary": _reading_room_source_summary(candidate),
+        "body": body,
+        "url": source_url,
+        "sourceLabel": str(meta.get("podcast") or candidate.get("podcast") or candidate.get("source") or "Podcast Article")[:160],
+    })
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @app.get("/api/library")

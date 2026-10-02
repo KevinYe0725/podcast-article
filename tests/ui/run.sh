@@ -81,7 +81,7 @@ fi
 # 调试时可以只跑其中一个：PA_UI_TESTS=assistant.test.js bash run.sh
 DEFAULT_TESTS="auth.test.js close.test.js reader.test.js readonly.test.js tts.test.js mobile.test.js modal.test.js sidebar.test.js delete.test.js audio.test.js
 search.test.js status.test.js queue.test.js feeds.test.js export.test.js nav.test.js
-memory.test.js assistant.test.js asklibrary.test.js"
+memory.test.js assistant.test.js asklibrary.test.js usability.test.js"
 FAILED=0
 for t in ${PA_UI_TESTS:-$DEFAULT_TESTS}; do
   echo "── $t"

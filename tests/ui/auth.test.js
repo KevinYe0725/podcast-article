@@ -60,8 +60,10 @@ const { boot, until, report, BASE } = require("./harness");
         : originalFetch(url, options);
     }});
     out.memberControlsHidden = await until(() => !!member.$("account-menu") && !member.$("account-menu").hidden)
-      && member.$("pane-keys").hidden && member.$("pane-mcp").hidden;
-    if (!out.memberControlsHidden) fails.push("member can see admin service-key or MCP controls");
+      && member.$("pane-invites").hidden && member.$("pane-mcp").hidden;
+    out.memberCanConfigureOwnApi = !member.$("pane-keys").hidden && !!member.$("api_llm_key");
+    if (!out.memberControlsHidden) fails.push("member can see admin invitation or MCP controls");
+    if (!out.memberCanConfigureOwnApi) fails.push("member cannot configure a personal API");
     member.window.close();
 
     const expiredApp = await boot({ beforeParse(w) {

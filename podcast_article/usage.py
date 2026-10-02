@@ -162,7 +162,8 @@ def load(workdir: Path) -> dict | None:
     if not p.exists():
         return None
     try:
-        return json.loads(p.read_text(encoding="utf-8"))
+        value = json.loads(p.read_text(encoding="utf-8"))
+        return value if isinstance(value, dict) else None
     except (json.JSONDecodeError, OSError):
         return None
 
@@ -182,7 +183,9 @@ def merge(usages: list[dict], model: str | None = None,
     model 参数很重要：合并时若把 model 退回默认值，费用就会按 flash 的价格算，
     混用 pro 的历史数据会被严重低估。没显式给就用第一份里记着的模型。
     """
-    source = billing_source or (usages[0].get("billing_source", "platform") if usages else "platform")
+    usages = [u for u in usages if isinstance(u, dict) and u]
+    sources = {u.get("billing_source") or "platform" for u in usages}
+    source = billing_source or ("mixed" if len(sources) > 1 else next(iter(sources), "platform"))
     total = empty(model, source)
     if not model:
         for u in usages:
@@ -320,7 +323,7 @@ def summary_over(root: Path) -> dict:
     described["model"] = next(iter(by_model)) if len(by_model) == 1 else "mixed"
     platform_costs = [d["cost_cny"] for d in by_model.values()
                       if d.get("billing_source") == "platform" and d.get("cost_cny") is not None]
-    described["cost_cny"] = round(sum(platform_costs), 4) if platform_costs else None
+    described["cost_cny"] = round(sum(platform_costs), 4) if platform_costs else (None if usages else 0.0)
     described["external_billing"] = any(source in {"external", "mixed"} for source in sources)
     described["external_calls"] = sum(d.get("calls", 0) for d in by_model.values()
                                        if d.get("billing_source") in {"external", "mixed"})

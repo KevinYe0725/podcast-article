@@ -348,6 +348,18 @@ def test_merge_ignores_empty_entries():
     assert usage.merge([])["calls"] == 0 and usage.merge([])["miss_tokens"] == 0
 
 
+@pytest.mark.parametrize("value", [None, [], "invalid", 42])
+def test_load_ignores_non_object_json(tmp_path, value):
+    usage.path_for(tmp_path).write_text(json.dumps(value), encoding="utf-8")
+    assert usage.load(tmp_path) is None
+
+
+def test_merge_preserves_mixed_billing_sources():
+    platform = make_usage("deepseek-flash", miss=5)
+    external = {**make_usage("custom", out=10), "billing_source": "external"}
+    assert usage.merge([None, platform, external])["billing_source"] == "mixed"
+
+
 # --------------------------------------------------------------- summary_over
 
 

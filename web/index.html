@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>podcast-article · 链接 → 深度文章</title>
-<link rel="stylesheet" href="/static/app.css">
+<link rel="stylesheet" href="/static/app.css?v=20261002-ux3">
 </head>
 <body>
 <div class="app">
@@ -17,7 +17,7 @@
 
     <div class="searchbox">
       <svg class="sicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"></circle><path d="m16 16 4 4"></path></svg>
-      <input id="q" type="search" placeholder="搜索文章与文字稿…" autocomplete="off" spellcheck="false">
+      <input id="q" type="search" aria-label="搜索文章与文字稿" placeholder="搜索文章与文字稿…" autocomplete="off" spellcheck="false">
       <button class="qclear" id="qclear" onclick="clearSearch()" title="清空" aria-label="清空">✕</button>
     </div>
 
@@ -59,7 +59,6 @@
     <div class="wordmark">podcast<span>-article</span></div>
     <div style="display:flex;align-items:center;gap:12px">
       <button class="usagepill" id="usagepill" onclick="openSettings('storage')" title="看一眼累计用量与费用"></button>
-      <div class="meta">播客转写 · AI 精读 · MCP</div>
       <div class="account-wrap">
         <button class="account-trigger" id="account-menu" type="button" aria-label="账号菜单" aria-expanded="false" aria-controls="account-panel" hidden>
           <span class="account-avatar" aria-hidden="true">K</span><span class="account-name" id="account-name"></span><span class="account-chevron" aria-hidden="true">⌄</span>
@@ -95,7 +94,7 @@
        「切片 / 索引 / 实体」这些东西，所以界面上一个词都不提。 -->
   <div class="composer col">
     <div class="row">
-      <textarea id="url" rows="1" placeholder="粘贴播客或视频链接…一次可粘多条；也可以直接打字提问（问你的库）"
+      <textarea id="url" aria-label="播客链接或提问" rows="1" placeholder="粘贴链接，或提问…"
                 spellcheck="false" autocomplete="off"></textarea>
       <button id="go" onclick="goSubmit()">生成文章</button>
     </div>
@@ -122,7 +121,8 @@
       </details>
     </div>
   </div>
-  <div class="hint col" id="hint">⌘/Ctrl + Enter 直接开始 · 生成完会直接进阅读页，Esc 返回 · 产物会缓存，重新生成文章不必重新转写</div>
+  <div class="hint col" id="hint">⌘/Ctrl + Enter 开始 · 已转写的音频会复用</div>
+  <div class="connection-error col" id="app-error" role="alert" hidden><span id="app-error-message"></span><button class="btn mini" type="button" onclick="initializeAuthenticatedApp()">重新连接</button></div>
 
   <!-- 问你的库（唯一的问答界面）：像对话一样一轮轮往下接。
        一轮 = 问题 → 状态 → 出处（折叠，时间戳可回听）→ 答案 →「AI 记得的你」（折叠）。 -->
@@ -151,9 +151,7 @@
 
   <div id="lib">
     <div class="libbar">
-      <span class="bt" id="libtitle">全部文章</span>
-      <span class="bc" id="libcount"></span>
-      <span style="flex:1"></span>
+      <div class="libbar-title"><span class="bt" id="libtitle">全部文章</span><span class="bc" id="libcount"></span></div>
       <div class="quicktabs" id="quicktabs">
         <button data-quick="all" onclick="setCat('all')">全部</button>
         <button data-quick="none" onclick="setCat('none')">未分类</button>
@@ -171,7 +169,7 @@
     <div class="viewhead">
       <div>
         <h2>批量队列</h2>
-        <p class="vhint">把链接一次性排进去，后台一条条跑完。关掉浏览器、重启服务都不影响进度（队列存在本地 queue.json）。</p>
+        <p class="vhint">按顺序生成，离开页面后仍会继续。</p>
       </div>
       <div class="vacts">
         <button class="btn mini" onclick="openBatch()">＋ 添加链接</button>
@@ -181,7 +179,7 @@
       </div>
     </div>
     <div id="queuelist"></div>
-    <div id="empty-queue" class="viewempty">队列是空的。把攒下来的链接丢进来吧 —— 首页支持一次粘贴多条。</div>
+    <div id="empty-queue" class="viewempty">队列空了。添加链接后会按顺序处理。</div>
   </div>
 
   <div id="feedsview" class="col" style="display:none">
@@ -284,7 +282,7 @@
     <article id="article"></article>
     <div id="readdone" class="readdone">
       <button class="btn primary" id="readdonebtn" onclick="finishReading()">✓ 读完了</button>
-      <span class="readhint">标记为已读，之后可以在侧边栏「已读」里翻到它</span>
+      <span class="readhint">读完后会加入已读列表。</span>
     </div>
     <div id="transcript"></div>
   </div>
@@ -342,7 +340,7 @@
     <div class="field">
       <div class="fhead"><label class="flabel" for="s_name">称呼</label></div>
       <input id="s_name" placeholder="Kevin" oninput="markDirty()">
-      <p class="fhint">会写进生成文章时注入的「读者画像」。</p>
+      <p class="fhint">用于调整文章的称呼和语气。</p>
     </div>
     <div class="field">
       <div class="fhead"><label class="flabel" for="s_interests">长期关注的方向</label></div>
@@ -361,9 +359,11 @@
       </div>
       <div class="invite-mark" aria-hidden="true"><span class="invite-wave"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span><span>ONE LINK<br>ONE ACCOUNT</span></div>
     </div>
-    <div class="invite-steps" aria-label="邀请流程"><span>设置额度</span><span aria-hidden="true">→</span><span>复制链接</span><span aria-hidden="true">→</span><span>朋友注册</span></div>
+    <div class="invite-steps" aria-label="邀请流程"><span>生成链接</span><span aria-hidden="true">→</span><span>发给朋友</span><span aria-hidden="true">→</span><span>朋友注册</span></div>
 
     <form id="invite-create-form" novalidate>
+      <p class="fhint">默认有效 7 天，每月 2 小时转写、10 元 AI 写作。直接生成即可。</p>
+      <details class="settings-advanced" id="invite-options"><summary>调整额度和有效期</summary>
       <div class="invite-section-head invite-section-group"><div><h3>每月用量</h3><p>额度控制平台提供的服务；朋友自备 API 由服务商计费，不占这部分额度。</p></div></div>
       <div class="invite-primary-grid">
         <label class="invite-field"><span>音频转写</span><small>推荐额度：2 小时 / 月</small><span class="invite-input"><input name="asr_hours" type="number" min="0" step="0.25" value="2" required><em>小时 / 月</em></span></label>
@@ -378,6 +378,7 @@
       </div>
 
       <div class="invite-expiry-row"><div><label for="invite-expires">邀请链接有效期</label><p>链接只能注册一个账号。到期后需要重新生成。</p></div><span class="invite-input invite-expiry-input"><input id="invite-expires" name="expires_days" type="number" min="1" max="365" step="1" value="7" required><em>天</em></span></div>
+      </details>
       <p class="invite-error" id="invite-error" role="alert" aria-live="assertive"></p>
       <div class="invite-actions"><button class="btn primary" id="invite-create" type="submit">生成邀请链接</button></div>
     </form>
@@ -416,15 +417,16 @@
         </div>
         <div class="field">
           <div class="fhead"><label class="flabel" for="api_llm_key">API 密钥</label><span class="fstate" id="api_llm_key_status">未配置</span></div>
-          <div class="settings-api-secret-row"><input id="api_llm_key" type="password" placeholder="粘贴你自己的 API 密钥" autocomplete="new-password" spellcheck="false"><button class="btn mini" type="button" onclick="saveIntegrationSecret('LLM_API_KEY','api_llm_key','api_llm_key_status')">保存密钥</button><button class="linkbtn" type="button" onclick="deleteIntegrationSecret('LLM_API_KEY','api_llm_key_status')">删除</button></div>
+          <div class="settings-api-secret-row"><input id="api_llm_key" type="password" placeholder="粘贴你自己的 API 密钥" autocomplete="new-password" spellcheck="false"><button class="btn mini" type="button" onclick="saveIntegrationSecret('LLM_API_KEY','api_llm_key','api_llm_key_status')">保存并启用</button><button class="linkbtn" type="button" onclick="deleteIntegrationSecret('LLM_API_KEY','api_llm_key_status')">删除</button></div>
           <p class="fhint">文章和提问内容会发送到你选的服务商。密钥按账号加密保存，费用由服务商结算，不扣平台 AI 额度。</p>
         </div>
         <p class="settings-api-fallback" id="api_llm_fallback" hidden>尚未保存个人密钥，当前仍使用平台默认服务。</p>
       </div>
+      <p class="fhint"><button class="linkbtn" type="button" onclick="verifyConnection('deepseek',this,'api_llm_test')">测试已保存的连接</button><span class="vres" id="api_llm_test" role="status"></span></p>
     </section>
 
     <section class="settings-api-block">
-      <div class="settings-api-title"><div><h3>语音转写</h3><p>本地转写默认保持不变；也可以接入阿里云百炼。</p></div><span class="fstate" id="api_asr_status">使用当前转写方式</span></div>
+      <div class="settings-api-title"><div><h3>语音转写</h3><p id="api_asr_hint">保持平台默认即可，也可以使用自己的百炼 API。</p></div><span class="fstate" id="api_asr_status">使用当前转写方式</span></div>
       <div class="field">
         <div class="fhead"><label class="flabel" for="api_asr_mode">云端服务</label></div>
         <select id="api_asr_mode" onchange="syncAccountApiForms();markDirty()">
@@ -443,7 +445,7 @@
         </div>
         <div class="field">
           <div class="fhead"><label class="flabel" for="api_asr_key">百炼 API 密钥</label><span class="fstate" id="api_asr_key_status">未配置</span></div>
-          <div class="settings-api-secret-row"><input id="api_asr_key" type="password" placeholder="粘贴你自己的百炼 API 密钥" autocomplete="new-password" spellcheck="false"><button class="btn mini" type="button" onclick="saveIntegrationSecret('ASR_API_KEY','api_asr_key','api_asr_key_status')">保存密钥</button><button class="linkbtn" type="button" onclick="deleteIntegrationSecret('ASR_API_KEY','api_asr_key_status')">删除</button></div>
+          <div class="settings-api-secret-row"><input id="api_asr_key" type="password" placeholder="粘贴你自己的百炼 API 密钥" autocomplete="new-password" spellcheck="false"><button class="btn mini" type="button" onclick="saveIntegrationSecret('ASR_API_KEY','api_asr_key','api_asr_key_status')">保存并启用</button><button class="linkbtn" type="button" onclick="deleteIntegrationSecret('ASR_API_KEY','api_asr_key_status')">删除</button></div>
           <p class="fhint">音频会发送到阿里云百炼处理；有可用字幕时仍优先用字幕。密钥按账号加密保存，费用由百炼结算，不扣平台转写额度。</p>
         </div>
         <p class="settings-api-fallback" id="api_asr_fallback" hidden>尚未保存个人密钥，当前仍使用平台默认转写方式。</p>
@@ -453,9 +455,17 @@
 
   <section class="pane" id="pane-dest" style="display:none">
     <div class="field">
-      <div class="fhead"><label class="flabel">发布目标</label></div>
-      <p class="fhint">Notion 连接将在账号专属集成设置中配置。</p>
+      <div class="fhead"><label class="flabel" for="notion_key">Notion 密钥</label><span class="fstate" id="notion_key_status">未配置</span></div>
+      <div class="settings-api-secret-row"><input id="notion_key" type="password" placeholder="Notion integration token" autocomplete="new-password" spellcheck="false"><button class="btn mini" type="button" onclick="saveIntegrationSecret('NOTION_TOKEN','notion_key','notion_key_status')">保存密钥</button><button class="linkbtn" type="button" onclick="deleteIntegrationSecret('NOTION_TOKEN','notion_key_status')">删除</button></div>
+      <p class="fhint">密钥按账号加密保存。请在 Notion 中将目标页面连接到这个集成。</p>
     </div>
+    <div class="field">
+      <div class="fhead"><label class="flabel" for="notion_parent">目标页面</label></div>
+      <input id="notion_parent" placeholder="粘贴 Notion 页面链接或页面 ID" spellcheck="false" oninput="markDirty()">
+      <p class="fhint">文章会发布为这个页面的子页面。</p>
+      <p class="fhint"><button class="linkbtn" type="button" onclick="verifyConnection('notion',this,'notion_test')">测试已保存的连接</button><span class="vres" id="notion_test" role="status"></span></p>
+    </div>
+    <details class="settings-advanced"><summary>发布到数据库</summary><div class="field"><label class="flabel" for="notion_database">数据库 ID</label><input id="notion_database" placeholder="留空使用上面的页面" spellcheck="false" oninput="markDirty()"><p class="fhint">填写后优先发布到该数据库。</p></div></details>
   </section>
 
   <section class="pane" id="pane-gen" style="display:none">
@@ -600,12 +610,6 @@
         </p>
       </div>
       </div>
-      <div class="field">
-        <div class="fhead"><label class="flabel">关闭联网搜索</label></div>
-        <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text)">
-          <input type="checkbox" id="as_off" style="width:auto" onchange="markDirty()"> 助手只基于播客原文回答
-        </label>
-      </div>
     </details>
   </section>
 
@@ -739,11 +743,11 @@
     </div>
   </section>
 
-  <div class="savebar" id="savebar">
+  <div class="savebar" id="savebar" hidden>
     <span class="dot"></span><span class="msg">有未保存的更改</span>
     <span style="flex:1"></span>
     <button class="btn mini" onclick="loadSettings()">放弃更改</button>
-    <button class="btn primary mini" onclick="saveSettings()">保存</button>
+    <button class="btn primary mini" id="settings-save" onclick="saveSettings()">保存</button>
   </div>
     </div><!-- /settings-content -->
   </div><!-- /settings-layout -->
@@ -813,15 +817,14 @@
   <!-- 消息流：像普通 AI 会话一样，一轮一轮往下接 -->
   <div class="abody" id="abody">
     <div class="aintro" id="aintro">
-      <p>在文章里<b>选中一段</b>有疑问的文字，点「深挖这段」—— 我会先回到播客原文找依据，再按需联网补充背景。</p>
-      <p class="adim">之后可以<b>一直追问</b>下去，上下文会接着上一轮。依据（原文片段 / 网络结果）默认收在每条回答下面，需要核对时再展开。</p>
-      <p class="adim">值得留住的段落点下面的<b>「☆ 记住这条」</b>，值得留住的结论点回答下面的<b>「☆ 记住这个结论」</b> —— 存下来的东西以后每次提问都会带上，回答下面就写着「AI 记得的你」。</p>
+      <p>直接提问，或选中文章后点<b>「深挖这段」</b>。</p>
+      <p class="adim">回答附原文依据；有用的答案可以点「记住这个结论」。</p>
     </div>
     <div id="amessages"></div>
   </div>
 
   <div class="afoot">
-    <textarea id="aq" rows="1" placeholder="继续追问…（Enter 发送，Shift+Enter 换行）" spellcheck="false"></textarea>
+    <textarea id="aq" aria-label="向阅读助手提问" rows="1" placeholder="提问或继续追问…" spellcheck="false"></textarea>
     <div class="arow">
       <button class="ttslink" id="amembtn" onclick="rememberSelection(this)"
               title="把选中的这段话存进记忆库，以后提问会自动带上">☆ 记住这条</button>
@@ -832,6 +835,6 @@
   </div>
 </aside>
 
-<script src="/static/app.js"></script>
+<script src="/static/app.js?v=20261002-ux3"></script>
 </body>
 </html>

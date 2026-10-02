@@ -2,6 +2,7 @@ const $ = (id) => document.getElementById(id);
 let es = null, pollTimer = null, jobId = null, curWorkdir = null, curUrl = null, shownLogs = 0;
 const STAGE_PREFIX = ["[meta]", "[audio]", "[text]", "[write]"];
 let runStartedAt = null;
+let articleLoadVersion = 0;
 const stageNotes = {};   // 阶段序号 -> 运行过程中最有信息量的一句细节
 
 /** 只记录有信息量的细节（"完成"这类占位不算） */
@@ -45,6 +46,24 @@ const humanDur = (sec) => { if (!sec) return ""; const h = Math.floor(sec / 3600
 let toastTimer = null;
 let integrationStatuses = {};
 let integrationStoreAvailable = true;
+let runtimeFeatures = {};
+
+async function requestJSON(path, options) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 30000);
+  let response;
+  try { response = await fetch(path, {...options, signal:controller.signal}); }
+  catch (_) { throw new Error("连接暂时失败，请重试；输入内容已保留。"); }
+  finally { clearTimeout(timer); }
+  let data;
+  try { data = await response.json(); }
+  catch (_) { throw new Error("服务暂时没有返回有效结果，请稍后重试。"); }
+  if (!response.ok) {
+    const messages = { csrf_failed: "会话验证失败，请刷新页面后重试。", quota_exceeded: "账号额度不足，请检查本月用量。", admin_required: "此操作需要管理员账号。" };
+    throw new Error(data.message || messages[data.error] || data.error || "操作未完成，请重试。");
+  }
+  return data;
+}
 function toast(html) {
   $("toast").innerHTML = html; $("toast").classList.add("show");
   clearTimeout(toastTimer); toastTimer = setTimeout(() => $("toast").classList.remove("show"), 6000);
@@ -71,14 +90,11 @@ async function kbStatus(force) {
   return kbStatusCache;
 }
 
-/** 「（12 集 · 5612 条切片）」——规模本身就是「问你的库」值不值得问的依据 */
+/** 日常入口只显示文章数量，索引细节留在高级设置。 */
 function kbScaleText() {
   const d = kbStatusCache;
   if (!d) return "";
-  const parts = [];
-  if (d.episodes_on_disk != null) parts.push(`${d.episodes_on_disk} 集`);
-  if (d.passages != null) parts.push(`${d.passages} 条切片`);
-  return parts.length ? `（${parts.join(" · ")}）` : "";
+  return d.episodes_on_disk != null ? `（${d.episodes_on_disk} 篇文章）` : "";
 }
 
 const mmssShort = (sec) => (sec == null ? "" :
@@ -466,7 +482,7 @@ async function ttsPreview(btn) {
   btn.disabled = true;
   out.className = "vres"; out.textContent = "生成中…";
   try {
-    await saveSettings({ quiet: true });
+    if (!await saveSettings({ quiet: true })) return;
     const d = await (await fetch("/api/tts/preview", { method: "POST" })).json();
     if (!d.ok) { out.className = "vres bad"; out.textContent = "✕ " + (d.error || "失败"); return; }
     out.className = "vres ok";
@@ -574,7 +590,7 @@ async function syncTts(openBar) {
 async function ttsStart(force) {
   if (!curWorkdir) return;
   if (ttsState && ttsState.enabled === false) {
-    toast("⚠ 还没启用朗读：设置 → 朗读，选一个语音后端（macOS 本地免费）");
+    toast('还没启用朗读：<button class="linkbtn" onclick="openSettings(\'tts\')">前往设置</button>');
     return;
   }
   const dir = encodeURIComponent(curWorkdir);
@@ -686,7 +702,7 @@ function applyServerConfig(cfg) {
   if (url) {
     url.disabled = ro;
     url.placeholder = ro ? "只读镜像：请在 Mac 上提交链接"
-                         : "粘贴播客或视频链接…（一次可粘多条；连标题说明一起粘也没关系）";
+                         : "粘贴链接，或提问…";
   }
   if (go) { go.disabled = ro; go.textContent = ro ? "只读镜像" : "生成文章"; }
   if (ro && $("hint")) $("hint").textContent = "📖 " + note;
@@ -753,11 +769,17 @@ function urlsIn(text) {
 }
 
 /** 首页提交：一条直接跑，多条自动改成「加入队列」 */
+let runSubmitting = false;
 async function startRun(opts = {}) {
+  if (runSubmitting || serverConfig.readonly) return;
   const raw = opts.url !== undefined ? opts.url : $("url").value.trim();
   if (!raw) { $("url").focus(); return; }
+  runSubmitting = true;
+  $("go").disabled = true;
+  let started = false;
+  try {
   const many = urlsIn(raw);
-  if (!opts.url && many.length > 1) { await enqueueLinks(many); return; }
+  if (!opts.url && many.length > 1) { started = await enqueueLinks(many); return; }
   // 只把链接本身发给后端：粘贴过来的「【标题】https://…」里那串说明文字会让解析失败。
   // 本机路径不走这一步（路径可能带空格，抠出来会断成两截）。
   const url = many.find((u) => /^https?:\/\//i.test(u)) || raw;
@@ -774,36 +796,46 @@ async function startRun(opts = {}) {
   if (!resp.ok) {
     // 409 = 已有任务在跑。别只说"失败"，告诉用户在跑什么，并自动等它结束
     if (resp.status === 409 && data.busy) {
-      toast("⚠ 已有任务在运行：" + esc((data.url || "").slice(0, 60)) + " —— 结束后会自动恢复");
+      toast("服务器正在处理任务，可以将链接加入批量队列。");
       if (data.job_id) beginJob(data.job_id);
       startBusyWatch();
+      started = true;
       return;
     }
-    toast("⚠ " + esc(data.error || "启动失败"));
+    toast("⚠ " + esc(data.message || data.error || "启动失败，请重试"));
     return;
   }
   curUrl = url;
+  started = true;
   beginJob(data.job_id);
+  } catch (_) {
+    toast("⚠ 连接暂时失败，链接已保留，请重试。");
+  } finally {
+    runSubmitting = false;
+    if (!started) { $("go").disabled = !!serverConfig.readonly; updateComposerHint(); }
+  }
 }
 
 /** 一次粘了多条链接：全部排进队列，然后切到队列视图 */
 async function enqueueLinks(links) {
-  const resp = await fetch("/api/queue", {
+  try {
+  const d = await requestJSON("/api/queue", {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       urls: links, mode: $("mode").value, lang: $("lang").value,
       model: $("model").value.trim(), no_subs: $("no_subs").checked,
     }),
   });
-  const d = await resp.json();
-  if (!resp.ok) { toast("⚠ " + esc(d.error || "入队失败")); return; }
   $("url").value = "";
   updateComposerHint();
   autoGrow();
-  toast(`✦ 已排入队列 ${d.added.length} 条，后台会依次生成`);
+  const count = (d.added || []).length;
+  toast(count ? `✦ 已加入 ${count} 条链接，重复链接会自动跳过` : "这些链接已经在队列中，无需重复添加");
   showView("queue");
   renderQueueView(d.queue);
-  queueRun();          // 立刻开跑第一条（有任务在跑时会返回 409，忽略即可）
+  await queueRun();
+  return true;
+  } catch (error) { toast("⚠ " + esc(error.message)); return false; }
 }
 
 /* ---- 「已有任务在跑」的提示与自动恢复 ---- */
@@ -847,15 +879,16 @@ function setUrlHint(kind, n) {
     : `💬 问你的库${kbScaleText()}`;
 }
 
-const COMPOSER_HINT = "⌘/Ctrl + Enter 直接开始（批量时一行一条链接）· 生成完会直接进阅读页，Esc 返回 · 产物会缓存，重新生成文章不必重新转写";
+const COMPOSER_HINT = "⌘/Ctrl + Enter 开始 · 已转写的音频会复用";
 
 function updateComposerHint() {
   if (serverConfig.readonly) { $("go").textContent = "只读镜像"; $("go").disabled = true; setUrlHint("empty"); return; }
   const n = urlsIn($("url").value).length;
+  $("hint").classList.toggle("batch-hint", n > 1);
   const btn = $("go");
   if (n > 1) {
     btn.textContent = `加入队列 (${n})`;
-    $("hint").innerHTML = `检测到 ${n} 条链接 —— 点按钮会全部排队，后台依次跑完；不想排队就只留一条。`;
+    $("hint").textContent = `检测到 ${n} 条链接，会按顺序加入队列。`;
     setUrlHint("link", n);
     return;
   }
@@ -873,7 +906,7 @@ function updateComposerHint() {
 
 /** #go 与 Enter 的唯一入口：按意图分流 */
 function goSubmit() {
-  if (serverConfig.readonly) return;
+  if (serverConfig.readonly || runSubmitting || $("go").disabled) return;
   const intent = composerIntent();
   if (intent === "link") { startRun(); return; }
   if (intent === "ask") { askLibrary(); return; }
@@ -895,6 +928,7 @@ function beginJob(id) {
   Object.keys(stageNotes).forEach((k) => delete stageNotes[k]);
   expandRunview();
   $("result").classList.remove("show");
+  document.body.classList.remove("reading");
   $("errline").style.display = "none";
   curUsage = null; renderCostPill();
   setStage(-1, null);
@@ -1013,6 +1047,12 @@ function finishJob(d) {
   updateComposerHint();
   if (d.status === "done") {
     setStage(4, null);
+    if ($("settings").style.display === "block" || activeView !== "lib" || searchQuery || $("result").classList.contains("show")) {
+      loadLibrary();
+      collapseRunview();
+      toast(`新文章已就绪 <button class="linkbtn" onclick="openEpisode('${encodeURIComponent(d.workdir || "")}')">立即阅读</button>`);
+      return;
+    }
     curWorkdir = d.workdir;
     const m = d.meta || {};
     $("rmeta").innerHTML =
@@ -1117,9 +1157,10 @@ async function openSettings(tab) {
   window.scrollTo({ top: 0 });
   // 注：这里以前被误粘进了 showView() 的尾巴（用了未定义的 name），
   // 于是 openSettings() 一定抛错、设置页的页签也切不了。按本函数原本的样子恢复。
-  await loadSettings();
+  try { if (!settingsLoaded) await loadSettings(); }
+  catch (error) { toast("⚠ " + esc(error.message)); return; }
   if (tab) switchTab(tab);
-  loadMcp();
+  if (currentAccount?.role === "admin") loadMcp();
 }
 
 function closeSettings() {
@@ -1160,11 +1201,27 @@ function switchTab(name) {
   if (name === "memory") loadMemory();      // 切到记忆页就把列表拉出来（含用量）
 }
 
-const markDirty = () => $("savebar").classList.add("dirty");
-const clearDirty = () => $("savebar").classList.remove("dirty");
+let settingsLoaded = false, settingsSnapshot = "", settingsSaving = false, settingsLoading = null;
+const markDirty = () => {
+  const dirty = settingsLoaded && JSON.stringify(settingsPayload()) !== settingsSnapshot;
+  $("savebar").hidden = !dirty;
+  $("savebar").classList.toggle("dirty", dirty);
+};
+const clearDirty = () => {
+  settingsSnapshot = JSON.stringify(settingsPayload());
+  $("savebar").classList.remove("dirty");
+  $("savebar").hidden = true;
+};
 
-async function loadSettings() {
-  const d = await (await fetch("/api/settings")).json();
+function loadSettings() {
+  if (settingsLoading) return settingsLoading;
+  settingsLoading = populateSettings().finally(() => { settingsLoading = null; });
+  return settingsLoading;
+}
+
+async function populateSettings() {
+  const d = await requestJSON("/api/settings");
+  runtimeFeatures = d.runtime || {};
   const p = d.profile || {}, g = d.generation || {}, s = d.storage || {};
   const services = d.services || {};
   integrationStatuses = d.integrations?.secrets || {};
@@ -1178,6 +1235,9 @@ async function loadSettings() {
   $("api_asr_mode").value = services.asr_mode || "platform";
   $("api_asr_base").value = services.asr_base_url || "https://dashscope.aliyuncs.com";
   $("api_asr_model").value = services.asr_model || "paraformer-v2";
+  $("notion_parent").value = d.notion?.parent_page_id || "";
+  $("notion_database").value = d.notion?.database_id || "";
+  if (runtimeFeatures.asr_backend === "cloud") $("api_asr_hint").textContent = "平台已提供云端转写，也可以使用自己的百炼 API。";
   const t = d.tts || {};
   if ($("t_provider")) {
     $("t_provider").value = t.provider || "off";
@@ -1203,7 +1263,9 @@ async function loadSettings() {
     $("t_state").className = "fstate" + (["off", ""].includes(t.provider) ? "" : " ok");
   }
   $("g_language").value = g.language || "";
-  $("g_backend").value = g.backend || "mlx";
+  $("g_backend").value = runtimeFeatures.asr_backend || g.backend || "mlx";
+  const macOption = $("t_provider")?.querySelector('option[value="macos"]');
+  if (macOption) macOption.disabled = runtimeFeatures.local_tts === false;
   $("g_asr_model").value = g.asr_model || "";
   $("g_max_chars").value = g.max_chars || 75000;
   $("g_mode").value = g.length_mode || "standard";
@@ -1238,6 +1300,7 @@ async function loadSettings() {
     ["TAVILY_API_KEY", "api_tavily_key_status"],
     ["SERPER_API_KEY", "api_serper_key_status"],
     ["TTS_API_KEY", "st_TTS_API_KEY"],
+    ["NOTION_TOKEN", "notion_key_status"],
   ].forEach(([name, id]) => paintIntegrationSecret(name, id));
   syncAccountApiForms();
   syncFab();
@@ -1246,6 +1309,7 @@ async function loadSettings() {
   loadUsageBox();
 
   applyDefaultsToComposer(g);
+  settingsLoaded = true;
   clearDirty();
 }
 
@@ -1301,8 +1365,12 @@ function applyDefaultsToComposer(g) {
   $("mode").value = g.length_mode || "standard";
 }
 
-async function saveSettings() {
-  const payload = {
+function notionId(value) {
+  return String(value || "").match(/[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}/i)?.[0] || String(value || "").trim();
+}
+
+function settingsPayload() {
+  return {
     profile: {
       name: $("s_name").value.trim(),
       interests: $("s_interests").value.trim(),
@@ -1339,12 +1407,22 @@ async function saveSettings() {
       asr_model: $("api_asr_model").value.trim(),
     },
     tts: ttsFormValues(),
+    notion: {
+      parent_page_id: notionId($("notion_parent").value),
+      database_id: notionId($("notion_database").value),
+    },
   };
-  const resp = await fetch("/api/settings", {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
+}
+
+async function saveSettings(options = {}) {
+  if (settingsSaving || !settingsLoaded) return false;
+  settingsSaving = true;
+  const button = $("settings-save");
+  button.disabled = true; button.textContent = "正在保存…";
+  try {
+  await requestJSON("/api/settings", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(settingsPayload()),
   });
-  const d = await resp.json();
-  if (!resp.ok) { toast("⚠ " + esc(d.error || "保存失败")); return; }
   await loadSettings();
   if (currentAccount) {
     currentAccount.services = {
@@ -1353,7 +1431,10 @@ async function saveSettings() {
     };
     renderAccount(currentAccount);
   }
-  toast("✦ 已保存");
+  if (!options.quiet) toast("✦ 已保存");
+  return true;
+  } catch (error) { toast("⚠ " + esc(error.message)); return false; }
+  finally { settingsSaving = false; button.disabled = false; button.textContent = "保存"; }
 }
 
 function paintIntegrationSecret(name, elementId) {
@@ -1392,7 +1473,7 @@ function syncAccountApiForms() {
   if ($("api_llm_fallback")) $("api_llm_fallback").hidden = !llmPersonal || llmReady;
   if ($("api_asr_fallback")) $("api_asr_fallback").hidden = !asrPersonal || asrReady;
   if ($("g_llm")) $("g_llm").disabled = llmPersonal && llmReady;
-  if ($("g_backend")) $("g_backend").disabled = asrPersonal && asrReady;
+  if ($("g_backend")) $("g_backend").disabled = !!runtimeFeatures.asr_managed || (asrPersonal && asrReady);
 }
 
 async function csrfWrite(path, method, payload) {
@@ -1409,11 +1490,16 @@ async function saveIntegrationSecret(name, inputId, statusId) {
   const input = $(inputId), value = input?.value.trim() || "";
   if (!value) { toast("请先填写 API 密钥"); input?.focus(); return; }
   const status = $(statusId);
+  const button = input.closest('.settings-api-secret-row')?.querySelector('button');
+  if (button?.disabled) return;
+  if (button) button.disabled = true;
+  let secretSaved = false;
   if (status) { status.textContent = "正在保存…"; status.className = "fstate"; }
   try {
-    const response = await csrfWrite(`/api/integrations/secrets/${encodeURIComponent(name)}`, "PUT", { value });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error || "密钥保存失败");
+    const data = await requestJSON(`/api/integrations/secrets/${encodeURIComponent(name)}`, {
+      method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify({value}),
+    });
+    secretSaved = true;
     integrationStatuses[name] = data.status || { configured: true, masked: "" };
     input.value = "";
     if (name === "LLM_API_KEY") $("api_llm_mode").value = "personal";
@@ -1422,18 +1508,51 @@ async function saveIntegrationSecret(name, inputId, statusId) {
     if (name === "SERPER_API_KEY") $("as_provider").value = "serper";
     paintIntegrationSecret(name, statusId);
     syncAccountApiForms();
+    const section = ["LLM_API_KEY", "ASR_API_KEY"].includes(name) ? "services"
+      : ["TAVILY_API_KEY", "SERPER_API_KEY"].includes(name) ? "assistant" : null;
+    if (section) {
+      const current = settingsPayload()[section];
+      const prefix = name === "LLM_API_KEY" ? "llm_" : "asr_";
+      const values = section === "services"
+        ? Object.fromEntries(Object.entries(current).filter(([key]) => key.startsWith(prefix)))
+        : {search_provider: current.search_provider};
+      await requestJSON('/api/settings', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({[section]: values})});
+      const baseline = JSON.parse(settingsSnapshot || '{}');
+      baseline[section] = {...baseline[section], ...values};
+      settingsSnapshot = JSON.stringify(baseline);
+      if (currentAccount && section === "services") {
+        currentAccount.services = {
+          personal_llm_active: baseline.services.llm_mode === "personal" && !!integrationStatuses.LLM_API_KEY?.configured,
+          personal_asr_active: baseline.services.asr_mode === "personal" && !!integrationStatuses.ASR_API_KEY?.configured,
+        };
+        renderAccount(currentAccount);
+      }
+    }
     if (name === "TAVILY_API_KEY" || name === "SERPER_API_KEY") await loadSearchService();
     markDirty();
-    toast("密钥已加密保存；点击页面底部“保存”启用此服务");
+    toast(section ? "API 已保存并启用" : "密钥已加密保存");
   } catch (error) {
-    if (status) { status.textContent = "保存失败"; status.className = "fstate"; }
+    if (status) { status.textContent = secretSaved ? "密钥已保存，连接设置尚未生效" : "保存失败"; status.className = "fstate"; }
     toast("⚠ " + esc(error.message || "密钥保存失败"));
-  }
+  } finally { if (button) button.disabled = false; }
+}
+
+async function verifyConnection(what, button, outputId) {
+  const output = $(outputId);
+  button.disabled = true;
+  output.textContent = "连接中…"; output.className = "vres";
+  try {
+    const result = await requestJSON('/api/settings/verify', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({what})});
+    output.textContent = result.detail || (result.ok ? "已连接" : "连接失败");
+    output.className = "vres " + (result.ok ? "ok" : "bad");
+  } catch (error) { output.textContent = error.message; output.className = "vres bad"; }
+  finally { button.disabled = false; }
 }
 
 async function deleteIntegrationSecret(name, statusId) {
   const label = {
     LLM_API_KEY: "文章生成 API", ASR_API_KEY: "语音转写 API",
+    NOTION_TOKEN: "Notion",
     TAVILY_API_KEY: "Tavily", SERPER_API_KEY: "Serper", TTS_API_KEY: "朗读 API",
   }[name] || "API";
   if (!window.confirm(`删除已保存的${label}密钥？之后可以重新填写。`)) return;
@@ -1809,6 +1928,7 @@ function delServer(name) {
 }
 
 function closeResult(opts) {
+  ++articleLoadVersion;
   // keepRoute：由浏览器后退（地址栏已经变成 #/）触发时不要再推一条历史，否则会顶掉后退
   const keepRoute = !!(opts && opts.keepRoute);
   const el = $("result");
@@ -1827,6 +1947,7 @@ function closeResult(opts) {
   hidePopmenus();
   renderCostPill();
   if (assistOpen) closeAssist();
+  resetAssist();
   $("selbtn").classList.remove("show");
   if ($("ttsbar")) { ttsStopAudio(); $("ttsbar").style.display = "none"; }
   audioDir = null;
@@ -1853,8 +1974,10 @@ const SMART = ["unread", "reading", "read", "later"];
 const isSmart = (v) => SMART.includes(v);
 
 async function loadLibrary() {
-  const resp = await fetch("/api/library");
-  const d = await resp.json();
+  let d;
+  try { d = await requestJSON("/api/library"); }
+  catch (_) { showConnectionError("文章库暂时无法读取，重新连接后继续。"); return false; }
+  if ($("app-error")) $("app-error").hidden = true;
   libItems = d.items || [];
   libCats = d.categories || [];
   libAssign = d.assignments || {};
@@ -1868,6 +1991,7 @@ async function loadLibrary() {
   // 搜索状态下刷新库时，重新跑一次当前查询（结果里的费用/状态也会跟着更新）
   if (searchQuery) await runSearch(searchQuery);
   else renderGrid();
+  return true;
 }
 
 /** 顶栏的累计用量胶囊 */
@@ -2023,10 +2147,10 @@ function cardHTML(it) {
       ${c
         ? `<span class="catlabel" title="点击更换分类" onclick="event.stopPropagation();openCatMenu(event,'${dir}')"><span class="dot" style="background:${esc(c.color)}"></span>${esc(c.name)}</span>`
         : `<span class="catlabel empty" title="点击归类" onclick="event.stopPropagation();openCatMenu(event,'${dir}')">＋ 分类</span>`}
-      ${it.podcast ? `<span>${esc(it.podcast)}</span>` : ""}
-      ${it.has_article ? `<span class="ok">✓ 有文章</span>` : `<span>无文章</span>`}
-      ${pv.chars ? `<span>${pv.chars} 字</span>` : ""}
-      ${cost ? `<span title="这一集累计消耗">${cost.trim().replace(/^·\s*/, "")}</span>` : ""}
+      ${it.podcast ? `<span class="ep-podcast-meta">${esc(it.podcast)}</span>` : ""}
+      ${it.has_article ? `<span class="ok ep-article-ready">✓ 有文章</span>` : `<span class="ep-article-missing">无文章</span>`}
+      ${pv.chars ? `<span class="ep-char-count">${pv.chars} 字</span>` : ""}
+      ${cost ? `<span class="ep-cost" title="这一集累计消耗">${cost.trim().replace(/^·\s*/, "")}</span>` : ""}
     </div>
   </div>`;
 }
@@ -2476,11 +2600,15 @@ async function openEpisode(dirEnc) {
  *   route:   是否把这次打开写进地址栏（从地址栏进来的那次不能再写，否则后退会失灵）
  */
 async function showArticle(dir, opts) {
+  const version = ++articleLoadVersion;
+  try {
   const o = opts || {};
   const fromLib = o.fromLib !== false, route = o.route !== false;
   const dirEnc = encodeURIComponent(dir);
   const metaResp = await fetch(`/api/file/${dirEnc}/meta.json`);
+  if (version !== articleLoadVersion) return;
   if (!metaResp.ok) {
+    if (metaResp.status !== 404) throw new Error("文章暂时无法读取，请重试。");
     // 记录已经不在了（在别处删掉、或地址栏是个旧链接）：别把用户留在空白页上
     toast("⚠ 这篇的记录已经不在本地了");
     if ($("result").classList.contains("show")) closeResult({ keepRoute: true });
@@ -2488,19 +2616,24 @@ async function showArticle(dir, opts) {
     return;
   }
   const meta = await metaResp.json();
-  curWorkdir = dir; curUrl = meta.url || null;
+  if (version !== articleLoadVersion) return;
   $("result").dataset.fromLib = fromLib ? "1" : "";   // 关闭时回到历史库而不是回到输入框
   const artResp = await fetch(`/api/file/${dirEnc}/article.md`);
+  if (version !== articleLoadVersion) return;
   if (!artResp.ok) {
+    if (artResp.status !== 404) throw new Error("文章暂时无法读取，请重试。");
     $("rmeta").innerHTML = `<span class="pod">${esc(meta.podcast || "")}</span><span>${esc(meta.title || "")}</span>`;
     $("article").innerHTML = `<p style="color:var(--dim)">该单集还没有生成文章。</p>`;
     const tResp = await fetch(`/api/file/${dirEnc}/transcript.txt`);
-    $("transcript").innerHTML = renderTranscript(await tResp.text()); $("transcript").dataset.loaded = "1";
+    const text = tResp.ok ? await tResp.text() : "暂无文字稿。";
+    if (version !== articleLoadVersion) return;
+    $("transcript").innerHTML = renderTranscript(text); $("transcript").dataset.loaded = "1";
     $("transcript").classList.add("show"); $("result").classList.add("withTranscript");
     $("tbtn").textContent = "收起文字稿";
     $("nbtn").disabled = true;
   } else {
     const { html } = await artResp.json();
+    if (version !== articleLoadVersion) return;
     $("rmeta").innerHTML =
       `<span class="pod">${esc(meta.podcast || "")}</span><span>${esc(meta.title || "")}</span>` +
       (meta.duration ? `<span>${humanDur(meta.duration)}</span>` : "");
@@ -2510,6 +2643,7 @@ async function showArticle(dir, opts) {
     $("tbtn").textContent = "查看文字稿";
     $("nbtn").disabled = false;
   }
+  curWorkdir = dir; curUrl = meta.url || null;
   openReader();
   if (route) pushRoute(dir);
   // 打开即从「未读」推进到「在读」，并把这一集的累计花费显示出来
@@ -2533,6 +2667,9 @@ async function showArticle(dir, opts) {
   }
   ttsChunkIdx = 0;
   syncTts(false);
+  } catch (error) {
+    if (version === articleLoadVersion) toast("⚠ " + esc(error.message || "文章暂时无法读取，请重试。"));
+  }
 }
 
 // 注：输入框的 Enter / input 处理统一放在文件末尾的初始化段（见 autoGrow 的注释）
@@ -2732,7 +2869,7 @@ async function copyArticle() {
 }
 
 /* ---------------- 全文检索 ---------------- */
-let searchQuery = "", searchTimer = null;
+let searchQuery = "", searchTimer = null, searchVersion = 0;
 
 function onSearchInput() {
   const v = $("q").value.trim();
@@ -2743,13 +2880,20 @@ function onSearchInput() {
 }
 
 async function runSearch(q) {
+  const version = ++searchVersion;
   searchQuery = q;
   showView("lib");
-  const d = await (await fetch("/api/search?q=" + encodeURIComponent(q))).json();
-  renderSearch(d);
+  try {
+    const d = await requestJSON("/api/search?q=" + encodeURIComponent(q));
+    if (version === searchVersion && searchQuery === q) renderSearch(d);
+  } catch (error) {
+    if (version === searchVersion) toast("⚠ " + esc(error.message));
+  }
 }
 
 function clearSearch(keepFilter) {
+  ++searchVersion;
+  clearTimeout(searchTimer);
   searchQuery = "";
   $("q").value = "";
   $("q").parentElement.classList.remove("has-text");
@@ -2803,7 +2947,7 @@ let queueState = null;
 
 async function loadQueue() {
   try {
-    renderQueueView(await (await fetch("/api/queue")).json());
+    renderQueueView(await requestJSON("/api/queue"));
   } catch (e) { /* 服务暂时不可用时不打断界面 */ }
 }
 
@@ -2837,31 +2981,38 @@ function queueRowHTML(it) {
 }
 
 async function queueRun() {
+  try {
   const resp = await fetch("/api/queue/run", { method: "POST" });
   const d = await resp.json();
-  if (!resp.ok) { await loadQueue(); return; }   // 有任务在跑 / 队列空，都不算错误
+  if (!resp.ok) { if (resp.status !== 409) toast("⚠ " + esc(d.message || d.error || "队列启动失败")); await loadQueue(); return; }
   if (d.job_id) beginJob(d.job_id);
   loadQueue();
+  } catch (error) { toast("⚠ " + esc(error.message || "连接失败，请重试")); }
 }
 
 async function queueRemove(id) {
-  await fetch("/api/queue/" + encodeURIComponent(id), { method: "DELETE" });
-  loadQueue();
+  try {
+    renderQueueView(await requestJSON("/api/queue/" + encodeURIComponent(id), { method: "DELETE" }));
+  } catch (error) { toast("⚠ " + esc(error.message)); }
 }
 
 async function queueMove(id, delta) {
-  await fetch(`/api/queue/${encodeURIComponent(id)}/move`, {
+  try {
+  const d = await requestJSON(`/api/queue/${encodeURIComponent(id)}/move`, {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ delta }),
   });
-  loadQueue();
+  renderQueueView(d.queue);
+  } catch (error) { toast("⚠ " + esc(error.message)); }
 }
 
 async function queueRetry() {
-  const d = await (await fetch("/api/queue/retry", { method: "POST" })).json();
+  try {
+  const d = await requestJSON("/api/queue/retry", { method: "POST" });
   renderQueueView(d.queue);
   toast(d.retried ? `✦ ${d.retried} 条失败的已重新排队` : "没有失败的条目");
   if (d.retried) queueRun();
+  } catch (error) { toast("⚠ " + esc(error.message)); }
 }
 
 function queueClear(keepFailed) {
@@ -2872,12 +3023,14 @@ function queueClear(keepFailed) {
     danger: true,
     okText: "清空",
     onOk: async () => {
-      const d = await (await fetch("/api/queue/clear", {
+      try {
+      const d = await requestJSON("/api/queue/clear", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ keep_failed: !!keepFailed }),
-      })).json();
+      });
       renderQueueView(d.queue);
       toast(d.removed ? `✦ 已清掉 ${d.removed} 条` : "没有可清理的条目");
+      } catch (error) { toast("⚠ " + esc(error.message)); }
     },
   });
 }
@@ -3030,6 +3183,7 @@ let assistThread = "";            // 当前会话 id（同一段选文内持续�
 let assistTurns = [];             // [{role:"user"|"assistant", content}]，发给后端做上下文
 let assistEnabled = true;
 let assistBusy = false;
+let assistRestoreVersion = 0, assistConversationVersion = 0, assistPollTimer = null;
 
 function fabShouldShow() {
   // 有文章在读、设置里没关掉助手、且抽屉没开着时才出现。
@@ -3058,14 +3212,17 @@ function openAssist(preset) {
   assistDir = curWorkdir;
   el.classList.add("show");
   syncFab();
-  if (preset && preset.selection !== undefined) setAssistSelection(preset.selection || "");
-  restoreAssistThread();                 // 恢复上次的对话（同一集、同一段选文）
+  const selection = String(preset?.selection || "").trim();
+  const changedSelection = selection && selection !== assistSelection;
+  if (changedSelection) startAssistThread(selection);
+  else if (preset && preset.selection !== undefined && !$("amessages").children.length) setAssistSelection(selection);
+  if (!changedSelection && !assistBusy && !$("amessages").children.length) restoreAssistThread();
   setTimeout(() => $("aq").focus(), 60);
 }
 
 function closeAssist() {
   assistOpen = false;
-  stopAssistStream();
+  ++assistRestoreVersion;
   $("assist").classList.remove("show");
   syncFab();
 }
@@ -3085,6 +3242,8 @@ function setAssistSelection(text) {
 
 /** 开一段新对话：清空消息流与上下文 */
 function startAssistThread(selection, opts = {}) {
+  ++assistRestoreVersion;
+  ++assistConversationVersion;
   stopAssistStream();
   assistThread = "";
   assistTurns = [];
@@ -3106,11 +3265,15 @@ function newAssistThread() {
 /** 界面重开时把上次那段对话恢复出来 */
 async function restoreAssistThread() {
   if (!curWorkdir) return;
+  const version = ++assistRestoreVersion, dir = curWorkdir;
+  const isCurrent = () => version === assistRestoreVersion && dir === curWorkdir && assistOpen && !assistBusy;
   try {
-    const d = await (await fetch("/api/qa?dir=" + encodeURIComponent(curWorkdir))).json();
+    const d = await (await fetch("/api/qa?dir=" + encodeURIComponent(dir))).json();
+    if (!isCurrent()) return;
     const thread = d.last_thread || "";
     if (!thread) { startAssistThread(assistSelection); return; }
-    const t = await (await fetch(`/api/qa?dir=${encodeURIComponent(curWorkdir)}&thread=${encodeURIComponent(thread)}`)).json();
+    const t = await (await fetch(`/api/qa?dir=${encodeURIComponent(dir)}&thread=${encodeURIComponent(thread)}`)).json();
+    if (!isCurrent()) return;
     const turns = t.turns || [];
     if (!turns.length) { startAssistThread(assistSelection); return; }
     assistThread = thread;
@@ -3124,7 +3287,7 @@ async function restoreAssistThread() {
       assistTurns.push({ role: "assistant", content: turn.answer || "" });
     }
     scrollAssist();
-  } catch (e) { startAssistThread(assistSelection); }
+  } catch (e) { if (isCurrent()) startAssistThread(assistSelection); }
 }
 
 /** 用户在文章/文字稿里选中的文字（只认正文区域，避免把界面文字也带走） */
@@ -3341,6 +3504,8 @@ async function askAI() {
     $("aq").focus();
     return;
   }
+  ++assistRestoreVersion;
+  const conversationVersion = assistConversationVersion;
   assistDir = curWorkdir;
   assistSelection = selection;
   appendUserBubble(assistTurns.length ? "" : selection, question || "（就这段展开讲讲）");
@@ -3367,10 +3532,12 @@ async function askAI() {
       body: JSON.stringify(payload),
     });
     const d = await resp.json();
+    if (conversationVersion !== assistConversationVersion || curWorkdir !== payload.dir) return;
     if (!resp.ok) throw new Error(d.error || "提问失败");
     assistAskId = d.id;
     connectAssistStream(d.id, bubble, question, selection);
   } catch (e) {
+    if (conversationVersion !== assistConversationVersion || curWorkdir !== payload.dir) return;
     bubble.querySelector(".aanswer").classList.remove("streaming", "pending");
     bubble.querySelector(".aanswer").innerHTML = `<p class="aerr">✕ ${esc(String(e.message || e))}</p>`;
     assistBusy = false; $("agobtn").disabled = false;
@@ -3381,10 +3548,12 @@ let assistStreamBubble = null;
 
 function connectAssistStream(id, bubble, question, selection) {
   stopAssistStream();
+  const version = assistConversationVersion;
   const view = bubble.querySelector(".aanswer");
   let text = "";
   let sources = null;
   const seen = (t) => {
+    if (version !== assistConversationVersion) return;
     text += t;
     view.classList.remove("pending");
     const split = splitTags(text);
@@ -3394,6 +3563,7 @@ function connectAssistStream(id, bubble, question, selection) {
     scrollAssist();
   };
   const finish = (d) => {
+    if (version !== assistConversationVersion) return;
     assistBusy = false;
     $("agobtn").disabled = false;
     view.classList.remove("streaming", "pending");
@@ -3418,11 +3588,12 @@ function connectAssistStream(id, bubble, question, selection) {
     assistES = new EventSource("/api/ask/" + encodeURIComponent(id) + "/stream");
     assistES.addEventListener("sources", (e) => { sources = JSON.parse(e.data); });
     assistES.addEventListener("delta", (e) => seen(JSON.parse(e.data).text || ""));
-    assistES.addEventListener("done", (e) => { stopAssistStream(); finish(JSON.parse(e.data)); });
+    assistES.addEventListener("done", (e) => { if (version !== assistConversationVersion) return; stopAssistStream(); finish(JSON.parse(e.data)); });
     assistES.addEventListener("error", (e) => {
+      if (version !== assistConversationVersion) return;
       if (e && e.data) { stopAssistStream(); finish(Object.assign({ error: "提问失败" }, JSON.parse(e.data))); }
     });
-    assistES.onerror = () => { if (assistES) { stopAssistStream(); pollAssist(id, text, finish, seen); } };
+    assistES.onerror = () => { if (version === assistConversationVersion && assistES) { stopAssistStream(); pollAssist(id, text, finish, seen); } };
   } else {
     pollAssist(id, text, finish, seen);
   }
@@ -3431,9 +3602,12 @@ function connectAssistStream(id, bubble, question, selection) {
 /** SSE 不可用时的兜底：轮询同一个提问任务，增量靠已渲染文本的长度推算 */
 function pollAssist(id, text, finish, onDelta) {
   let shown = text.length;
+  const version = assistConversationVersion;
   const timer = setInterval(async () => {
+    if (version !== assistConversationVersion) { clearInterval(timer); return; }
     try {
       const d = await (await fetch("/api/ask/" + encodeURIComponent(id))).json();
+      if (version !== assistConversationVersion) { clearInterval(timer); return; }
       const full = d.answer || "";
       if (full.length > shown) { onDelta(full.slice(shown)); shown = full.length; }
       if (d.status !== "running") { clearInterval(timer); finish(d); }
@@ -3442,10 +3616,12 @@ function pollAssist(id, text, finish, onDelta) {
       finish({ answer: text, error: String(e) });
     }
   }, 900);
+  assistPollTimer = timer;
 }
 
 function stopAssistStream() {
   if (assistES) { assistES.close(); assistES = null; }
+  if (assistPollTimer) { clearInterval(assistPollTimer); assistPollTimer = null; }
 }
 
 /** 极简 markdown → HTML（会话里够用：段落 / 粗体 / 行内码 / 引用 / 列表 / 链接 / 时间戳） */
@@ -3531,6 +3707,14 @@ async function testSearchService(btn) {
 /* ---------------- 账号会话 ---------------- */
 let currentAccount = null;
 let redirectingAfterAuthFailure = false;
+let appReady = false, appInitializing = false;
+
+function showConnectionError(message) {
+  const box = $("app-error");
+  if (!box) return;
+  $("app-error-message").textContent = message;
+  box.hidden = false;
+}
 
 function clearLocalAppState() {
   try { localStorage.clear(); } catch (_) {}
@@ -3599,6 +3783,7 @@ function resetInviteView(force = false) {
   $("invite-url").value = "";
   $("invite-expiry").textContent = "";
   $("invite-error").textContent = "";
+  if ($("invite-options")) $("invite-options").open = false;
 }
 
 function initAccountControls() {
@@ -3698,14 +3883,21 @@ function initAccountControls() {
 }
 
 async function initializeAuthenticatedApp() {
+  if (appInitializing) return;
+  appInitializing = true;
+  try {
   let response;
   try { response = await fetch("/api/auth/me", { credentials: "same-origin" }); }
-  catch (_) { return expireSession(); }
-  if (!response.ok) return expireSession();
+  catch (_) { showConnectionError("连接暂时中断，请重新连接。"); return; }
+  if (response.status === 401) return expireSession();
+  if (!response.ok) { showConnectionError("服务暂时不可用，请重新连接。"); return; }
   const identity = await response.json();
   if (!identity.authenticated) return expireSession();
+  if ($("app-error")) $("app-error").hidden = true;
+  if (appReady) { await loadLibrary(); return; }
   renderAccount(identity);
   initAccountControls();
+  appReady = true;
 
   const nativeFetch = window.fetch.bind(window);
   window.fetch = async (input, init = {}) => {
@@ -3720,7 +3912,7 @@ async function initializeAuthenticatedApp() {
     if (unsafeMethod && sameOrigin) {
       const headers = new Headers(init.headers || input?.headers || undefined);
       if (!headers.has("X-CSRF-Token")) {
-        const csrfResponse = await nativeFetch("/api/auth/csrf", { credentials: "same-origin" });
+        const csrfResponse = await nativeFetch("/api/auth/csrf", { credentials: "same-origin", signal:init.signal });
         if (!csrfResponse.ok) {
           if (csrfResponse.status === 401) expireSession();
           return csrfResponse;
@@ -3732,21 +3924,36 @@ async function initializeAuthenticatedApp() {
       }
     }
 
-    const result = await nativeFetch(input, requestInit);
-    if (result.status === 401 && requestUrl.includes("/api/") && !requestUrl.includes("/api/auth/me")) expireSession();
+    let result = await nativeFetch(input, requestInit);
+    if (sameOrigin && unsafeMethod && result.status === 403 && typeof result.clone === "function") {
+      const failure = await result.clone().json().catch(() => ({}));
+      if (failure.error === "csrf_failed") {
+        const refresh = await nativeFetch("/api/auth/csrf", {credentials:"same-origin", signal:init.signal});
+        if (refresh.ok) {
+          const token = await refresh.json();
+          if (token.csrf_token) {
+            const headers = new Headers(requestInit.headers || input?.headers);
+            headers.set("X-CSRF-Token", token.csrf_token);
+            result = await nativeFetch(input, {...requestInit, headers});
+          }
+        }
+      }
+    }
+    if (sameOrigin && result.status === 401 && requestUrl.includes("/api/") && !requestUrl.includes("/api/auth/me")) expireSession();
     return result;
   };
 
   loadServerConfig();
   loadLibrary().then(() => { if (routeDir()) applyRoute(); });
   if (identity.role === "admin") loadMcp();
-  loadSettings(); loadQueue(); loadFeeds(); pollCurrentJob();
+  loadSettings().catch(error => toast("⚠ " + esc(error.message))); loadQueue(); loadFeeds(); pollCurrentJob();
   updateComposerHint(); autoGrow(); syncFab();
   $("result").addEventListener("scroll", updateReadProgress, { passive: true });
   window.addEventListener("resize", updateReadProgress);
   window.addEventListener("resize", renderUsagePill);
   window.addEventListener("hashchange", applyRoute); window.addEventListener("popstate", applyRoute);
   $("aq").addEventListener("input", () => {
+    ++assistRestoreVersion;
     const el = $("aq"); el.style.height = "auto"; el.style.height = Math.min(el.scrollHeight, 110) + "px";
   });
   $("aq").addEventListener("keydown", (event) => {
@@ -3754,6 +3961,8 @@ async function initializeAuthenticatedApp() {
   });
   setInterval(() => { if (activeView === "queue") loadQueue(); }, 5000);
   setInterval(() => loadLibrary(), 30000);
+  } catch (_) { showConnectionError("页面加载未完成，请重新连接。"); }
+  finally { appInitializing = false; }
 }
 
 /* ---------------- 初始化 ---------------- */
@@ -3761,8 +3970,8 @@ async function initializeAuthenticatedApp() {
 // 一次粘多条链接会被粘成一条（实测被 UI 测试抓到），所以必须用多行控件。
 $("url").addEventListener("input", () => { updateComposerHint(); autoGrow(); });
 $("url").addEventListener("keydown", (e) => {
-  // Enter 和按钮走同一条路：有链接就生成文章，是问题就问你的库（Shift+Enter 才换行）
-  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); goSubmit(); }
+  // 普通 Enter 用于换行，快捷键与界面说明保持一致。
+  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); goSubmit(); }
 });
 $("q").addEventListener("input", onSearchInput);
 $("q").addEventListener("keydown", (e) => {
@@ -3781,3 +3990,13 @@ async function pollCurrentJob() {
 }
 
 initializeAuthenticatedApp();
+if (window.ResizeObserver) {
+  const footer = document.querySelector('.afoot');
+  new ResizeObserver(() => {
+    const height = footer.getBoundingClientRect().height;
+    if (height > 0) document.body.style.setProperty('--assistant-footer-height', height + 'px');
+  }).observe(footer);
+}
+window.addEventListener("beforeunload", event => {
+  if ($("savebar").classList.contains("dirty")) { event.preventDefault(); event.returnValue = ""; }
+});

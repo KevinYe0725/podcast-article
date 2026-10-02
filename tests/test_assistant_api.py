@@ -268,9 +268,10 @@ def test_search_service_test_reports_failure_without_500(client, monkeypatch):
 def test_settings_exposes_assistant_defaults(client):
     d = client.get("/api/settings").get_json()
     assert "assistant" in d, "设置里应带上 assistant 段"
-    assert set(d["assistant"]) == {"enabled", "web_default", "length_mode"}, \
+    assert set(d["assistant"]) == {"enabled", "web_default", "length_mode", "search_provider"}, \
         f"实际 {d['assistant']}"
     assert d["assistant"]["length_mode"] == "concise", "回答篇幅默认应是简洁档"
+    assert d["assistant"]["search_provider"] == "default"
 
 
 def test_settings_saves_assistant_section(client):

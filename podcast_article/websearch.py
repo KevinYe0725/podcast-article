@@ -1137,6 +1137,8 @@ def search(query: str, *, limit: int = 6, provider: str | None = None,
     if want not in PROVIDERS:
         want = forced if (forced and avail["providers"][forced]["configured"]) else avail["default"]
     elif want in KEYED and not avail["providers"][want]["configured"]:
+        if provider:
+            return _failure(query, want, [want], [f"未配置 {KEY_ENV[want]}，请在 API 服务中保存密钥"])
         want = avail["default"]
 
     attempted: list[str] = []
