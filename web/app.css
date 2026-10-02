@@ -1482,3 +1482,461 @@ body.assistopen .fab { display: none; }
   .invite-ticket-head { flex-direction: column; align-items: flex-start; gap: 6px; }
 }
 @media(prefers-reduced-motion:reduce){.invite-field{transition:none}}
+
+/* ==================================================================
+   移动端精简层（不改变桌面布局）
+   这些覆盖集中在文件末尾，便于和主页面新增的移动入口一起演进。
+   ================================================================== */
+
+/* 顶栏动作组：手机上把用量胶囊换成紧凑的搜索入口。 */
+.topbar-actions { display: flex; align-items: center; gap: 10px; min-width: 0; }
+#mobile-search { display: none; }
+
+/* 设置页在手机上用一个分类选择器代替高度很大的卡片导航。 */
+#settings-section { display: none; }
+
+/* 阅读工具条在桌面上保持原来的扁平布局；details 的内容继续参与原有 flex 排版。 */
+.reader-more { display: contents; }
+.reader-more > summary { display: none; }
+.reader-more-body { display: contents; }
+.reader-more[hidden] { display: none !important; }
+
+/* 让浮层内容不被新工具条容器裁切。 */
+.reader-more, .reader-more-body, .reader-more-body .menuwrap { overflow: visible; }
+
+/* 打开抽屉或助手时，触摸滚动只留在当前层里。 */
+body.sideopen, body.assistopen { overflow: hidden; }
+
+@media (max-width: 900px) {
+  /* 刘海屏顶部安全区：抽屉、顶栏和阅读页各自承担自己的顶部间距。 */
+  .appside {
+    padding-top: calc(18px + env(safe-area-inset-top));
+  }
+  .topbar {
+    padding-top: calc(16px + env(safe-area-inset-top));
+  }
+  .rdtop {
+    height: calc(58px + env(safe-area-inset-top));
+    padding-top: env(safe-area-inset-top);
+  }
+  .assist {
+    top: var(--pa-viewport-top, 0px);
+    bottom: auto;
+    height: var(--pa-viewport-height, 100dvh);
+    max-height: 100dvh;
+  }
+  .assist .ahead {
+    padding-top: calc(14px + env(safe-area-inset-top));
+  }
+  .afoot {
+    padding-bottom: calc(13px + env(safe-area-inset-bottom));
+  }
+
+  /* 视觉尺寸仍然克制，实际触控区域统一接近 44pt。 */
+  .iconbtn, .iconbtn.small, .sidehide,
+  .qclear, .ctool, .pclose, .pmini,
+  .settings-nav .tab, .settings-nav-advanced summary,
+  .settings-advanced > summary, .popmenu .mi, .mchip,
+  .quicktabs button, .ttslink {
+    min-width: 44px;
+    min-height: 44px;
+  }
+  .btn, .btn.mini, .ttsplay, .ttsspeed { min-height: 44px; }
+  .ttsplay { min-width: 44px; }
+  .iconbtn.small svg { width: 16px; height: 16px; }
+  .ctool { width: 44px; height: 44px; }
+  .ep:not(.hascover) .t { padding-right: 96px; }
+  .popmenu .mi { height: auto; }
+  .settings-nav-advanced summary { padding-block: 9px; }
+  .settings-advanced > summary { padding-block: 10px; }
+
+  /* 播放条保留细进度线，但把可拖动区域扩大。 */
+  .pbar, .ttsprog {
+    position: relative;
+    height: 32px;
+    background: transparent;
+  }
+  .pbar::before, .ttsprog::before {
+    content: "";
+    position: absolute; left: 0; right: 0; top: 14px;
+    height: 4px; border-radius: 99px; background: var(--border);
+  }
+  .pbar i, .ttsprog i {
+    position: absolute; left: 0; top: 14px; height: 4px;
+  }
+
+  .player {
+    width: calc(100vw - 24px);
+    bottom: calc(20px + env(safe-area-inset-bottom) + var(--pa-keyboard-height, 0px));
+    gap: 7px;
+    padding: 8px 10px;
+  }
+  body.assistopen .player {
+    bottom: calc(var(--assistant-footer-height, 120px) + 12px + env(safe-area-inset-bottom) + var(--pa-keyboard-height, 0px));
+  }
+  .pbtn { width: 44px; height: 44px; }
+  .pclose { width: 44px; padding-inline: 0; }
+  .pmini { max-width: 76px; padding-inline: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* 短屏弹窗可滚动，键盘出现时按钮仍然可见。 */
+  .modal {
+    top: var(--pa-viewport-top, 0px);
+    bottom: auto;
+    height: var(--pa-viewport-height, 100dvh);
+    max-height: 100dvh;
+    overflow-y: auto;
+    align-items: flex-start;
+    padding: calc(16px + env(safe-area-inset-top))
+      calc(16px + env(safe-area-inset-right))
+      calc(16px + env(safe-area-inset-bottom))
+      calc(16px + env(safe-area-inset-left));
+  }
+  .modalcard {
+    max-height: calc(100dvh - 32px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+    max-height: calc(var(--pa-viewport-height, 100dvh) - 32px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+    overflow-y: auto;
+    margin: auto 0;
+  }
+  .savebar {
+    padding-bottom: calc(12px + env(safe-area-inset-bottom));
+  }
+
+  /* 多链接输入最多长到六行，超过后可以在框内检查和修改。 */
+  .composer #url { overflow-y: auto; }
+}
+
+@media (max-width: 700px) {
+  #settings-section { display: block; margin-bottom: 10px; }
+  #settings-section select, select#settings-section {
+    display: block;
+    width: 100%; min-height: 44px; padding: 9px 12px;
+    border: 1px solid var(--border2); border-radius: 10px;
+    background: #fff; color: var(--text); font: 16px var(--font);
+  }
+  .settings-nav { display: none; }
+}
+
+@media (max-width: 600px) {
+  /* 手机顶栏只保留一个小型搜索入口，避免累计用量挤压品牌和设置按钮。 */
+  .usagepill { display: none; }
+  #mobile-search { display: inline-flex; align-items: center; justify-content: center; }
+  .topbar-actions { gap: 7px; }
+  .topbar { margin-bottom: 18px; }
+  #lib { margin-top: 24px; }
+
+  /* 首页选项保持一行：篇幅可收缩，更多选项单独保留。 */
+  .composer .opts { flex-wrap: nowrap; min-width: 0; overflow: visible; }
+  .composer .opts > .chip { flex: 1 1 0; min-width: 0; overflow: hidden; }
+  .composer .opts > .chip:first-child { max-width: calc(100% - 96px); }
+  .composer .chip select { min-width: 0; max-width: 100%; text-overflow: ellipsis; }
+  .composer .moreopts { flex: 0 0 auto; }
+  .composer .moreopts > summary { min-height: 44px; padding-inline: 11px; }
+  .composer .moreopts[open] { flex: 0 0 100%; width: 100%; }
+  .composer .moreopts[open] .morebody { width: 100%; }
+  .composer .opts:has(.moreopts[open]) { flex-wrap: wrap; }
+
+  /* 卡片首屏先给封面、标题和状态，次要要点在文章内阅读。 */
+  .ep .deck { -webkit-line-clamp: 2; }
+  .ep .tk { display: none; }
+
+  /* 阅读页：前两个动作直达，其他动作收进“更多”。 */
+  .rdtools .btnrow {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    align-items: start;
+  }
+  .rdtools .btnrow > .btn,
+  .rdtools .btnrow > .reader-more { min-width: 0; }
+  .reader-more {
+    display: block;
+    grid-column: auto;
+    position: relative;
+    min-width: 0;
+  }
+  .reader-more > summary {
+    display: flex; align-items: center; justify-content: center; gap: 6px;
+    min-height: 44px; padding: 8px; border: 1px solid var(--border2);
+    border-radius: 999px; background: #fff; color: var(--text);
+    font-size: 13px; cursor: pointer; list-style: none;
+  }
+  .reader-more > summary::-webkit-details-marker { display: none; }
+  .reader-more > summary::after { content: "▾"; color: var(--dim); font-size: 11px; }
+  .reader-more[open] > summary::after { transform: rotate(180deg); }
+  .reader-more-body {
+    display: none;
+    position: absolute;
+    top: calc(100% + 8px);
+    right: 0;
+    z-index: 80;
+    width: min(358px, calc(100vw - 32px));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px; margin-top: 0; padding: 8px;
+    border: 1px solid var(--border); border-radius: 12px; background: var(--bg2);
+    box-shadow: 0 12px 30px rgba(0,0,0,.12);
+  }
+  .reader-more[open] .reader-more-body { display: grid; }
+  .reader-more-body .pubrow {
+    grid-column: 1 / -1; min-width: 0; display: flex; flex-wrap: wrap;
+  }
+  .reader-more-body .pubrow .sel { flex: 1 1 150px; min-width: 0; max-width: none; }
+  .reader-more-body .pubrow .btn { flex: 0 0 auto; }
+  .reader-more-body > .btn,
+  .reader-more-body > .menuwrap,
+  .reader-more-body .menuwrap > .btn { width: 100%; min-width: 0; }
+  .reader-more-body > .btn,
+  .reader-more-body .menuwrap > .btn { min-height: 44px; justify-content: center; padding-inline: 8px; font-size: 13px; white-space: normal; }
+  .reader-more-body .popmenu {
+    z-index: 90; max-width: calc(100vw - 48px); min-width: 0; white-space: normal;
+  }
+
+  /* 320px 仍保留后退 / 前进 15 秒，缩窄按钮以保证整条播放控件不溢出。 */
+  .player .pinfo { min-width: 0; }
+  .pmini { display: inline-flex; width: 52px; max-width: 52px; padding-inline: 4px; justify-content: center; font-size: 10px; }
+
+  /* 白色封面上操作按钮保持轻量，但必须一眼可见。 */
+  .ep .cardtools { opacity: .82; }
+  .ep .cardtools .ctool { background: rgba(255,255,255,.94); }
+}
+
+@media (max-width: 360px) {
+  .modalcard { padding-inline: 18px; }
+}
+
+@media (max-width: 600px) {
+  /* 两行播放器：上行给进度条完整宽度，下行保留四个核心触控按钮。 */
+  .player {
+    display: grid;
+    grid-template-columns: 44px 52px 52px 44px;
+    grid-template-rows: 32px 44px;
+    justify-content: space-between;
+    align-items: center;
+    column-gap: 7px;
+    row-gap: 2px;
+    min-height: 96px;
+  }
+  .player > .pinfo {
+    grid-column: 1 / -1;
+    grid-row: 1;
+    width: 100%;
+    min-width: 0;
+  }
+  .player .ptitle { display: none; }
+  .player .prow { width: 100%; min-width: 0; height: 32px; }
+  .player .pbar { min-width: 0; }
+  .player > .pbtn { grid-column: 1; grid-row: 2; }
+  .player > .pmini:nth-of-type(2) { grid-column: 2; grid-row: 2; }
+  .player > .pmini:nth-of-type(3) { grid-column: 3; grid-row: 2; }
+  .player > .pclose { grid-column: 4; grid-row: 2; }
+  .player > #paudio { display: none; }
+}
+
+@media (max-width: 900px) {
+  /* 播放器变高后，悬浮助手和助手正文跟着让出同样的空间。 */
+  body.withplayer .fab {
+    bottom: calc(20px + env(safe-area-inset-bottom) + var(--pa-player-height, 98px) + 12px);
+  }
+  body.assistopen.withplayer .abody {
+    padding-bottom: calc(var(--pa-player-height, 98px) + 24px);
+  }
+}
+
+/* 桌面发布目标在阅读工具中继续排在最前；display:contents 会把它还原为原有 flex 项。 */
+.reader-more-body > .pubrow { order: -1; }
+
+/* JS 使用 getBoundingClientRect() 给选区按钮写入视口坐标，因此必须固定在视口上。 */
+.selbtn { position: fixed; }
+
+/* ==================================================================
+   Mobile liquid glass layer
+   只在移动端启用，正文和文章卡片继续使用实白底，保证阅读清晰。
+   ================================================================== */
+@media (max-width: 900px) {
+  :root {
+    --mobile-glass: linear-gradient(135deg, rgba(255,255,255,.86), rgba(244,248,252,.70));
+    --mobile-glass-soft: rgba(255,255,255,.72);
+    --mobile-glass-border: rgba(255,255,255,.86);
+    --mobile-glass-shadow: 0 10px 28px rgba(31,43,60,.12), inset 0 1px 0 rgba(255,255,255,.92);
+  }
+
+  /* 冷灰底只负责衬出浮层；文章卡片和阅读正文仍是实白。 */
+  body { background: #f3f6f8; }
+  #result { background: #fff; }
+
+  /* 顶栏变成轻浮的玻璃胶囊，避开刘海并保留原有动作布局。 */
+  .topbar {
+    top: calc(env(safe-area-inset-top) + 4px);
+    margin: 8px 0 18px;
+    padding: calc(8px + env(safe-area-inset-top)) 10px 8px;
+    border: 1px solid var(--mobile-glass-border);
+    border-radius: 20px;
+    background: var(--mobile-glass);
+    box-shadow: var(--mobile-glass-shadow);
+    transition: background-color .22s ease, border-color .22s ease, box-shadow .22s ease, transform .22s ease;
+  }
+  .topbar:focus-within { border-color: rgba(16,163,127,.35); }
+  .topbar .iconbtn, .pmini, .pclose, .ctool { color: #48535a; }
+  .pmini { font-size: 12px; }
+  .account-trigger { min-width: 44px; min-height: 44px; justify-content: center; padding: 0; }
+  #go, #zipbtn, .catlabel { min-height: 44px; }
+
+  .appside {
+    background: var(--mobile-glass-soft);
+    border-color: var(--mobile-glass-border);
+    box-shadow: 10px 0 36px rgba(31,43,60,.14), inset -1px 0 0 rgba(255,255,255,.86);
+    transition: transform .22s cubic-bezier(.2,.8,.3,1), box-shadow .22s ease;
+  }
+
+  /* 阅读顶栏、播放器、助手和菜单共享同一套材质语言。 */
+  .rdtop,
+  .player,
+  .fab,
+  .assist,
+  .popmenu,
+  .reader-more > summary,
+  .reader-more-body,
+  .account-panel,
+  .modalcard {
+    border-color: var(--mobile-glass-border);
+    background: var(--mobile-glass);
+    box-shadow: var(--mobile-glass-shadow);
+  }
+  .rdtop {
+    transition: background-color .22s ease, box-shadow .22s ease;
+  }
+  .player {
+    box-shadow: 0 14px 38px rgba(31,43,60,.16), inset 0 1px 0 rgba(255,255,255,.94);
+  }
+  .fab {
+    transition: transform .16s ease, background-color .2s ease, box-shadow .2s ease, border-color .2s ease;
+  }
+  .assist {
+    box-shadow: -12px 0 36px rgba(31,43,60,.14), inset 1px 0 0 rgba(255,255,255,.86);
+  }
+  .assist .ahead,
+  .assist .afoot {
+    background: rgba(255,255,255,.56);
+    border-color: rgba(255,255,255,.72);
+  }
+  .popmenu,
+  .reader-more-body,
+  .modalcard {
+    box-shadow: 0 16px 36px rgba(31,43,60,.16), inset 0 1px 0 rgba(255,255,255,.94);
+  }
+  .popmenu .mi:hover,
+  .reader-more > summary:hover { background: rgba(255,255,255,.62); }
+
+  /* 玻璃表面只使用静态 blur；进入动效只变换透明度和位移。 */
+  .popmenu { animation: mobile-glass-drop .16s ease-out both; }
+  .reader-more[open] .reader-more-body { animation: mobile-glass-drop .16s ease-out both; }
+  .assist.show { animation: mobile-glass-slide .20s ease-out both; }
+
+  /* 触摸反馈克制且短，不依赖 hover 状态。 */
+  .iconbtn:active,
+  .btn:active,
+  .fab:active,
+  .pbtn:active,
+  .pmini:active,
+  .pclose:active,
+  .reader-more > summary:active { transform: scale(.975); }
+}
+
+@media (max-width: 600px) {
+  .reader-more-body { background: var(--mobile-glass); }
+  .modal { background: rgba(20,28,38,.28); }
+  .modalcard { backdrop-filter: blur(18px) saturate(145%); -webkit-backdrop-filter: blur(18px) saturate(145%); }
+}
+
+@supports (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px)) {
+  @media (max-width: 900px) {
+    .topbar,
+    .appside,
+    .rdtop,
+    .player,
+    .fab,
+    .assist,
+    .popmenu,
+    .reader-more > summary,
+    .reader-more-body,
+    .account-panel,
+    .modalcard {
+      backdrop-filter: blur(18px) saturate(145%);
+      -webkit-backdrop-filter: blur(18px) saturate(145%);
+    }
+  }
+}
+
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  @media (max-width: 900px) {
+    .topbar,
+    .appside,
+    .rdtop,
+    .player,
+    .fab,
+    .assist,
+    .popmenu,
+    .reader-more > summary,
+    .reader-more-body,
+    .account-panel,
+    .modalcard {
+      background: #fff;
+      box-shadow: 0 8px 24px rgba(31,43,60,.12);
+    }
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  @media (max-width: 900px) {
+    .topbar,
+    .appside,
+    .rdtop,
+    .player,
+    .fab,
+    .assist,
+    .popmenu,
+    .reader-more > summary,
+    .reader-more-body,
+    .account-panel,
+    .modalcard {
+      background: #fff;
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
+    }
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .topbar,
+  .appside,
+  .rdtop,
+  .player,
+  .fab,
+  .assist,
+  .popmenu,
+  .reader-more > summary,
+  .reader-more-body,
+  .modalcard,
+  .iconbtn,
+  .btn,
+  .pbtn,
+  .pmini,
+  .pclose {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+@keyframes mobile-glass-drop {
+  from { opacity: 0; transform: translateY(-4px) scale(.985); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes mobile-glass-slide {
+  from { opacity: .5; transform: translateX(18px); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (max-width: 360px) {
+  .topbar { gap: 6px; padding-inline: 8px; }
+  .topbar-actions { gap: 4px; }
+  .topbar .wordmark span { display: none; }
+}

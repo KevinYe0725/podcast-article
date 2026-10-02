@@ -1148,6 +1148,7 @@ async function pushArticle() {
 
 /* ---------------- 设置 ---------------- */
 async function openSettings(tab) {
+  closeSide({ restoreFocus: false });
   closeAssist();                 // 抽屉会盖住设置页
   // 阅读页是固定整屏的一层，盖在主界面之上；设置页在 #main 里，不先收掉阅读页就会
   // 「点了设置什么都不发生」。顺手把地址栏带回主页面。
@@ -1155,10 +1156,12 @@ async function openSettings(tab) {
   $("main").style.display = "none";
   $("settings").style.display = "block";
   window.scrollTo({ top: 0 });
+  if (window.innerWidth <= 900) $("settings-back").focus({ preventScroll: true });
   // 注：这里以前被误粘进了 showView() 的尾巴（用了未定义的 name），
   // 于是 openSettings() 一定抛错、设置页的页签也切不了。按本函数原本的样子恢复。
   try { if (!settingsLoaded) await loadSettings(); }
   catch (error) { toast("⚠ " + esc(error.message)); return; }
+  syncSettingsSection();
   if (tab) switchTab(tab);
   if (currentAccount?.role === "admin") loadMcp();
 }
@@ -1187,8 +1190,9 @@ function leaveSettings() {
 
 function switchTab(name) {
   if (name === "invites" && currentAccount?.role !== "admin") return;
-  if (name !== "invites") resetInviteView();
   const activeTab = document.querySelector(`.settings-nav .tab[data-tab="${name}"]`);
+  if (!activeTab || activeTab.hidden) return;
+  if (name !== "invites") resetInviteView();
   const group = activeTab?.closest(".settings-nav-group");
   if (group?.tagName === "DETAILS") group.open = true;
   const groupTitle = group?.querySelector(".settings-nav-label, summary")?.textContent.trim() || "设置";
@@ -1197,8 +1201,29 @@ function switchTab(name) {
   if ($("settings-pane-summary")) $("settings-pane-summary").textContent = activeTab?.dataset.summary || "";
   document.querySelectorAll(".tab").forEach((t) => t.setAttribute("data-active", String(t.dataset.tab === name)));
   document.querySelectorAll(".pane").forEach((p) => { p.style.display = p.id === "pane-" + name ? "block" : "none"; });
+  if ($("settings-section")) $("settings-section").value = name;
   if (name === "mcp") loadMcp();
   if (name === "memory") loadMemory();      // 切到记忆页就把列表拉出来（含用量）
+}
+
+function syncSettingsSection() {
+  const select = $("settings-section");
+  if (!select) return;
+  select.replaceChildren();
+  document.querySelectorAll(".settings-nav-group").forEach(group => {
+    const options = [...group.querySelectorAll(".tab")].filter(tab => !tab.hidden);
+    if (!options.length) return;
+    const optgroup = document.createElement("optgroup");
+    optgroup.label = group.querySelector(".settings-nav-label, summary").textContent.trim();
+    options.forEach(tab => {
+      const option = document.createElement("option");
+      option.value = tab.dataset.tab;
+      option.textContent = tab.textContent.trim();
+      optgroup.appendChild(option);
+    });
+    select.appendChild(optgroup);
+  });
+  select.value = document.querySelector('.settings-nav .tab[data-active="true"]')?.dataset.tab || "profile";
 }
 
 let settingsLoaded = false, settingsSnapshot = "", settingsSaving = false, settingsLoading = null;
@@ -1950,14 +1975,14 @@ function closeResult(opts) {
   resetAssist();
   $("selbtn").classList.remove("show");
   if ($("ttsbar")) { ttsStopAudio(); $("ttsbar").style.display = "none"; }
+  closePlayer();
   audioDir = null;
-  pa().pause();
   pa().removeAttribute("src");
   syncFab();
   // 阅读页是整屏浮层，关掉后主页面还停在原来那一屏：从库里点开的就回到那张卡片，
   // 从生成流程进来的就回到输入框。
   if (fromLib) $("lib").scrollIntoView({ behavior: "smooth", block: "start" });
-  else $("url").focus();
+  else if (window.innerWidth > 900) $("url").focus();
 }
 
 /* ---------------- 历史库：分类 + 阅读状态 + 拖拽投放 ---------------- */
@@ -2479,6 +2504,8 @@ function dropChipAt(x, y) {
 }
 
 function beginDrag(ev, dir, card) {
+  // 手机上滑动卡片用于浏览；分类通过卡片菜单完成，避免把滚动误判成拖拽。
+  if (ev.pointerType === "touch") return;
   if (ev.button !== undefined && ev.button !== 0) return;      // 只响应左键 / 触摸
   if (ev.target.closest(".kill, .fedit")) return;               // 点删除/编辑图标不算拖拽
   const sx = ev.clientX, sy = ev.clientY;
@@ -2566,6 +2593,7 @@ function openReader() {
   el.classList.add("show");
   document.body.classList.add("reading");   // 阅读页自己滚，底下的主页面别跟着动
   el.scrollTop = 0;
+  syncReaderTools();
   updateReadProgress();
 }
 
@@ -2691,11 +2719,13 @@ document.addEventListener("keydown", (e) => {
 // 选中文字 → 浮出「深挖这段」。用 mouseup/keyup 而不是 selectionchange：
 // selectionchange 在拖动过程中会连续触发，按钮会跟着乱抖。
 document.addEventListener("mouseup", onArticleSelectionChange);
+document.addEventListener("selectionchange", onArticleSelectionChange);
 document.addEventListener("keyup", (e) => { if (e.key.startsWith("Arrow") || e.key === "Shift") onArticleSelectionChange(); });
 document.addEventListener("mousedown", (e) => {
   if (!e.target.closest("#selbtn")) $("selbtn").classList.remove("show");
 });
 window.addEventListener("scroll", () => $("selbtn").classList.remove("show"), { passive: true });
+$("result").addEventListener("scroll", () => $("selbtn").classList.remove("show"), { passive: true });
 // 时间戳回听（只绑定一次）：文章/文字稿里的时间戳靠这里冒泡上来处理。
 // 搜索结果里的时间戳不用这条路（它在 .sr 卡片内部，冒泡会顺带打开文章），
 // 而是内联调用 playFromTs()，见 searchCardHTML。
@@ -2777,13 +2807,81 @@ function toggleSide() {
     document.body.appendChild(back);
   }
   back.classList.toggle("open", open);
+  syncSideState();
+  if (open) side.querySelector(".sidehide")?.focus({ preventScroll: true });
+  else $("mobile-menu")?.focus({ preventScroll: true });
 }
 
-function closeSide() {
+function closeSide(options = {}) {
+  const wasOpen = $("appside").classList.contains("open");
   $("appside").classList.remove("open");
   const back = document.querySelector(".sideback");
   if (back) back.classList.remove("open");
+  syncSideState();
+  if (wasOpen && options.restoreFocus !== false) $("mobile-menu")?.focus({ preventScroll: true });
 }
+
+function syncSideState() {
+  const side = $("appside"), narrow = window.innerWidth <= 900;
+  if (!narrow) side.classList.remove("open");
+  const open = narrow && side.classList.contains("open");
+  const assistantModal = narrow && $("assist").classList.contains("show");
+  document.body.classList.toggle("sideopen", open);
+  document.querySelector(".appmain").inert = open || assistantModal;
+  $("result").inert = assistantModal;
+  if (narrow && !open && side.contains(document.activeElement)) document.activeElement.blur();
+  side.inert = narrow && (!open || assistantModal);
+  if (narrow && !open) side.setAttribute("aria-hidden", "true");
+  else side.removeAttribute("aria-hidden");
+  $("mobile-menu")?.setAttribute("aria-expanded", String(open));
+  const back = document.querySelector(".sideback");
+  if (back) back.classList.toggle("open", open);
+  if (assistantModal) {
+    $("assist").setAttribute("role", "dialog");
+    $("assist").setAttribute("aria-labelledby", "assist-title");
+  } else {
+    $("assist").removeAttribute("role");
+    $("assist").removeAttribute("aria-labelledby");
+  }
+}
+
+function focusLibrarySearch() {
+  if (window.innerWidth <= 900 && !$("appside").classList.contains("open")) toggleSide();
+  $("q").focus({ preventScroll: true });
+}
+
+const readerToolBody = document.querySelector(".reader-more-body");
+const readerToolNodes = [...readerToolBody.children];
+let phoneToolsLayout = null;
+function syncReaderTools() {
+  const more = $("reader-more"), phone = window.innerWidth <= 600;
+  const toolbar = document.querySelector(".rdtools .btnrow");
+  if (phone) readerToolNodes.forEach(node => readerToolBody.appendChild(node));
+  else readerToolNodes.forEach(node => toolbar.insertBefore(node, node.classList.contains("pubrow") ? $("tbtn") : more));
+  more.hidden = !phone;
+  more.open = !phone;
+}
+
+function syncMobileViewport() {
+  const viewport = window.visualViewport;
+  const useViewport = viewport && (!viewport.scale || viewport.scale <= 1.05);
+  const height = useViewport ? viewport.height : window.innerHeight;
+  const top = useViewport ? viewport.offsetTop : 0;
+  const vars = document.documentElement.style;
+  vars.setProperty("--pa-viewport-height", Math.round(height) + "px");
+  vars.setProperty("--pa-viewport-top", Math.round(top) + "px");
+  vars.setProperty("--pa-keyboard-height", Math.round(Math.max(0, window.innerHeight - height - top)) + "px");
+  syncSideState();
+  const phone = window.innerWidth <= 600;
+  if (phone !== phoneToolsLayout) {
+    phoneToolsLayout = phone;
+    syncReaderTools();
+  }
+}
+syncMobileViewport();
+window.addEventListener("resize", syncMobileViewport);
+window.visualViewport?.addEventListener("resize", syncMobileViewport);
+window.visualViewport?.addEventListener("scroll", syncMobileViewport);
 
 /* ---------------- 下拉菜单（导出 / 状态）---------------- */
 function togglePopmenu(id, btn) {
@@ -2802,6 +2900,13 @@ function hidePopmenus() {
 function outsidePopmenu(e) {
   if (!e.target.closest(".popmenu") && !e.target.closest(".menuwrap")) hidePopmenus();
 }
+
+document.addEventListener("pointerdown", event => {
+  if (window.innerWidth <= 600 && $("reader-more").open && !event.target.closest("#reader-more")) {
+    $("reader-more").open = false;
+    hidePopmenus();
+  }
+});
 
 function toggleExportMenu(ev) { ev.stopPropagation(); togglePopmenu("exportmenu", ev.currentTarget); }
 
@@ -3184,6 +3289,7 @@ let assistTurns = [];             // [{role:"user"|"assistant", content}]，发�
 let assistEnabled = true;
 let assistBusy = false;
 let assistRestoreVersion = 0, assistConversationVersion = 0, assistPollTimer = null;
+let assistReturnFocus = null;
 
 function fabShouldShow() {
   // 有文章在读、设置里没关掉助手、且抽屉没开着时才出现。
@@ -3197,6 +3303,7 @@ function syncFab() {
   $("fab").classList.toggle("show", fabShouldShow());
   document.body.classList.toggle("assistopen", assistOpen);
   document.body.classList.toggle("withplayer", $("player").classList.contains("show"));
+  syncSideState();
 }
 
 function openAssist(preset) {
@@ -3209,6 +3316,7 @@ function openAssist(preset) {
     return;
   }
   assistOpen = true;
+  assistReturnFocus = document.activeElement;
   assistDir = curWorkdir;
   el.classList.add("show");
   syncFab();
@@ -3217,14 +3325,24 @@ function openAssist(preset) {
   if (changedSelection) startAssistThread(selection);
   else if (preset && preset.selection !== undefined && !$("amessages").children.length) setAssistSelection(selection);
   if (!changedSelection && !assistBusy && !$("amessages").children.length) restoreAssistThread();
-  setTimeout(() => $("aq").focus(), 60);
+  if (window.innerWidth > 900) setTimeout(() => { if (assistOpen) $("aq").focus(); }, 60);
+  else $("assist-close").focus({ preventScroll: true });
 }
 
 function closeAssist() {
+  const wasOpen = assistOpen;
   assistOpen = false;
   ++assistRestoreVersion;
   $("assist").classList.remove("show");
   syncFab();
+  if (wasOpen) {
+    const original = assistReturnFocus;
+    const target = original?.isConnected && original.matches("button, a[href], input, select, textarea, [tabindex]")
+      && original !== $("selbtn") && !original.closest("#assist, [inert]") && !original.inert
+      ? original : ($("fab").classList.contains("show") ? $("fab") : document.querySelector(".rdback"));
+    target?.focus({ preventScroll: true });
+  }
+  assistReturnFocus = null;
 }
 
 function toggleAssist() {
@@ -3321,8 +3439,8 @@ function positionSelBtn() {
   lastSelection = String(sel.toString() || "").trim().slice(0, 3000);
   if (!lastSelection) { btn.classList.remove("show"); return; }
   btn.classList.add("show");
-  const top = rect.top + window.scrollY - btn.offsetHeight - 8;
-  const left = rect.left + window.scrollX + rect.width / 2 - btn.offsetWidth / 2;
+  const top = rect.top - btn.offsetHeight - 8;
+  const left = rect.left + rect.width / 2 - btn.offsetWidth / 2;
   btn.style.top = Math.max(8, top) + "px";
   btn.style.left = Math.max(8, Math.min(left, window.innerWidth - btn.offsetWidth - 8)) + "px";
 }
@@ -3761,6 +3879,9 @@ function renderAccount(account) {
   [document.querySelector('[data-tab="invites"]'), document.querySelector('[data-tab="mcp"]'), $("pane-invites"), $("pane-mcp")]
     .filter(Boolean).forEach((node) => { node.hidden = !admin; });
   document.querySelectorAll('[data-tab="invites"], [data-tab="mcp"]').forEach((node) => { node.style.display = admin ? "" : "none"; });
+  syncSettingsSection();
+  const selected = document.querySelector('.settings-nav .tab[data-active="true"]');
+  if (selected?.hidden) switchTab("profile");
 }
 
 async function csrfPost(path, payload) {
@@ -3979,6 +4100,10 @@ $("q").addEventListener("keydown", (e) => {
   clearTimeout(searchTimer);
   const v = $("q").value.trim();
   if (v) runSearch(v); else clearSearch();
+  if (window.innerWidth <= 900) {
+    $("q").blur();
+    closeSide({ restoreFocus: false });
+  }
 });
 
 /** 页面刷新时如果后台还在跑，直接接上进度（不然用户会以为任务没了） */
@@ -3996,6 +4121,10 @@ if (window.ResizeObserver) {
     const height = footer.getBoundingClientRect().height;
     if (height > 0) document.body.style.setProperty('--assistant-footer-height', height + 'px');
   }).observe(footer);
+  new ResizeObserver(() => {
+    const height = $("player").getBoundingClientRect().height;
+    if (height > 0) document.body.style.setProperty('--pa-player-height', height + 'px');
+  }).observe($("player"));
 }
 window.addEventListener("beforeunload", event => {
   if ($("savebar").classList.contains("dirty")) { event.preventDefault(); event.returnValue = ""; }

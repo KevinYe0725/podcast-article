@@ -4,20 +4,20 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>podcast-article · 链接 → 深度文章</title>
-<link rel="stylesheet" href="/static/app.css?v=20261002-ux3">
+<link rel="stylesheet" href="/static/app.css?v=20261003-glass1">
 </head>
 <body>
 <div class="app">
   <aside class="appside" id="appside">
     <div class="appbrand" onclick="showView('lib');setCat('all')" title="回到文章库" style="cursor:pointer">podcast<span>-article</span>
-      <button class="iconbtn small sidehide" onclick="toggleSide()" title="收起侧边栏" aria-label="收起侧边栏">
+      <button class="iconbtn small sidehide" onclick="event.stopPropagation();toggleSide()" title="收起侧边栏" aria-label="收起侧边栏">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M15 6 9 12l6 6"></path></svg>
       </button>
     </div>
 
     <div class="searchbox">
       <svg class="sicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"></circle><path d="m16 16 4 4"></path></svg>
-      <input id="q" type="search" aria-label="搜索文章与文字稿" placeholder="搜索文章与文字稿…" autocomplete="off" spellcheck="false">
+      <input id="q" type="search" aria-label="搜索文章与文字稿" placeholder="搜索文章与文字稿…" autocomplete="off" spellcheck="false" enterkeyhint="search">
       <button class="qclear" id="qclear" onclick="clearSearch()" title="清空" aria-label="清空">✕</button>
     </div>
 
@@ -53,12 +53,15 @@
 
   <div class="appmain">
   <div class="topbar">
-    <button class="iconbtn menubtn" onclick="toggleSide()" title="菜单" aria-label="菜单">
+    <button class="iconbtn menubtn" id="mobile-menu" onclick="toggleSide()" title="菜单" aria-label="菜单" aria-expanded="false" aria-controls="appside">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"></path></svg>
     </button>
     <div class="wordmark">podcast<span>-article</span></div>
-    <div style="display:flex;align-items:center;gap:12px">
+    <div class="topbar-actions">
       <button class="usagepill" id="usagepill" onclick="openSettings('storage')" title="看一眼累计用量与费用"></button>
+      <button class="iconbtn" id="mobile-search" onclick="focusLibrarySearch()" title="搜索文章" aria-label="搜索文章">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"></circle><path d="m16 16 4 4"></path></svg>
+      </button>
       <div class="account-wrap">
         <button class="account-trigger" id="account-menu" type="button" aria-label="账号菜单" aria-expanded="false" aria-controls="account-panel" hidden>
           <span class="account-avatar" aria-hidden="true">K</span><span class="account-name" id="account-name"></span><span class="account-chevron" aria-hidden="true">⌄</span>
@@ -217,12 +220,15 @@
   <div class="rdbody">
     <div class="rdtools">
       <div class="btnrow">
-        <div class="pubrow">
-          <select class="sel" id="dest" onchange="onDestChange()"></select>
-          <button class="btn primary" id="nbtn" onclick="pushArticle()">✦ 发布</button>
-        </div>
         <button class="btn" id="tbtn" onclick="toggleTranscript()">查看文字稿</button>
         <button class="btn" id="ttsbtn" onclick="toggleTtsBar()" title="让 AI 把这篇念出来">🔊 朗读</button>
+        <details id="reader-more" class="reader-more">
+          <summary>更多</summary>
+          <div class="reader-more-body">
+        <div class="pubrow">
+          <select class="sel" id="dest" aria-label="发布目标" onchange="onDestChange()"></select>
+          <button class="btn primary" id="nbtn" onclick="pushArticle()">✦ 发布</button>
+        </div>
         <button class="btn" onclick="regenArticle()">重新生成文章</button>
         <div class="menuwrap">
           <button class="btn" id="expbtn" onclick="toggleExportMenu(event)">导出 ▾</button>
@@ -245,6 +251,8 @@
             <div class="mi" onclick="clearStatusMark()">清除标记（回到未读）</div>
           </div>
         </div>
+          </div>
+        </details>
       </div>
       <details id="tplbox" style="display:none">
         <summary>参数模板（把文章字段映射到该 MCP 工具的入参）</summary>
@@ -294,9 +302,10 @@
       <h1>设置</h1>
       <p class="setintro">大多数时候保持默认即可，按需调整后保存。</p>
     </div>
-    <button class="btn mini" onclick="closeSettings()">← 返回</button>
+    <button class="btn mini" id="settings-back" onclick="closeSettings()">← 返回</button>
   </div>
 
+  <select id="settings-section" aria-label="设置分类" onchange="switchTab(this.value)"></select>
   <div class="settings-layout">
     <nav class="settings-nav" aria-label="设置分类">
       <div class="settings-nav-group">
@@ -806,10 +815,10 @@
 
 <aside id="assist" class="assist" aria-label="阅读助手">
   <div class="ahead">
-    <span class="atitle">✦ 阅读助手</span>
+    <span class="atitle" id="assist-title">✦ 阅读助手</span>
     <span style="flex:1"></span>
     <button class="iconbtn small" id="anewbtn" onclick="newAssistThread()" title="针对新的选段开一段新对话">＋ 新对话</button>
-    <button class="iconbtn small" onclick="closeAssist()" title="关闭（Esc）" aria-label="关闭">
+    <button class="iconbtn small" id="assist-close" onclick="closeAssist()" title="关闭（Esc）" aria-label="关闭阅读助手">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"></path></svg>
     </button>
   </div>
@@ -835,6 +844,6 @@
   </div>
 </aside>
 
-<script src="/static/app.js?v=20261002-ux3"></script>
+<script src="/static/app.js?v=20261003-glass1"></script>
 </body>
 </html>
